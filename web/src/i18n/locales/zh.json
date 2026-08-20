@@ -2250,7 +2250,7 @@
     "footer.columns.related.links.oneApi": "One API",
     "footer.columns.related.title": "相关项目",
     "footer.defaultCopyright": "版权所有。",
-    "footer.new\u0061pi.projectAttributionSuffix": "版权所有，由项目贡献者设计与开发。",
+    "footer.new\\u0061pi.projectAttributionSuffix": "版权所有，由项目贡献者设计与开发。",,
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "对于 2025 年 5 月 10 日之后添加的渠道，在部署时无需从模型名称中移除 \".\"",
     "For example, 5": "例如 5",
     "For private deployments, format: https://fastgpt.run/api/openapi": "对于私有部署，格式为：https://fastgpt.run/api/openapi",
@@ -5849,6 +5849,16 @@
     "Zero retention": "零数据保留",
     "Zhipu": "智谱",
     "Zhipu V4": "智谱 V4",
-    "Zoom": "缩放"
+    "Zoom": "缩放",
+    "Virtual Models": "虚拟模型",
+    "Create virtual model": "新建虚拟模型",
+    "Unable to load virtual models": "虚拟模型加载失败",
+    "Candidate Chain": "候选链",
+    "API Key Authorization": "API Key 授权",
+    "Runtime Status": "运行状态",
+    "Candidate count": "候选数量",
+    "Bound API Keys": "已绑定 API Key",
+    "Runtime status is available after execution is enabled": "执行器启用后提供运行状态",
+    "Select a virtual model": "请选择虚拟模型"
   }
 }

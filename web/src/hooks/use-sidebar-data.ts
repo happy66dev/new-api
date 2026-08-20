@@ -129,6 +129,11 @@ export function useSidebarData(): SidebarData {
               icon: Key,
             },
             {
+              title: t('Virtual Models'),
+              url: '/virtual-models',
+              icon: Radio,
+            },
+            {
               title: t('Usage Logs'),
               url: '/usage-logs/common',
               icon: FileText,
