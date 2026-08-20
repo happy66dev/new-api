@@ -274,6 +274,19 @@ func SetApiRouter(router *gin.Engine) {
 			tokenAdminRoute.GET("/group-names", controller.GetTokenGroupNames)
 			tokenAdminRoute.POST("/group/migrate", controller.MigrateTokenGroup)
 		}
+		virtualModelRoute := apiRouter.Group("/virtual-models")
+		virtualModelRoute.Use(middleware.UserAuth())
+		{
+			virtualModelRoute.GET("", controller.GetVirtualModels)
+			virtualModelRoute.POST("", controller.CreateVirtualModel)
+			virtualModelRoute.GET("/:id", controller.GetVirtualModel)
+			virtualModelRoute.PUT("/:id", controller.UpdateVirtualModel)
+			virtualModelRoute.DELETE("/:id", controller.DeleteVirtualModel)
+			virtualModelRoute.PUT("/:id/candidates", controller.ReplaceVirtualModelCandidates)
+			virtualModelRoute.PUT("/:id/key-bindings", controller.ReplaceVirtualModelBindings)
+			virtualModelRoute.GET("/:id/status", controller.GetVirtualModelStatus)
+		}
+
 		tokenRoute := apiRouter.Group("/token")
 		tokenRoute.Use(middleware.UserAuth())
 		{

@@ -296,6 +296,15 @@ func migrateDB() error {
 		&SupportMessage{},
 		&CasbinRule{},
 		&AuthzRole{},
+		&VirtualModel{},
+		&VirtualModelCandidate{},
+		&VirtualModelInternalCandidate{},
+		&VirtualModelCustomCandidate{},
+		&VirtualModelFailureRule{},
+		&VirtualModelTokenBinding{},
+		&VirtualModelManualFreeze{},
+		&VirtualModelCustomFreezeState{},
+		&VirtualModelAuditLog{},
 	)
 	if err != nil {
 		return err
