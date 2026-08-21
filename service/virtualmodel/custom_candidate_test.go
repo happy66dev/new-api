@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/QuantumNous/new-api/model"
@@ -65,6 +66,11 @@ func TestBuildCustomUpstreamURL(t *testing.T) {
 	if upstreamURL.String() != "https://api.example.test/prefix/v1/chat%2Fcompletions?stream=true&x=1" {
 		t.Fatalf("upstream URL = %s", upstreamURL.String())
 	}
+	// 点路径段必须拒绝，避免自定义凭据被发送到 Base URL 前缀外的端点喵。
+	dotSegmentRequest := &url.URL{Path: "/../admin", RawPath: "/../admin"}
+	if _, dotSegmentError := buildCustomUpstreamURL(baseURL, dotSegmentRequest); dotSegmentError == nil {
+		t.Fatal("dot-segment path should be rejected")
+	}
 	// 空 URL 参数必须拒绝，避免退化到错误的根路径请求喵。
 	if _, nilBuildError := buildCustomUpstreamURL(nil, request.URL); nilBuildError == nil {
 		t.Fatal("nil base URL should be rejected")
@@ -77,7 +83,8 @@ func TestCustomHeaderFilteringAndAuthentication(t *testing.T) {
 	sourceHeaders := make(http.Header)
 	sourceHeaders.Set("Authorization", "Bearer client-secret")
 	sourceHeaders.Set("x-api-key", "client-key")
-	sourceHeaders.Set("Connection", "upgrade")
+	sourceHeaders.Set("Connection", "upgrade, X-Internal-Route")
+	sourceHeaders.Set("X-Internal-Route", "internal")
 	sourceHeaders.Set("Content-Length", "999")
 	sourceHeaders.Set("Cookie", "session=client-secret")
 	sourceHeaders.Set("Forwarded", "for=127.0.0.1")
@@ -86,7 +93,7 @@ func TestCustomHeaderFilteringAndAuthentication(t *testing.T) {
 	targetHeaders := make(http.Header)
 	copyCustomUpstreamHeaders(targetHeaders, sourceHeaders)
 	// 危险头必须被剔除，允许头需原样保留喵。
-	if targetHeaders.Get("Authorization") != "" || targetHeaders.Get("x-api-key") != "" || targetHeaders.Get("Connection") != "" || targetHeaders.Get("Content-Length") != "" || targetHeaders.Get("Cookie") != "" || targetHeaders.Get("Forwarded") != "" || targetHeaders.Get("X-Forwarded-For") != "" || targetHeaders.Get("X-Trace-Id") != "trace-1" {
+	if targetHeaders.Get("Authorization") != "" || targetHeaders.Get("x-api-key") != "" || targetHeaders.Get("Connection") != "" || targetHeaders.Get("X-Internal-Route") != "" || targetHeaders.Get("Content-Length") != "" || targetHeaders.Get("Cookie") != "" || targetHeaders.Get("Forwarded") != "" || targetHeaders.Get("X-Forwarded-For") != "" || targetHeaders.Get("X-Trace-Id") != "trace-1" {
 		t.Fatalf("unexpected filtered headers: %#v", targetHeaders)
 	}
 	// Bearer 认证必须成为唯一 Authorization 值喵。
@@ -115,10 +122,12 @@ func TestCustomPassthroughResponse(t *testing.T) {
 	responseHeaders := make(http.Header)
 	responseHeaders.Set("X-Upstream-Request-Id", "upstream-1")
 	responseHeaders.Set("Connection", "close")
+	responseHeaders.Set("Set-Cookie", "session=unsafe; Path=/")
+	responseHeaders.Set("Access-Control-Allow-Origin", "https://unsafe.example")
 	responseRecorder := httptest.NewRecorder()
 	// 回传 429 和有限错误正文，供客户端按原协议读取喵。
 	CopyCustomPassthroughResponse(responseRecorder, responseHeaders, http.StatusTooManyRequests, []byte("busy"))
-	if responseRecorder.Code != http.StatusTooManyRequests || responseRecorder.Body.String() != "busy" || responseRecorder.Header().Get("X-Upstream-Request-Id") != "upstream-1" || responseRecorder.Header().Get("Connection") != "" {
+	if responseRecorder.Code != http.StatusTooManyRequests || responseRecorder.Body.String() != "busy" || responseRecorder.Header().Get("X-Upstream-Request-Id") != "upstream-1" || responseRecorder.Header().Get("Connection") != "" || responseRecorder.Header().Get("Set-Cookie") != "" || responseRecorder.Header().Get("Access-Control-Allow-Origin") != "" {
 		t.Fatalf("unexpected passthrough response: status=%d headers=%#v body=%q", responseRecorder.Code, responseRecorder.Header(), responseRecorder.Body.String())
 	}
 	// 非法成功状态不可被当作上游错误写回，防止规则逻辑伪造成功响应喵。

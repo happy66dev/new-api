@@ -88,8 +88,8 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 		return &CustomCandidateExecutionFailure{Failure: NormalizeCandidateFailure(0, nil, nil, responseError), Cause: responseError}
 	}
 	defer response.Body.Close()
-	// 非成功 HTTP 状态在响应提交前保留受限正文摘要，供上层按规则决定是否切换候选喵。
-	if response.StatusCode >= http.StatusBadRequest {
+	// 喵~防御：仅 2xx 状态可提交为成功；重定向和其他协议状态必须进入候选规则处理喵。
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		responseBody, readError := io.ReadAll(io.LimitReader(response.Body, 64*1024+1))
 		if readError != nil {
 			return &CustomCandidateExecutionFailure{Failure: NormalizeCandidateFailure(response.StatusCode, response.Header, nil, readError), Cause: readError}
@@ -141,14 +141,29 @@ func buildCustomUpstreamURL(baseURL *url.URL, requestURL *url.URL) (*url.URL, er
 	if baseURL == nil || requestURL == nil {
 		return nil, errors.New("custom upstream URL is invalid")
 	}
+	requestPath := requestURL.Path
+	// 喵~防御：拒绝点路径段及其编码等价形式，防止客户端越过用户配置的 Base URL 路径前缀喵。
+	for _, pathSegment := range strings.Split(requestPath, "/") {
+		if pathSegment == "." || pathSegment == ".." {
+			return nil, errors.New("custom upstream request path is invalid")
+		}
+	}
 	upstreamURL := *baseURL
-	basePath := strings.TrimSuffix(baseURL.EscapedPath(), "/")
-	requestPath := requestURL.EscapedPath()
+	basePath := strings.TrimSuffix(baseURL.Path, "/")
+	baseEscapedPath := strings.TrimSuffix(baseURL.EscapedPath(), "/")
+	if baseEscapedPath == "" && basePath != "" {
+		baseEscapedPath = url.PathEscape(basePath)
+	}
 	if requestPath == "" {
 		requestPath = "/"
 	}
+	requestEscapedPath := requestURL.EscapedPath()
+	if requestEscapedPath == "" {
+		requestEscapedPath = "/"
+	}
+	// 喵~防御：Path 保存解码路径而 RawPath 保存可验证转义路径，避免 %2F 被二次编码为 %252F 喵。
 	upstreamURL.Path = basePath + requestPath
-	upstreamURL.RawPath = upstreamURL.Path
+	upstreamURL.RawPath = baseEscapedPath + requestEscapedPath
 	upstreamURL.RawQuery = requestURL.RawQuery
 	return &upstreamURL, nil
 }
@@ -158,6 +173,14 @@ func copyCustomUpstreamHeaders(targetHeaders http.Header, sourceHeaders http.Hea
 	// 定义固定危险头集合，防止客户端影响代理连接语义或伪造上游认证喵。
 	blockedHeaders := map[string]struct{}{
 		"authorization": {}, "x-api-key": {}, "proxy-authorization": {}, "cookie": {}, "connection": {}, "keep-alive": {}, "proxy-connection": {}, "te": {}, "trailer": {}, "transfer-encoding": {}, "upgrade": {}, "host": {}, "content-length": {}, "forwarded": {}, "x-forwarded-for": {}, "x-forwarded-host": {}, "x-forwarded-proto": {}, "x-real-ip": {},
+	}
+	// 喵~防御：Connection 头可声明额外 hop-by-hop 字段，必须一并阻断以防客户端控制上游连接语义喵。
+	for _, connectionValue := range sourceHeaders.Values("Connection") {
+		for _, connectionToken := range strings.Split(connectionValue, ",") {
+			if normalizedToken := strings.ToLower(strings.TrimSpace(connectionToken)); normalizedToken != "" {
+				blockedHeaders[normalizedToken] = struct{}{}
+			}
+		}
 	}
 	for headerName, headerValues := range sourceHeaders {
 		if _, blocked := blockedHeaders[strings.ToLower(headerName)]; blocked {
@@ -199,7 +222,10 @@ func CopyCustomPassthroughResponse(writer http.ResponseWriter, responseHeaders h
 
 // copyCustomResponseHeaders 过滤上游 hop-by-hop 响应头后复制其余字段喵。
 func copyCustomResponseHeaders(targetHeaders http.Header, sourceHeaders http.Header) {
-	blockedHeaders := map[string]struct{}{"connection": {}, "keep-alive": {}, "proxy-authenticate": {}, "proxy-authorization": {}, "te": {}, "trailer": {}, "transfer-encoding": {}, "upgrade": {}}
+	// 喵~防御：上游不得为 new-api 域写入 Cookie、跨域、安全策略或连接控制头喵。
+	blockedHeaders := map[string]struct{}{
+		"connection": {}, "keep-alive": {}, "proxy-authenticate": {}, "proxy-authorization": {}, "te": {}, "trailer": {}, "transfer-encoding": {}, "upgrade": {}, "set-cookie": {}, "access-control-allow-origin": {}, "access-control-allow-credentials": {}, "access-control-expose-headers": {}, "content-security-policy": {}, "strict-transport-security": {}, "x-frame-options": {}, "x-content-type-options": {}, "permissions-policy": {},
+	}
 	for headerName, headerValues := range sourceHeaders {
 		if _, blocked := blockedHeaders[strings.ToLower(headerName)]; blocked {
 			continue

@@ -376,7 +376,7 @@ func ReplaceVirtualModelCandidates(c *gin.Context) {
 				if input.AuthStyle != model.VirtualModelAuthBearer && input.AuthStyle != model.VirtualModelAuthAPIKey && input.AuthStyle != model.VirtualModelAuthAnthropic {
 					return errors.New("自定义候选认证方式无效")
 				}
-				customCandidate := &model.VirtualModelCustomCandidate{CandidateID: candidate.ID, EncryptedBaseURL: encryptedBaseURL, EncryptedAPIKey: encryptedAPIKey, CredentialVersion: credentialVersion, BaseURLSummary: virtualmodelservice.SummarizeCustomBaseURL(parsedURL), APIKeyFingerprint: virtualmodelservice.CredentialFingerprint(strings.TrimSpace(input.APIKey)), RealModelName: strings.TrimSpace(input.RealModelName), AuthStyle: input.AuthStyle}
+				customCandidate := &model.VirtualModelCustomCandidate{CandidateID: candidate.ID, EncryptedBaseURL: encryptedBaseURL, EncryptedAPIKey: encryptedAPIKey, CredentialVersion: credentialVersion, BaseURLSummary: virtualmodelservice.SummarizeCustomBaseURL(parsedURL), BaseURLFingerprint: virtualmodelservice.CredentialFingerprint(parsedURL.String()), APIKeyFingerprint: virtualmodelservice.CredentialFingerprint(strings.TrimSpace(input.APIKey)), RealModelName: strings.TrimSpace(input.RealModelName), AuthStyle: input.AuthStyle}
 				if err := tx.Create(customCandidate).Error; err != nil {
 					return err
 				}

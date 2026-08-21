@@ -218,12 +218,13 @@ func handleVirtualModelRequest(c *gin.Context, modelRequest *ModelRequest) bool 
 		abortWithOpenAiMessage(c, http.StatusNotFound, "virtual model not found", types.ErrorCode("virtual_model_not_found"))
 		return false
 	}
-	candidateSnapshots, candidatesError := model.GetEnabledVirtualModelCandidateSnapshots(virtualModel.ID)
-	// 喵~防御：不存在候选或读取失败时安全拒绝，避免没有完整执行快照的调用进入未知路由喵。
-	if candidatesError != nil || len(candidateSnapshots) == 0 {
+	executionSnapshot, snapshotError := model.GetVirtualModelExecutionSnapshot(virtualModel.ID)
+	// 喵~防御：无法构造候选和规则的一致快照时安全拒绝，避免执行混合版本配置喵。
+	if snapshotError != nil || executionSnapshot == nil || len(executionSnapshot.Candidates) == 0 {
 		abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
 		return false
 	}
+	candidateSnapshots := executionSnapshot.Candidates
 	candidateIDs := make([]int, 0, len(candidateSnapshots))
 	for _, candidateSnapshot := range candidateSnapshots {
 		candidateIDs = append(candidateIDs, candidateSnapshot.CandidateID)
@@ -262,7 +263,7 @@ func handleVirtualModelRequest(c *gin.Context, modelRequest *ModelRequest) bool 
 			return applyInternalVirtualModelCandidate(c, modelRequest, virtualModel.VirtualModelName(), candidateSnapshot)
 		}
 		if candidateSnapshot.SourceType == model.VirtualModelSourceCustom {
-			if executeCustomVirtualModelCandidate(c, candidateSnapshot) {
+			if executeCustomVirtualModelCandidate(c, candidateSnapshot, executionSnapshot.FailureRulesByCandidateID[candidateSnapshot.CandidateID]) {
 				return true
 			}
 			// 喵~防御：已提交上游成功响应或已写出错误时绝不切换候选，避免响应体混合喵。
@@ -278,7 +279,7 @@ func handleVirtualModelRequest(c *gin.Context, modelRequest *ModelRequest) bool 
 }
 
 // executeCustomVirtualModelCandidate 在当前 middleware 生命周期内安全完成单次自定义候选透传喵。
-func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.VirtualModelInternalCandidateSnapshot) bool {
+func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.VirtualModelInternalCandidateSnapshot, failureRules []model.VirtualModelFailureRule) bool {
 	// 喵~防御：自定义候选必须带有完整加密凭据和模型配置，缺失时绝不尝试外发请求喵。
 	if c == nil || candidate == nil || strings.TrimSpace(candidate.EncryptedBaseURL) == "" || strings.TrimSpace(candidate.EncryptedAPIKey) == "" || strings.TrimSpace(candidate.RealModelName) == "" {
 		abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
@@ -291,12 +292,7 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 		abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
 		return false
 	}
-	failureRulesByCandidateID, rulesError := model.GetVirtualModelFailureRulesByCandidateIDs([]int{candidate.CandidateID})
-	// 喵~防御：读取失败规则失败时不执行不受控重试，保守地将候选视为不可用喵。
-	if rulesError != nil {
-		abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
-		return false
-	}
+	// 失败规则随请求快照传入，禁止在候选执行期间二次读取已可能被控制面替换的规则喵。
 	maximumRetries := candidate.MaxRetries
 	// 喵~防御：自定义候选重试次数最多三次，避免错误配置耗尽总请求预算喵。
 	if maximumRetries < 0 {
@@ -332,7 +328,7 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 			abortWithOpenAiMessage(c, http.StatusBadGateway, "virtual model custom upstream is unavailable", types.ErrorCode("virtual_model_unavailable"))
 			return false
 		}
-		action, freezeSeconds := virtualmodelservice.DecideCandidateFailureAction(failureRulesByCandidateID[candidate.CandidateID], customFailure.Failure)
+		action, freezeSeconds := virtualmodelservice.DecideCandidateFailureAction(failureRules, customFailure.Failure)
 		if action == model.VirtualModelActionRetry && retryIndex < maximumRetries {
 			retryDelay := time.Duration(virtualmodelservice.RetryBackoffSeconds(retryIndex)) * time.Second
 			// 喵~防御：退避等待必须响应客户端取消，避免断开请求仍占用 goroutine 和连接喵。

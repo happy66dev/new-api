@@ -67,8 +67,8 @@ type VirtualModel struct {
 // VirtualModelCandidate 保存候选顺序和通用运行参数喵。
 type VirtualModelCandidate struct {
 	ID             int                    `json:"id" gorm:"primaryKey"`
-	VirtualModelID int                    `json:"virtual_model_id" gorm:"index;not null"`
-	StableOrder    int                    `json:"stable_order" gorm:"not null"`
+	VirtualModelID int                    `json:"virtual_model_id" gorm:"index;not null;uniqueIndex:idx_virtual_model_candidate_order,priority:1"`
+	StableOrder    int                    `json:"stable_order" gorm:"not null;uniqueIndex:idx_virtual_model_candidate_order,priority:2"`
 	SourceType     VirtualModelSourceType `json:"source_type" gorm:"type:varchar(16);not null"`
 	Enabled        bool                   `json:"enabled" gorm:"default:true"`
 	MaxRetries     int                    `json:"max_retries" gorm:"default:0"`
@@ -89,22 +89,23 @@ type VirtualModelInternalCandidate struct {
 
 // VirtualModelCustomCandidate 保存加密后的自定义上游配置和脱敏摘要喵。
 type VirtualModelCustomCandidate struct {
-	ID                int                   `json:"id" gorm:"primaryKey"`
-	CandidateID       int                   `json:"candidate_id" gorm:"uniqueIndex;not null"`
-	EncryptedBaseURL  string                `json:"-" gorm:"type:text;not null"`
-	EncryptedAPIKey   string                `json:"-" gorm:"type:text;not null"`
-	CredentialVersion int                   `json:"credential_version" gorm:"default:1"`
-	BaseURLSummary    string                `json:"base_url_summary" gorm:"type:varchar(255)"`
-	APIKeyFingerprint string                `json:"-" gorm:"type:varchar(128);index"`
-	RealModelName     string                `json:"real_model_name" gorm:"type:varchar(256);not null"`
-	AuthStyle         VirtualModelAuthStyle `json:"auth_style" gorm:"type:varchar(32);not null"`
+	ID                 int                   `json:"id" gorm:"primaryKey"`
+	CandidateID        int                   `json:"candidate_id" gorm:"uniqueIndex;not null"`
+	EncryptedBaseURL   string                `json:"-" gorm:"type:text;not null"`
+	EncryptedAPIKey    string                `json:"-" gorm:"type:text;not null"`
+	CredentialVersion  int                   `json:"credential_version" gorm:"default:1"`
+	BaseURLSummary     string                `json:"base_url_summary" gorm:"type:varchar(255)"`
+	BaseURLFingerprint string                `json:"-" gorm:"type:varchar(128);index"`
+	APIKeyFingerprint  string                `json:"-" gorm:"type:varchar(128);index"`
+	RealModelName      string                `json:"real_model_name" gorm:"type:varchar(256);not null"`
+	AuthStyle          VirtualModelAuthStyle `json:"auth_style" gorm:"type:varchar(32);not null"`
 }
 
 // VirtualModelFailureRule 保存候选级有序失败规则喵。
 type VirtualModelFailureRule struct {
 	ID            int                       `json:"id" gorm:"primaryKey"`
-	CandidateID   int                       `json:"candidate_id" gorm:"index;not null"`
-	RuleOrder     int                       `json:"rule_order" gorm:"not null"`
+	CandidateID   int                       `json:"candidate_id" gorm:"index;not null;uniqueIndex:idx_virtual_model_failure_rule_order,priority:1"`
+	RuleOrder     int                       `json:"rule_order" gorm:"not null;uniqueIndex:idx_virtual_model_failure_rule_order,priority:2"`
 	HTTPStatus    int                       `json:"http_status"`
 	ErrorClass    string                    `json:"error_class" gorm:"type:varchar(64)"`
 	BodyRegex     string                    `json:"body_regex" gorm:"type:text"`
@@ -261,24 +262,62 @@ func GetEnabledVirtualModelByOwnerTokenName(ownerUserID int, tokenID int, normal
 
 // VirtualModelCandidateSnapshot 保存一次虚拟模型请求的候选不可变执行配置喵。
 type VirtualModelCandidateSnapshot struct {
-	CandidateID       int                    // 候选唯一编号，用于冻结、规则和审计关联喵。
-	VirtualModelID    int                    // 虚拟模型唯一编号，用于校验候选归属喵。
-	StableOrder       int                    // 候选稳定顺序，数值越小越优先喵。
-	SourceType        VirtualModelSourceType // 候选来源类型，决定内部 relay 或自定义透传路径喵。
-	Enabled           bool                   // 候选是否启用，禁用候选不会进入本请求快照喵。
-	MaxRetries        int                    // 自定义候选的最大附加重试次数，单位：次喵。
-	TimeoutSeconds    int                    // 单次候选执行超时，单位：秒喵。
-	GroupName         string                 // 内部候选目标分组，自定义候选为空喵。
-	RealModelName     string                 // 上游或内部实际请求模型名称喵。
-	EncryptedBaseURL  string                 // 自定义候选加密后的上游基址，内部候选为空喵。
-	EncryptedAPIKey   string                 // 自定义候选加密后的认证凭据，内部候选为空喵。
-	APIKeyFingerprint string                 // 自定义候选 API Key 不可逆摘要，用于共享冻结身份喵。
-	CredentialVersion int                    // 自定义候选凭据加密版本喵。
-	AuthStyle         VirtualModelAuthStyle  // 自定义候选认证头样式喵。
+	CandidateID        int                    // 候选唯一编号，用于冻结、规则和审计关联喵。
+	VirtualModelID     int                    // 虚拟模型唯一编号，用于校验候选归属喵。
+	StableOrder        int                    // 候选稳定顺序，数值越小越优先喵。
+	SourceType         VirtualModelSourceType // 候选来源类型，决定内部 relay 或自定义透传路径喵。
+	Enabled            bool                   // 候选是否启用，禁用候选不会进入本请求快照喵。
+	MaxRetries         int                    // 自定义候选的最大附加重试次数，单位：次喵。
+	TimeoutSeconds     int                    // 单次候选执行超时，单位：秒喵。
+	GroupName          string                 // 内部候选目标分组，自定义候选为空喵。
+	RealModelName      string                 // 上游或内部实际请求模型名称喵。
+	EncryptedBaseURL   string                 // 自定义候选加密后的上游基址，内部候选为空喵。
+	BaseURLSummary     string                 // 自定义候选公开地址摘要，仅用于旧记录冻结身份兼容喵。
+	BaseURLFingerprint string                 // 自定义候选规范化地址不可逆摘要，用于共享冻结身份喵。
+	EncryptedAPIKey    string                 // 自定义候选加密后的认证凭据，内部候选为空喵。
+	APIKeyFingerprint  string                 // 自定义候选 API Key 不可逆摘要，用于共享冻结身份喵。
+	CredentialVersion  int                    // 自定义候选凭据加密版本喵。
+	AuthStyle          VirtualModelAuthStyle  // 自定义候选认证头样式喵。
 }
 
 // VirtualModelInternalCandidateSnapshot 保留旧名称兼容现有内部候选调用代码喵。
 type VirtualModelInternalCandidateSnapshot = VirtualModelCandidateSnapshot
+
+// VirtualModelExecutionSnapshot 保存一次请求所需的候选链和失败规则不可变读取结果喵。
+type VirtualModelExecutionSnapshot struct {
+	Candidates                []VirtualModelCandidateSnapshot   // 已按稳定顺序排列的启用候选快照喵。
+	FailureRulesByCandidateID map[int][]VirtualModelFailureRule // 按候选编号归类且已排序的失败规则快照喵。
+}
+
+// GetVirtualModelExecutionSnapshot 在单个只读事务中构造候选和规则的不可变执行快照喵。
+func GetVirtualModelExecutionSnapshot(virtualModelID int) (*VirtualModelExecutionSnapshot, error) {
+	// 喵~防御：无效模型编号直接拒绝，避免开始无意义事务或查询全表喵。
+	if virtualModelID <= 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+	executionSnapshot := &VirtualModelExecutionSnapshot{Candidates: make([]VirtualModelCandidateSnapshot, 0), FailureRulesByCandidateID: make(map[int][]VirtualModelFailureRule)}
+	transactionError := DB.Transaction(func(transactionDatabase *gorm.DB) error {
+		candidateSnapshots, candidateError := GetEnabledVirtualModelCandidateSnapshotsWithDB(transactionDatabase, virtualModelID)
+		if candidateError != nil {
+			return candidateError
+		}
+		candidateIDs := make([]int, 0, len(candidateSnapshots))
+		for _, candidateSnapshot := range candidateSnapshots {
+			candidateIDs = append(candidateIDs, candidateSnapshot.CandidateID)
+		}
+		failureRulesByCandidateID, rulesError := GetVirtualModelFailureRulesByCandidateIDsWithDB(transactionDatabase, candidateIDs)
+		if rulesError != nil {
+			return rulesError
+		}
+		executionSnapshot.Candidates = candidateSnapshots
+		executionSnapshot.FailureRulesByCandidateID = failureRulesByCandidateID
+		return nil
+	})
+	if transactionError != nil {
+		return nil, transactionError
+	}
+	return executionSnapshot, nil
+}
 
 // GetEnabledVirtualModelCandidateSnapshots 使用给定数据库连接按稳定顺序读取本次请求的所有启用候选快照喵。
 func GetEnabledVirtualModelCandidateSnapshotsWithDB(database *gorm.DB, virtualModelID int) ([]VirtualModelCandidateSnapshot, error) {
@@ -292,9 +331,9 @@ func GetEnabledVirtualModelCandidateSnapshotsWithDB(database *gorm.DB, virtualMo
 	}
 	candidateSnapshots := make([]VirtualModelCandidateSnapshot, 0)
 	queryError := database.Model(&VirtualModelCandidate{}).
-		Select("virtual_model_candidates.id AS candidate_id, virtual_model_candidates.virtual_model_id, virtual_model_candidates.stable_order, virtual_model_candidates.source_type, virtual_model_candidates.enabled, virtual_model_candidates.max_retries, virtual_model_candidates.timeout_seconds, virtual_model_internal_candidates.group_name, COALESCE(virtual_model_internal_candidates.real_model_name, virtual_model_custom_candidates.real_model_name) AS real_model_name, virtual_model_custom_candidates.encrypted_base_url, virtual_model_custom_candidates.encrypted_api_key, virtual_model_custom_candidates.api_key_fingerprint, virtual_model_custom_candidates.credential_version, virtual_model_custom_candidates.auth_style").
-		Joins("LEFT JOIN virtual_model_internal_candidates ON virtual_model_internal_candidates.candidate_id = virtual_model_candidates.id").
-		Joins("LEFT JOIN virtual_model_custom_candidates ON virtual_model_custom_candidates.candidate_id = virtual_model_candidates.id").
+		Select("virtual_model_candidates.id AS candidate_id, virtual_model_candidates.virtual_model_id, virtual_model_candidates.stable_order, virtual_model_candidates.source_type, virtual_model_candidates.enabled, virtual_model_candidates.max_retries, virtual_model_candidates.timeout_seconds, virtual_model_internal_candidates.group_name, CASE WHEN virtual_model_candidates.source_type = ? THEN virtual_model_internal_candidates.real_model_name ELSE virtual_model_custom_candidates.real_model_name END AS real_model_name, virtual_model_custom_candidates.encrypted_base_url, virtual_model_custom_candidates.base_url_summary, virtual_model_custom_candidates.base_url_fingerprint, virtual_model_custom_candidates.encrypted_api_key, virtual_model_custom_candidates.api_key_fingerprint, virtual_model_custom_candidates.credential_version, virtual_model_custom_candidates.auth_style", VirtualModelSourceInternal).
+		Joins("LEFT JOIN virtual_model_internal_candidates ON virtual_model_internal_candidates.candidate_id = virtual_model_candidates.id AND virtual_model_candidates.source_type = ?", VirtualModelSourceInternal).
+		Joins("LEFT JOIN virtual_model_custom_candidates ON virtual_model_custom_candidates.candidate_id = virtual_model_candidates.id AND virtual_model_candidates.source_type = ?", VirtualModelSourceCustom).
 		Where("virtual_model_candidates.virtual_model_id = ? AND virtual_model_candidates.enabled = ?", virtualModelID, true).
 		Order("virtual_model_candidates.stable_order ASC, virtual_model_candidates.id ASC").
 		Find(&candidateSnapshots).Error
@@ -344,7 +383,7 @@ func GetActiveVirtualModelManualFreezeCandidateIDsWithDB(database *gorm.DB, cand
 		return nil, errors.New("virtual model database is unavailable")
 	}
 	frozenCandidateIDs := make([]int, 0)
-	queryError := database.Model(&VirtualModelManualFreeze{}).Where("candidate_id IN ? AND expires_at > ?", candidateIDs, currentTimestamp).Distinct().Pluck("candidate_id", &frozenCandidateIDs).Error
+	queryError := database.Model(&VirtualModelManualFreeze{}).Where("candidate_id IN ? AND started_at <= ? AND expires_at > ?", candidateIDs, currentTimestamp, currentTimestamp).Distinct().Pluck("candidate_id", &frozenCandidateIDs).Error
 	if queryError != nil {
 		return nil, queryError
 	}
@@ -414,7 +453,8 @@ func UpsertVirtualModelCustomFreezeStateWithDB(database *gorm.DB, ownerUserID in
 	return database.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "owner_user_id"}, {Name: "identity_digest"}},
 		DoUpdates: clause.Assignments(map[string]any{
-			"frozen_until":       frozenUntil,
+			// 喵~防御：并发失败不得将更长的既有冻结缩短为较短的新冻结时间喵。
+			"frozen_until":       gorm.Expr("CASE WHEN frozen_until > ? THEN frozen_until ELSE ? END", frozenUntil, frozenUntil),
 			"consecutive_fails":  gorm.Expr("consecutive_fails + ?", 1),
 			"last_failure_class": strings.TrimSpace(failureClass),
 			"updated_time":       currentTimestamp,

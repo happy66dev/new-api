@@ -130,7 +130,7 @@ func TestGetFirstEnabledVirtualModelCandidate(t *testing.T) {
 	// 创建顺序靠前的自定义候选和其加密配置，验证快照不会跳过它选择后续内部候选喵。
 	customCandidate := VirtualModelCandidate{VirtualModelID: 91, StableOrder: 0, SourceType: VirtualModelSourceCustom, Enabled: true, MaxRetries: 2, TimeoutSeconds: 45}
 	require.NoError(t, database.Create(&customCandidate).Error)
-	require.NoError(t, database.Create(&VirtualModelCustomCandidate{CandidateID: customCandidate.ID, EncryptedBaseURL: "encrypted-url", EncryptedAPIKey: "encrypted-key", CredentialVersion: 1, RealModelName: "custom-model", AuthStyle: VirtualModelAuthBearer}).Error)
+	require.NoError(t, database.Create(&VirtualModelCustomCandidate{CandidateID: customCandidate.ID, EncryptedBaseURL: "encrypted-url", EncryptedAPIKey: "encrypted-key", BaseURLFingerprint: "url-fingerprint", CredentialVersion: 1, RealModelName: "custom-model", AuthStyle: VirtualModelAuthBearer}).Error)
 	// 创建顺序靠后的内部候选及其目标分组和真实模型喵。
 	internalCandidate := VirtualModelCandidate{VirtualModelID: 91, StableOrder: 1, SourceType: VirtualModelSourceInternal, Enabled: true}
 	require.NoError(t, database.Create(&internalCandidate).Error)
