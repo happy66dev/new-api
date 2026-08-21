@@ -1,6 +1,7 @@
 package virtualmodel
 
 import (
+	"bufio"
 	"bytes"
 	"net/http"
 	"net/http/httptest"
@@ -135,6 +136,34 @@ func TestCustomPassthroughResponse(t *testing.T) {
 	CopyCustomPassthroughResponse(invalidStatusRecorder, responseHeaders, http.StatusOK, []byte("unsafe"))
 	if invalidStatusRecorder.Code != http.StatusOK || invalidStatusRecorder.Body.Len() != 0 {
 		t.Fatalf("invalid passthrough should not write a body: status=%d body=%q", invalidStatusRecorder.Code, invalidStatusRecorder.Body.String())
+	}
+}
+
+func TestCustomStreamingPrecommitProbe(t *testing.T) {
+	// 定义有效业务事件、明确错误、仅心跳和空响应，验证提交前探测不会错误放流喵。
+	testCases := []struct {
+		name        string
+		stream      string
+		expectError bool
+		expected    string
+	}{
+		{name: "business content", stream: ": keepalive\ndata: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n", expected: ": keepalive\ndata: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n"},
+		{name: "upstream error", stream: "data: {\"error\":{\"message\":\"busy\"}}\n", expectError: true},
+		{name: "heartbeat only", stream: ": ping\ndata: ping\n", expectError: true},
+		{name: "empty stream", stream: "", expectError: true},
+	}
+	// 逐项使用同一个 buffered reader 验证探测结果可回放且错误不会提交任何响应字节喵。
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			responseReader := bufio.NewReader(bytes.NewBufferString(testCase.stream))
+			precommitBytes, probeError := probeCustomStreamingResponse(responseReader)
+			if (probeError != nil) != testCase.expectError {
+				t.Fatalf("probeCustomStreamingResponse() error=%v wantError=%v", probeError, testCase.expectError)
+			}
+			if !testCase.expectError && string(precommitBytes) != testCase.expected {
+				t.Fatalf("precommit bytes = %q, want %q", precommitBytes, testCase.expected)
+			}
+		})
 	}
 }
 
