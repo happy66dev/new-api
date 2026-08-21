@@ -16,6 +16,7 @@ import {
   freezeVirtualModelCandidate,
   getVirtualModelStatus,
   getVirtualModels,
+  replaceVirtualModelCandidateFailureRules,
   replaceVirtualModelCandidates,
   replaceVirtualModelBindings,
   unfreezeVirtualModelCandidate,
@@ -131,6 +132,38 @@ describe('virtual model API', () => {
     const result = await replaceVirtualModelCandidates(21, candidateInput)
 
     expect(result.data?.version).toBe(2)
+  })
+
+  test('replaces ordered failure rules through a candidate-scoped endpoint', async () => {
+    const failureRules = {
+      version: 7,
+      rules: [
+        {
+          http_status: 429,
+          error_class: 'rate_limited',
+          body_regex: 'capacity',
+          action: 'freeze' as const,
+          freeze_seconds: 60,
+        },
+        {
+          http_status: 0,
+          error_class: '',
+          body_regex: '',
+          action: 'next' as const,
+          freeze_seconds: 0,
+        },
+      ],
+    }
+    // mock PUT 校验失败规则保留请求顺序并被限定到指定模型和候选喵。
+    apiClient.put = async (url, payload) => {
+      expect(url).toBe('/api/virtual-models/21/candidates/42/failure-rules')
+      expect(payload).toEqual(failureRules)
+      return { data: { success: true, data: { id: 21, ...modelInput, version: 8 } } }
+    }
+
+    const result = await replaceVirtualModelCandidateFailureRules(21, 42, failureRules)
+
+    expect(result.data?.version).toBe(8)
   })
 
   test('replaces API Key bindings with the current optimistic-lock version', async () => {

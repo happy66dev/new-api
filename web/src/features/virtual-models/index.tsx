@@ -16,6 +16,7 @@ import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { getVirtualModelStatus, getVirtualModels } from '@/features/virtual-models/api'
 import { VirtualModelBindingsEditor } from '@/features/virtual-models/components/virtual-model-bindings-editor'
+import { VirtualModelCandidateFailureRulesEditor } from '@/features/virtual-models/components/virtual-model-candidate-failure-rules-editor'
 import { VirtualModelCandidatesEditor } from '@/features/virtual-models/components/virtual-model-candidates-editor'
 import {
   VirtualModelDeleteDialog,
@@ -100,6 +101,7 @@ export function VirtualModels() {
                 <TabsList className='max-w-full flex-wrap justify-start'>
                   <TabsTrigger value='overview'>{t('Overview')}</TabsTrigger>
                   <TabsTrigger value='candidates'>{t('Candidate Chain')}</TabsTrigger>
+                  <TabsTrigger value='failure-rules'>{t('Failure Rules')}</TabsTrigger>
                   <TabsTrigger value='bindings'>{t('API Key Authorization')}</TabsTrigger>
                   <TabsTrigger value='status'>{t('Runtime Status')}</TabsTrigger>
                 </TabsList>
@@ -126,6 +128,25 @@ export function VirtualModels() {
                       void virtualModelStatusQuery.refetch()
                     }}
                   />
+                </TabsContent>
+                <TabsContent className='mt-4' value='failure-rules'>
+                  <div className='space-y-4'>
+                    {(selectedModel.candidates ?? []).map((candidate, candidateIndex) => (
+                      <VirtualModelCandidateFailureRulesEditor
+                        candidateID={candidate.id}
+                        candidateLabel={`${candidateIndex + 1}. ${candidate.real_model_name || t('Unnamed candidate')}`}
+                        key={candidate.id}
+                        model={selectedModel}
+                        rules={candidate.failure_rules ?? []}
+                        onSaved={() => {
+                          void virtualModelsQuery.refetch()
+                        }}
+                      />
+                    ))}
+                    {(selectedModel.candidates ?? []).length === 0 && (
+                      <p className='rounded-md border p-4 text-sm text-muted-foreground'>{t('Add a candidate before configuring failure rules')}</p>
+                    )}
+                  </div>
                 </TabsContent>
                 <TabsContent className='mt-4' value='bindings'>
                   <VirtualModelBindingsEditor

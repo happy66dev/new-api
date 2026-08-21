@@ -14,6 +14,7 @@ export type VirtualModelCandidate = {
   // 喵~防御：候选响应绝不声明或接收可回显的上游 API Key 喵。
   base_url?: string
   auth_style?: VirtualModelCandidateAuthStyle
+  failure_rules?: VirtualModelFailureRule[]
 }
 
 // VirtualModelCandidateAuthStyle 限制自定义上游能使用的认证头协议喵。
@@ -111,6 +112,32 @@ export async function replaceVirtualModelCandidates(
   input: VirtualModelCandidatesReplaceInput
 ): Promise<VirtualModelApiResponse<VirtualModel>> {
   const response = await api.put(`/api/virtual-models/${id}/candidates`, input)
+  return response.data
+}
+
+export type VirtualModelFailureRule = {
+  id?: number
+  http_status: number
+  error_class: string
+  body_regex: string
+  action: 'retry' | 'next' | 'freeze' | 'passthrough'
+  freeze_seconds: number
+}
+
+export type VirtualModelFailureRulesReplaceInput = {
+  version: number
+  rules: VirtualModelFailureRule[]
+}
+
+export async function replaceVirtualModelCandidateFailureRules(
+  modelID: number,
+  candidateID: number,
+  input: VirtualModelFailureRulesReplaceInput
+): Promise<VirtualModelApiResponse<VirtualModel>> {
+  const response = await api.put(
+    `/api/virtual-models/${modelID}/candidates/${candidateID}/failure-rules`,
+    input
+  )
   return response.data
 }
 
