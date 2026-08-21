@@ -22,6 +22,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 type ModelRequest struct {
@@ -40,7 +41,7 @@ func Distribute() func(c *gin.Context) {
 			return
 		}
 		if shouldSelectChannel && isVirtualModelRequest(modelRequest.Model) {
-			if !handleVirtualModelRequest(c, modelRequest.Model) {
+			if !handleVirtualModelRequest(c, modelRequest) {
 				return
 			}
 		}
@@ -187,14 +188,18 @@ func isVirtualModelRequest(modelName string) bool {
 	return strings.HasPrefix(strings.TrimSpace(modelName), "virtual/")
 }
 
-// handleVirtualModelRequest 验证虚拟模型授权并在执行器上线前安全拒绝数据面调用喵。
-func handleVirtualModelRequest(c *gin.Context, requestedModelName string) bool {
-	// 喵~防御：功能关闭时立即拒绝，避免控制面数据意外进入既有 Channel 分发链喵。
+// handleVirtualModelRequest 验证虚拟模型授权并将首个内部候选接入原生渠道分发喵。
+func handleVirtualModelRequest(c *gin.Context, modelRequest *ModelRequest) bool {
+	// 喵~防御：空请求对象或功能关闭时立即拒绝，避免控制面数据意外进入既有 Channel 分发链喵。
+	if modelRequest == nil {
+		abortWithOpenAiMessage(c, http.StatusBadRequest, "invalid virtual model request", types.ErrorCode("virtual_model_invalid_request"))
+		return false
+	}
 	if !model.VirtualModelFunctionEnabled() {
 		abortWithOpenAiMessage(c, http.StatusNotFound, "virtual model execution is disabled", types.ErrorCode("virtual_model_disabled"))
 		return false
 	}
-	normalizedName, normalizeError := model.NormalizeVirtualModelName(requestedModelName)
+	normalizedName, normalizeError := model.NormalizeVirtualModelName(modelRequest.Model)
 	// 喵~防御：无效名称不触发数据库查询，避免异常输入扩大资源占用或泄露校验细节喵。
 	if normalizeError != nil {
 		abortWithOpenAiMessage(c, http.StatusBadRequest, "invalid virtual model request", types.ErrorCode("virtual_model_invalid_request"))
@@ -208,9 +213,79 @@ func handleVirtualModelRequest(c *gin.Context, requestedModelName string) bool {
 		abortWithOpenAiMessage(c, http.StatusNotFound, "virtual model not found", types.ErrorCode("virtual_model_not_found"))
 		return false
 	}
-	// 喵~防御：执行器尚未完成时禁止继续普通 Channel 选路，避免请求错误发往无关上游喵。
-	abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
-	return false
+	internalCandidate, candidateError := model.GetFirstEnabledVirtualModelCandidate(virtualModel.ID)
+	// 喵~防御：首个启用候选不是内部候选时不越过其顺序选择后续候选，自定义候选执行器完成前安全拒绝喵。
+	if candidateError != nil || internalCandidate == nil || internalCandidate.SourceType != model.VirtualModelSourceInternal {
+		abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
+		return false
+	}
+	if !applyInternalVirtualModelCandidate(c, modelRequest, virtualModel.VirtualModelName(), internalCandidate) {
+		return false
+	}
+	return true
+}
+
+// applyInternalVirtualModelCandidate 将内部候选的真实模型和分组写入原生分发语义喵。
+func applyInternalVirtualModelCandidate(c *gin.Context, modelRequest *ModelRequest, virtualModelName string, candidate *model.VirtualModelInternalCandidateSnapshot) bool {
+	// 喵~防御：候选字段必须完整、分组不能使用 auto，避免虚拟模型绕过分组边界或递归路由喵。
+	if modelRequest == nil || candidate == nil || strings.TrimSpace(candidate.GroupName) == "" || candidate.GroupName == "auto" || strings.TrimSpace(candidate.RealModelName) == "" {
+		abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
+		return false
+	}
+	// 喵~防御：指定 Channel 与候选分组语义互斥，防止固定 Channel 绕过候选的安全选择边界喵。
+	if _, specificChannelRequested := common.GetContextKey(c, constant.ContextKeyTokenSpecificChannelId); specificChannelRequested {
+		abortWithOpenAiMessage(c, http.StatusBadRequest, "virtual models do not support a specific channel", types.ErrorCode("virtual_model_invalid_request"))
+		return false
+	}
+	// 喵~防御：候选模型仍需通过当前 Token 模型白名单，显式 API Key binding 不得绕过该既有限制喵。
+	if common.GetContextKeyBool(c, constant.ContextKeyTokenModelLimitEnabled) {
+		allowedModels, foundLimit := common.GetContextKey(c, constant.ContextKeyTokenModelLimit)
+		modelLimit, validLimit := allowedModels.(map[string]bool)
+		matchingModelName := ratio_setting.FormatMatchingModelName(candidate.RealModelName)
+		if !foundLimit || !validLimit || (!modelLimit[candidate.RealModelName] && !modelLimit[matchingModelName]) {
+			abortWithOpenAiMessage(c, http.StatusForbidden, "token does not have access to the virtual model candidate", types.ErrorCode("virtual_model_not_found"))
+			return false
+		}
+	}
+	// 喵~防御：候选分组必须属于当前 API Key 的可访问范围，避免私有模型升级调用方权限喵。
+	if !service.GetRequestUserGroupAccess(c).Allows(candidate.GroupName) {
+		abortWithOpenAiMessage(c, http.StatusForbidden, "token does not have access to the virtual model candidate group", types.ErrorCode("virtual_model_not_found"))
+		return false
+	}
+	// 保存公开虚拟名称供后续审计使用，同时将计费和原生 relay 基准改为真实模型喵。
+	common.SetContextKey(c, constant.ContextKeyVirtualModelName, virtualModelName)
+	common.SetContextKey(c, constant.ContextKeyOriginalModel, candidate.RealModelName)
+	common.SetContextKey(c, constant.ContextKeyTokenGroup, candidate.GroupName)
+	common.SetContextKey(c, constant.ContextKeyUsingGroup, candidate.GroupName)
+	common.SetContextKey(c, constant.ContextKeyInternalCandidateApplied, true)
+	if !replaceTopLevelRequestModel(c, candidate.RealModelName) {
+		abortWithOpenAiMessage(c, http.StatusBadRequest, "invalid virtual model request", types.ErrorCode("virtual_model_invalid_request"))
+		return false
+	}
+	modelRequest.Model = candidate.RealModelName
+	modelRequest.Group = candidate.GroupName
+	return true
+}
+
+// replaceTopLevelRequestModel 将 JSON 请求体的顶层 model 替换为内部候选真实模型喵。
+func replaceTopLevelRequestModel(c *gin.Context, realModelName string) bool {
+	// 喵~防御：仅接受 JSON 请求和非空真实模型，避免破坏 multipart、表单或空请求体喵。
+	if c == nil || c.Request == nil || !strings.HasPrefix(strings.ToLower(c.Request.Header.Get("Content-Type")), "application/json") || strings.TrimSpace(realModelName) == "" {
+		return false
+	}
+	bodyStorage, bodyError := common.GetBodyStorage(c)
+	if bodyError != nil {
+		return false
+	}
+	requestBody, bodyError := bodyStorage.Bytes()
+	if bodyError != nil || !gjson.ValidBytes(requestBody) {
+		return false
+	}
+	rewrittenBody, rewriteError := sjson.SetBytes(requestBody, "model", realModelName)
+	if rewriteError != nil {
+		return false
+	}
+	return common.ReplaceRequestBody(c, rewrittenBody) == nil
 }
 
 // channelSupportsRequestPath reports whether a channel can serve the request path.

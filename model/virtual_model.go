@@ -258,6 +258,32 @@ func GetEnabledVirtualModelByOwnerTokenName(ownerUserID int, tokenID int, normal
 	return virtualModel, queryError
 }
 
+// VirtualModelInternalCandidateSnapshot 保存候选执行所需的不可变基础字段喵。
+type VirtualModelInternalCandidateSnapshot struct {
+	CandidateID    int
+	VirtualModelID int
+	StableOrder    int
+	SourceType     VirtualModelSourceType
+	GroupName      string
+	RealModelName  string
+}
+
+// GetFirstEnabledVirtualModelCandidate 读取候选链首个启用候选，保持配置顺序的不可变选择语义喵。
+func GetFirstEnabledVirtualModelCandidate(virtualModelID int) (*VirtualModelInternalCandidateSnapshot, error) {
+	// 喵~防御：拒绝无效模型编号，避免候选查询退化为全表扫描喵。
+	if virtualModelID <= 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+	candidateSnapshot := &VirtualModelInternalCandidateSnapshot{}
+	queryError := DB.Model(&VirtualModelCandidate{}).
+		Select("virtual_model_candidates.id AS candidate_id, virtual_model_candidates.virtual_model_id, virtual_model_candidates.stable_order, virtual_model_candidates.source_type, virtual_model_internal_candidates.group_name, virtual_model_internal_candidates.real_model_name").
+		Joins("LEFT JOIN virtual_model_internal_candidates ON virtual_model_internal_candidates.candidate_id = virtual_model_candidates.id").
+		Where("virtual_model_candidates.virtual_model_id = ? AND virtual_model_candidates.enabled = ?", virtualModelID, true).
+		Order("virtual_model_candidates.stable_order ASC, virtual_model_candidates.id ASC").
+		First(candidateSnapshot).Error
+	return candidateSnapshot, queryError
+}
+
 // DeleteVirtualModelByOwner 在事务内删除所有关联数据并写入不可还原审计喵。
 func DeleteVirtualModelByOwner(virtualModelID int, ownerUserID int, operatorID int) error {
 	// 喵~防御：拒绝无效身份和资源编号，避免误删或全表操作喵。

@@ -107,3 +107,43 @@ func TestGetVirtualModelsByOwnerToken(t *testing.T) {
 	require.NoError(t, otherTokenError)
 	require.Empty(t, otherTokenModels)
 }
+
+// TestGetFirstEnabledVirtualModelCandidate 验证候选顺序和自定义候选阻断语义喵。
+func TestGetFirstEnabledVirtualModelCandidate(t *testing.T) {
+	// 使用独立内存数据库隔离候选顺序测试喵。
+	database, err := gorm.Open(sqlite.Open("file:virtual-model-candidate-test?mode=memory&cache=shared"), &gorm.Config{})
+	// 喵~防御：数据库初始化失败时终止测试，避免无效断言掩盖错误喵。
+	require.NoError(t, err)
+	// 保存并替换全局数据库连接，以覆盖实际查询函数喵。
+	originalDatabase := DB
+	DB = database
+	// 恢复数据库指针并释放临时连接，避免测试间资源泄漏喵。
+	t.Cleanup(func() {
+		DB = originalDatabase
+		sqlDatabase, closeError := database.DB()
+		if closeError == nil {
+			_ = sqlDatabase.Close()
+		}
+	})
+	// 创建候选顺序查询所需的表结构喵。
+	require.NoError(t, database.AutoMigrate(&VirtualModelCandidate{}, &VirtualModelInternalCandidate{}))
+	// 创建顺序靠前的自定义候选，验证不会跳过它选择后续内部候选喵。
+	customCandidate := VirtualModelCandidate{VirtualModelID: 91, StableOrder: 0, SourceType: VirtualModelSourceCustom, Enabled: true}
+	require.NoError(t, database.Create(&customCandidate).Error)
+	// 创建顺序靠后的内部候选及其目标分组和真实模型喵。
+	internalCandidate := VirtualModelCandidate{VirtualModelID: 91, StableOrder: 1, SourceType: VirtualModelSourceInternal, Enabled: true}
+	require.NoError(t, database.Create(&internalCandidate).Error)
+	require.NoError(t, database.Create(&VirtualModelInternalCandidate{CandidateID: internalCandidate.ID, GroupName: "default", RealModelName: "gpt-test"}).Error)
+	// 查询必须返回排序第一的自定义候选，供分发器安全拒绝而非越序执行喵。
+	candidateSnapshot, queryError := GetFirstEnabledVirtualModelCandidate(91)
+	require.NoError(t, queryError)
+	require.Equal(t, VirtualModelSourceCustom, candidateSnapshot.SourceType)
+	require.Empty(t, candidateSnapshot.GroupName)
+	// 禁用自定义候选后，查询应稳定返回下一个启用内部候选喵。
+	require.NoError(t, database.Model(&VirtualModelCandidate{}).Where("id = ?", customCandidate.ID).Update("enabled", false).Error)
+	candidateSnapshot, queryError = GetFirstEnabledVirtualModelCandidate(91)
+	require.NoError(t, queryError)
+	require.Equal(t, VirtualModelSourceInternal, candidateSnapshot.SourceType)
+	require.Equal(t, "default", candidateSnapshot.GroupName)
+	require.Equal(t, "gpt-test", candidateSnapshot.RealModelName)
+}

@@ -13,6 +13,8 @@ const (
 	// used for billing, logs, and retry accounting.
 	ContextKeySelectedModel    ContextKey = "selected_model"
 	ContextKeyRequestStartTime ContextKey = "request_start_time"
+	ContextKeyVirtualModelName         ContextKey = "virtual_model_name"
+	ContextKeyInternalCandidateApplied ContextKey = "virtual_model_internal_candidate_applied"
 
 	/* token related keys */
 	ContextKeyTokenUnlimited         ContextKey = "token_unlimited_quota"
