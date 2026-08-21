@@ -108,7 +108,80 @@ func TestGetVirtualModelsByOwnerToken(t *testing.T) {
 	require.Empty(t, otherTokenModels)
 }
 
-// TestGetFirstEnabledVirtualModelCandidate 验证候选顺序和自定义候选阻断语义喵。
+// TestVirtualModelAuthStyleNormalization 验证稳定控制面认证值与旧持久化值的兼容转换喵。
+func TestVirtualModelAuthStyleNormalization(t *testing.T) {
+	// 定义稳定 wire 值、旧数据库值和未知值，确保未知值绝不被错误降级喵。
+	testCases := []struct {
+		name        string
+		authStyle   VirtualModelAuthStyle
+		expected    VirtualModelAuthStyle
+		expectError bool
+	}{
+		{name: "bearer", authStyle: VirtualModelAuthBearer, expected: VirtualModelAuthBearer},
+		{name: "api key", authStyle: VirtualModelAuthAPIKey, expected: VirtualModelAuthAPIKey},
+		{name: "anthropic", authStyle: VirtualModelAuthAnthropic, expected: VirtualModelAuthAnthropic},
+		{name: "legacy api key", authStyle: virtualModelAuthLegacyAPIKey, expected: VirtualModelAuthAPIKey},
+		{name: "legacy anthropic", authStyle: virtualModelAuthLegacyAnthropic, expected: VirtualModelAuthAnthropic},
+		{name: "unknown", authStyle: "invalid", expectError: true},
+	}
+	// 逐项校验控制面输入的归一化行为喵。
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			normalizedAuthStyle, normalizeError := NormalizeVirtualModelAuthStyle(testCase.authStyle)
+			require.Equal(t, testCase.expectError, normalizeError != nil)
+			if !testCase.expectError {
+				require.Equal(t, testCase.expected, normalizedAuthStyle)
+			}
+		})
+	}
+	// 喵~防御：未知历史值必须原样留给执行层拒绝，不能凭猜测发送错误认证头喵。
+	require.Equal(t, VirtualModelAuthStyle("invalid"), VirtualModelAuthStyleFromStorage("invalid"))
+}
+
+// TestDeleteVirtualModelByOwnerWithVersion 验证硬删除释放同名资源并清理所有敏感关联配置喵。
+func TestDeleteVirtualModelByOwnerWithVersion(t *testing.T) {
+	// 使用独立内存数据库隔离硬删除与重建测试喵。
+	database, openError := gorm.Open(sqlite.Open("file:virtual-model-delete-test?mode=memory&cache=shared"), &gorm.Config{})
+	require.NoError(t, openError)
+	originalDatabase := DB
+	DB = database
+	t.Cleanup(func() {
+		DB = originalDatabase
+		sqlDatabase, databaseError := database.DB()
+		if databaseError == nil {
+			_ = sqlDatabase.Close()
+		}
+	})
+	// 创建删除路径依赖的全部关联表喵。
+	require.NoError(t, database.AutoMigrate(&VirtualModel{}, &VirtualModelCandidate{}, &VirtualModelInternalCandidate{}, &VirtualModelCustomCandidate{}, &VirtualModelFailureRule{}, &VirtualModelTokenBinding{}, &VirtualModelManualFreeze{}, &VirtualModelAuditLog{}))
+	virtualModel := VirtualModel{OwnerUserID: 7, NormalizedName: "reusable-name", DisplayName: "Reusable", Enabled: true, Version: 3, TotalTimeoutSeconds: 120, MaxLoopRounds: 1}
+	require.NoError(t, database.Create(&virtualModel).Error)
+	customCandidate := VirtualModelCandidate{VirtualModelID: virtualModel.ID, StableOrder: 0, SourceType: VirtualModelSourceCustom, Enabled: true, TimeoutSeconds: 60, Version: 1}
+	require.NoError(t, database.Create(&customCandidate).Error)
+	require.NoError(t, database.Create(&VirtualModelCustomCandidate{CandidateID: customCandidate.ID, EncryptedBaseURL: "encrypted-url", EncryptedAPIKey: "encrypted-key", CredentialVersion: 1, RealModelName: "custom", AuthStyle: VirtualModelAuthBearer}).Error)
+	require.NoError(t, database.Create(&VirtualModelFailureRule{CandidateID: customCandidate.ID, RuleOrder: 0, Action: VirtualModelActionNext}).Error)
+	require.NoError(t, database.Create(&VirtualModelManualFreeze{CandidateID: customCandidate.ID, OperatorID: 7, StartedAt: 1, ExpiresAt: 2}).Error)
+	require.NoError(t, database.Create(&VirtualModelTokenBinding{VirtualModelID: virtualModel.ID, TokenID: 11, OwnerUserID: 7}).Error)
+	// 喵~防御：陈旧版本不得删除模型或它的任何关联数据喵。
+	require.EqualError(t, DeleteVirtualModelByOwnerWithVersion(virtualModel.ID, 7, 7, 2), "virtual_model_version_conflict")
+	var preservedCandidateCount int64
+	require.NoError(t, database.Model(&VirtualModelCandidate{}).Where("id = ?", customCandidate.ID).Count(&preservedCandidateCount).Error)
+	require.Equal(t, int64(1), preservedCandidateCount)
+	// 使用精确版本删除后，所有关联数据和密文必须消失，而仅保留不可还原审计记录喵。
+	require.NoError(t, DeleteVirtualModelByOwnerWithVersion(virtualModel.ID, 7, 7, 3))
+	for _, table := range []any{&VirtualModel{}, &VirtualModelCandidate{}, &VirtualModelCustomCandidate{}, &VirtualModelFailureRule{}, &VirtualModelManualFreeze{}, &VirtualModelTokenBinding{}} {
+		var count int64
+		require.NoError(t, database.Model(table).Count(&count).Error)
+		require.Zero(t, count)
+	}
+	var auditCount int64
+	require.NoError(t, database.Model(&VirtualModelAuditLog{}).Where("virtual_model_id = ?", virtualModel.ID).Count(&auditCount).Error)
+	require.Equal(t, int64(1), auditCount)
+	// 喵~防御：硬删除后同一 owner 必须能够重建同名模型，验证唯一索引未被软删除行占用喵。
+	recreatedModel := VirtualModel{OwnerUserID: 7, NormalizedName: "reusable-name", DisplayName: "Recreated", Enabled: true, Version: 1, TotalTimeoutSeconds: 120, MaxLoopRounds: 1}
+	require.NoError(t, database.Create(&recreatedModel).Error)
+}
+
 func TestGetFirstEnabledVirtualModelCandidate(t *testing.T) {
 	// 使用独立内存数据库隔离候选顺序测试喵。
 	database, err := gorm.Open(sqlite.Open("file:virtual-model-candidate-test?mode=memory&cache=shared"), &gorm.Config{})

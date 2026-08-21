@@ -13,14 +13,18 @@ import { api } from '@/lib/api'
 import {
   createVirtualModel,
   deleteVirtualModel,
+  freezeVirtualModelCandidate,
   getVirtualModelStatus,
   getVirtualModels,
+  replaceVirtualModelCandidates,
+  replaceVirtualModelBindings,
+  unfreezeVirtualModelCandidate,
   updateVirtualModel,
 } from './api'
 
 // MockableApiClient 只声明本测试需要替换的 HTTP 方法，避免伪造完整 Axios 实例喵。
 type MockableApiClient = {
-  delete: (url: string) => Promise<{ data: unknown }>
+  delete: (url: string, config?: { data?: unknown }) => Promise<{ data: unknown }>
   get: (url: string) => Promise<{ data: unknown }>
   post: (url: string, payload: unknown) => Promise<{ data: unknown }>
   put: (url: string, payload: unknown) => Promise<{ data: unknown }>
@@ -95,6 +99,54 @@ describe('virtual model API', () => {
     expect(result.data?.enabled).toBe(false)
   })
 
+  test('replaces the entire candidate chain through the scoped endpoint', async () => {
+    const candidates = [
+      {
+        source_type: 'internal' as const,
+        enabled: true,
+        max_retries: 0,
+        timeout_seconds: 60,
+        group_name: 'default',
+        real_model_name: 'gpt-4.1-mini',
+      },
+      {
+        source_type: 'custom' as const,
+        enabled: true,
+        max_retries: 2,
+        timeout_seconds: 120,
+        base_url: 'https://api.example.com',
+        api_key: 'upstream-secret',
+        auth_style: 'bearer' as const,
+        real_model_name: 'gpt-4.1',
+      },
+    ]
+    const candidateInput = { version: 7, candidates }
+    // mock PUT 校验自定义候选凭据只随写入载荷传输，候选顺序与来源字段完整传递到版本化整体替换接口喵。
+    apiClient.put = async (url, payload) => {
+      expect(url).toBe('/api/virtual-models/21/candidates')
+      expect(payload).toEqual(candidateInput)
+      return { data: { success: true, data: { id: 21, ...modelInput, version: 2 } } }
+    }
+
+    const result = await replaceVirtualModelCandidates(21, candidateInput)
+
+    expect(result.data?.version).toBe(2)
+  })
+
+  test('replaces API Key bindings with the current optimistic-lock version', async () => {
+    const bindings = { token_ids: [4, 8], version: 7 }
+    // mock PUT 校验授权更新使用模型范围路径并携带 version 喵。
+    apiClient.put = async (url, payload) => {
+      expect(url).toBe('/api/virtual-models/21/key-bindings')
+      expect(payload).toEqual(bindings)
+      return { data: { success: true, data: { id: 21, ...modelInput, version: 8 } } }
+    }
+
+    const result = await replaceVirtualModelBindings(21, bindings)
+
+    expect(result.data?.version).toBe(8)
+  })
+
   test('loads runtime status for one virtual model', async () => {
     // mock GET 校验状态查询始终挂在指定模型下喵。
     apiClient.get = async (url) => {
@@ -102,24 +154,55 @@ describe('virtual model API', () => {
       return {
         data: {
           success: true,
-          data: { model: 'virtual/research-route', enabled: true, candidate_count: 2, available_candidates: 1 },
+          data: { model: 'virtual/research-route', enabled: true, candidate_count: 2, enabled_candidates: 1 },
         },
       }
     }
 
     const result = await getVirtualModelStatus(21)
 
-    expect(result.data?.available_candidates).toBe(1)
+    expect(result.data?.enabled_candidates).toBe(1)
+  })
+
+  test('freezes one candidate with an explicit future expiration timestamp', async () => {
+    const expiresAt = 1_900_000_000
+    const version = 7
+    // mock POST 校验冻结请求同时提交候选编号、到期时间和乐观锁版本喵。
+    apiClient.post = async (url, payload) => {
+      expect(url).toBe('/api/virtual-models/21/candidates/42/freeze')
+      expect(payload).toEqual({ expires_at: expiresAt, version })
+      return { data: { success: true, data: { candidate_id: 42, expires_at: expiresAt, version: 8 } } }
+    }
+
+    const result = await freezeVirtualModelCandidate(21, 42, expiresAt, version)
+
+    expect(result.data?.candidate_id).toBe(42)
+  })
+
+  test('unfreezes one candidate through its scoped resource endpoint', async () => {
+    const version = 7
+    // mock DELETE 校验解除冻结不会误删候选或请求模型级端点，并携带乐观锁版本喵。
+    apiClient.delete = async (url, config) => {
+      expect(url).toBe('/api/virtual-models/21/candidates/42/freeze')
+      expect(config).toEqual({ data: { version } })
+      return { data: { success: true, data: { candidate_id: 42, version: 8 } } }
+    }
+
+    const result = await unfreezeVirtualModelCandidate(21, 42, version)
+
+    expect(result.data?.candidate_id).toBe(42)
   })
 
   test('deletes a virtual model through its scoped resource endpoint', async () => {
-    // mock DELETE 校验删除不会错误请求列表端点喵。
-    apiClient.delete = async (url) => {
+    const version = 7
+    // mock DELETE 校验删除不会错误请求列表端点，并提交乐观锁版本喵。
+    apiClient.delete = async (url, config) => {
       expect(url).toBe('/api/virtual-models/21')
+      expect(config).toEqual({ data: { version } })
       return { data: { success: true, data: { id: 21 } } }
     }
 
-    const result = await deleteVirtualModel(21)
+    const result = await deleteVirtualModel(21, { version })
 
     expect(result.data?.id).toBe(21)
   })

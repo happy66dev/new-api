@@ -15,6 +15,8 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { getVirtualModelStatus, getVirtualModels } from '@/features/virtual-models/api'
+import { VirtualModelBindingsEditor } from '@/features/virtual-models/components/virtual-model-bindings-editor'
+import { VirtualModelCandidatesEditor } from '@/features/virtual-models/components/virtual-model-candidates-editor'
 import {
   VirtualModelDeleteDialog,
   VirtualModelMutateDialog,
@@ -117,17 +119,21 @@ export function VirtualModels() {
                   </div>
                 </TabsContent>
                 <TabsContent className='mt-4' value='candidates'>
-                  <div className='space-y-2 rounded-md border p-4'>
-                    {(selectedModel.candidates ?? []).map((candidate) => (
-                      <div className='flex flex-wrap items-center justify-between gap-2 border-b py-3 last:border-0' key={candidate.id}>
-                        <span>{candidate.group_name ? `${candidate.group_name} / ${candidate.real_model_name}` : candidate.source_type}</span>
-                        <Badge variant={candidate.enabled ? 'default' : 'secondary'}>{candidate.enabled ? t('Enabled') : t('Disabled')}</Badge>
-                      </div>
-                    ))}
-                  </div>
+                  <VirtualModelCandidatesEditor
+                    model={selectedModel}
+                    onSaved={() => {
+                      void virtualModelsQuery.refetch()
+                      void virtualModelStatusQuery.refetch()
+                    }}
+                  />
                 </TabsContent>
                 <TabsContent className='mt-4' value='bindings'>
-                  <div className='rounded-md border p-4 text-sm'>{t('Bound API Keys')}: {selectedModel.binding_token_ids?.length ?? 0}</div>
+                  <VirtualModelBindingsEditor
+                    model={selectedModel}
+                    onSaved={() => {
+                      void virtualModelsQuery.refetch()
+                    }}
+                  />
                 </TabsContent>
                 <TabsContent className='mt-4' value='status'>
                   <div className='space-y-3 rounded-md border p-4 text-sm'>
@@ -137,7 +143,7 @@ export function VirtualModels() {
                       <>
                         <p>{t('Enabled')}: {virtualModelStatus.enabled ? t('Yes') : t('No')}</p>
                         <p>{t('Candidate count')}: {virtualModelStatus.candidate_count}</p>
-                        <p>{t('Available candidates')}: {virtualModelStatus.available_candidates}</p>
+                        <p>{t('Enabled candidates')}: {virtualModelStatus.enabled_candidates}</p>
                       </>
                     )}
                     <Button size='sm' variant='outline' onClick={() => void virtualModelStatusQuery.refetch()}>{t('Refresh')}</Button>

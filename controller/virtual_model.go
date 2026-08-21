@@ -42,10 +42,27 @@ type virtualModelCandidateInput struct {
 	AuthStyle      model.VirtualModelAuthStyle  `json:"auth_style"`
 }
 
+// virtualModelCandidatesReplaceInput 描述带模型版本保护的候选链整体保存请求喵。
+type virtualModelCandidatesReplaceInput struct {
+	Version    int64                        `json:"version"`
+	Candidates []virtualModelCandidateInput `json:"candidates"`
+}
+
 // virtualModelBindingInput 描述当前用户 API Key 的授权关系喵。
 type virtualModelBindingInput struct {
 	TokenIDs []int `json:"token_ids"`
 	Version  int64 `json:"version"`
+}
+
+// virtualModelFreezeInput 描述带模型版本保护的手动冻结或解冻请求喵。
+type virtualModelFreezeInput struct {
+	ExpiresAt int64 `json:"expires_at"`
+	Version   int64 `json:"version"`
+}
+
+// virtualModelDeleteInput 描述带模型版本保护的删除请求喵。
+type virtualModelDeleteInput struct {
+	Version int64 `json:"version"`
 }
 
 // virtualModelNotFound 使用统一状态码和错误码阻止资源存在性泄露喵。
@@ -170,7 +187,7 @@ func saveVirtualModelFields(input virtualModelInput, ownerUserID int, existing *
 	if err != nil {
 		return err
 	}
-	if existing != nil && input.Version != 0 && input.Version != existing.Version {
+	if existing != nil && input.Version != existing.Version {
 		return fmt.Errorf("virtual_model_version_conflict")
 	}
 	existing.OwnerUserID = ownerUserID
@@ -241,7 +258,12 @@ func UpdateVirtualModel(c *gin.Context) {
 	}
 	// 喵~防御：在覆盖输入字段前保存数据库版本，避免乐观锁条件被请求体篡改喵。
 	existingVersion := virtualModel.Version
-	if input.Version != 0 && input.Version != existingVersion {
+	// 喵~防御：所有更新都必须携带读取版本，避免缺失版本的旧客户端无意覆盖新配置喵。
+	if input.Version <= 0 {
+		common.ApiError(c, errors.New("虚拟模型版本无效"))
+		return
+	}
+	if input.Version != existingVersion {
 		c.JSON(http.StatusConflict, gin.H{"success": false, "code": "virtual_model_version_conflict", "message": "虚拟模型已被其他请求修改"})
 		return
 	}
@@ -277,12 +299,31 @@ func DeleteVirtualModel(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, ok := loadOwnedVirtualModel(c, modelID); !ok {
+	virtualModel, ok := loadOwnedVirtualModel(c, modelID)
+	if !ok {
 		return
 	}
-	if err := model.DeleteVirtualModelByOwner(modelID, c.GetInt("id"), c.GetInt("id")); err != nil {
+	var input virtualModelDeleteInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	// 喵~防御：删除也必须比对版本，避免一个过期页面撤销其他配置修改喵。
+	if input.Version <= 0 {
+		common.ApiError(c, errors.New("虚拟模型版本无效"))
+		return
+	}
+	if input.Version != virtualModel.Version {
+		c.JSON(http.StatusConflict, gin.H{"success": false, "code": "virtual_model_version_conflict", "message": "虚拟模型已被其他请求修改"})
+		return
+	}
+	if err := model.DeleteVirtualModelByOwnerWithVersion(modelID, c.GetInt("id"), c.GetInt("id"), input.Version); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			virtualModelNotFound(c)
+			return
+		}
+		if err.Error() == "virtual_model_version_conflict" {
+			c.JSON(http.StatusConflict, gin.H{"success": false, "code": "virtual_model_version_conflict", "message": "虚拟模型已被其他请求修改"})
 			return
 		}
 		common.ApiError(c, err)
@@ -301,88 +342,92 @@ func ReplaceVirtualModelCandidates(c *gin.Context) {
 	if !ok {
 		return
 	}
-	var inputs []virtualModelCandidateInput
-	if err := c.ShouldBindJSON(&inputs); err != nil {
+	var input virtualModelCandidatesReplaceInput
+	if err := c.ShouldBindJSON(&input); err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	if len(inputs) == 0 || len(inputs) > 32 {
+	if input.Version <= 0 {
+		common.ApiError(c, errors.New("虚拟模型版本无效"))
+		return
+	}
+	if len(input.Candidates) == 0 || len(input.Candidates) > 32 {
 		common.ApiError(c, errors.New("候选链长度必须介于 1 和 32 之间"))
 		return
 	}
+	if input.Version != virtualModel.Version {
+		c.JSON(http.StatusConflict, gin.H{"success": false, "code": "virtual_model_version_conflict", "message": "虚拟模型已被其他请求修改"})
+		return
+	}
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
-		// 喵~防御：先通过版本条件锁定主模型，防止并发替换先删除旧链再发现版本冲突喵。
-		updateResult := tx.Model(&model.VirtualModel{}).Where("id = ? AND owner_user_id = ? AND version = ?", modelID, c.GetInt("id"), virtualModel.Version).Updates(map[string]any{"version": virtualModel.Version + 1, "updated_time": common.GetTimestamp()})
+		// 喵~防御：使用客户端读取的版本执行条件更新，避免陈旧候选链覆盖新的保存结果喵。
+		updateResult := tx.Model(&model.VirtualModel{}).Where("id = ? AND owner_user_id = ? AND version = ?", modelID, c.GetInt("id"), input.Version).Updates(map[string]any{"version": input.Version + 1, "updated_time": common.GetTimestamp()})
 		if updateResult.Error != nil {
 			return updateResult.Error
 		}
 		if updateResult.RowsAffected != 1 {
 			return errors.New("virtual_model_version_conflict")
 		}
-		var oldCandidateIDs []int
-		if err := tx.Model(&model.VirtualModelCandidate{}).Where("virtual_model_id = ?", modelID).Pluck("id", &oldCandidateIDs).Error; err != nil {
+		// 读取当前候选并建立编号索引，后续只允许更新属于当前模型的候选喵。
+		currentCandidates := make([]model.VirtualModelCandidate, 0)
+		if err := tx.Where("virtual_model_id = ?", modelID).Find(&currentCandidates).Error; err != nil {
 			return err
 		}
-		if len(oldCandidateIDs) > 0 {
-			if err := tx.Where("candidate_id IN ?", oldCandidateIDs).Delete(&model.VirtualModelFailureRule{}).Error; err != nil {
+		// 喵~防御：先将旧顺序整体移出目标范围，避免交换或插入排序时触发唯一索引的中间冲突喵。
+		if len(currentCandidates) > 0 {
+			if err := tx.Model(&model.VirtualModelCandidate{}).Where("virtual_model_id = ?", modelID).Update("stable_order", gorm.Expr("stable_order + ?", 1000000)).Error; err != nil {
 				return err
 			}
-			if err := tx.Where("candidate_id IN ?", oldCandidateIDs).Delete(&model.VirtualModelInternalCandidate{}).Error; err != nil {
-				return err
+			for candidateIndex := range currentCandidates {
+				currentCandidates[candidateIndex].StableOrder += 1000000
 			}
-			if err := tx.Where("candidate_id IN ?", oldCandidateIDs).Delete(&model.VirtualModelCustomCandidate{}).Error; err != nil {
-				return err
+		}
+		currentCandidatesByID := make(map[int]model.VirtualModelCandidate, len(currentCandidates))
+		for _, currentCandidate := range currentCandidates {
+			currentCandidatesByID[currentCandidate.ID] = currentCandidate
+		}
+		retainedCandidateIDs := make(map[int]struct{}, len(input.Candidates))
+		for candidateIndex, candidateInput := range input.Candidates {
+			// 喵~防御：同一候选不得在一次请求中出现两次，避免顺序和关联配置产生歧义喵。
+			if candidateInput.ID > 0 {
+				if _, duplicateCandidateID := retainedCandidateIDs[candidateInput.ID]; duplicateCandidateID {
+					return errors.New("候选编号重复")
+				}
+				retainedCandidateIDs[candidateInput.ID] = struct{}{}
 			}
-			if err := tx.Where("candidate_id IN ?", oldCandidateIDs).Delete(&model.VirtualModelManualFreeze{}).Error; err != nil {
+			if candidateInput.ID == 0 {
+				if err := createVirtualModelCandidateWithConfig(tx, modelID, candidateIndex, candidateInput); err != nil {
+					return err
+				}
+				continue
+			}
+			currentCandidate, candidateExists := currentCandidatesByID[candidateInput.ID]
+			// 喵~防御：候选 ID 必须归属当前模型，避免利用编号跨模型修改配置或凭据喵。
+			if !candidateExists {
+				return errors.New("虚拟模型候选不存在")
+			}
+			// 喵~防御：保留候选不可改变来源类型，避免规则与冻结在语义变化时错误继承喵。
+			if currentCandidate.SourceType != candidateInput.SourceType {
+				return errors.New("保留候选不能变更来源类型")
+			}
+			if err := updateVirtualModelCandidateWithConfig(tx, &currentCandidate, candidateIndex, candidateInput); err != nil {
 				return err
 			}
 		}
-		if err := tx.Where("virtual_model_id = ?", modelID).Delete(&model.VirtualModelCandidate{}).Error; err != nil {
+		removedCandidateIDs := make([]int, 0)
+		for _, currentCandidate := range currentCandidates {
+			if _, retainedCandidate := retainedCandidateIDs[currentCandidate.ID]; !retainedCandidate {
+				removedCandidateIDs = append(removedCandidateIDs, currentCandidate.ID)
+			}
+		}
+		if err := deleteVirtualModelCandidatesWithAssociations(tx, removedCandidateIDs); err != nil {
 			return err
 		}
-		for index, input := range inputs {
-			candidate := &model.VirtualModelCandidate{VirtualModelID: modelID, StableOrder: index, SourceType: input.SourceType, Enabled: input.Enabled, MaxRetries: input.MaxRetries, TimeoutSeconds: input.TimeoutSeconds, Version: 1, CreatedTime: common.GetTimestamp(), UpdatedTime: common.GetTimestamp()}
-			if err := model.ValidateVirtualModelCandidate(candidate); err != nil {
-				return err
-			}
-			if input.SourceType == model.VirtualModelSourceInternal && (strings.TrimSpace(input.GroupName) == "" || strings.TrimSpace(input.RealModelName) == "") {
-				return errors.New("内部候选必须提供分组和真实模型")
-			}
-			if input.SourceType == model.VirtualModelSourceCustom && (strings.TrimSpace(input.BaseURL) == "" || strings.TrimSpace(input.APIKey) == "" || strings.TrimSpace(input.RealModelName) == "") {
-				return errors.New("自定义候选必须提供地址、凭据和真实模型")
-			}
-			if err := tx.Create(candidate).Error; err != nil {
-				return err
-			}
-			if candidate.SourceType == model.VirtualModelSourceInternal {
-				internalCandidate := &model.VirtualModelInternalCandidate{CandidateID: candidate.ID, GroupName: strings.TrimSpace(input.GroupName), RealModelName: strings.TrimSpace(input.RealModelName)}
-				if err := tx.Create(internalCandidate).Error; err != nil {
-					return err
-				}
-			}
-			if candidate.SourceType == model.VirtualModelSourceCustom {
-				parsedURL, validateURLError := virtualmodelservice.ValidateCustomBaseURL(input.BaseURL)
-				if validateURLError != nil {
-					return validateURLError
-				}
-				encryptedBaseURL, credentialVersion, encryptBaseURLError := virtualmodelservice.EncryptCredential(parsedURL.String())
-				if encryptBaseURLError != nil {
-					return encryptBaseURLError
-				}
-				encryptedAPIKey, _, encryptAPIKeyError := virtualmodelservice.EncryptCredential(strings.TrimSpace(input.APIKey))
-				if encryptAPIKeyError != nil {
-					return encryptAPIKeyError
-				}
-				if input.AuthStyle != model.VirtualModelAuthBearer && input.AuthStyle != model.VirtualModelAuthAPIKey && input.AuthStyle != model.VirtualModelAuthAnthropic {
-					return errors.New("自定义候选认证方式无效")
-				}
-				customCandidate := &model.VirtualModelCustomCandidate{CandidateID: candidate.ID, EncryptedBaseURL: encryptedBaseURL, EncryptedAPIKey: encryptedAPIKey, CredentialVersion: credentialVersion, BaseURLSummary: virtualmodelservice.SummarizeCustomBaseURL(parsedURL), BaseURLFingerprint: virtualmodelservice.CredentialFingerprint(parsedURL.String()), APIKeyFingerprint: virtualmodelservice.CredentialFingerprint(strings.TrimSpace(input.APIKey)), RealModelName: strings.TrimSpace(input.RealModelName), AuthStyle: input.AuthStyle}
-				if err := tx.Create(customCandidate).Error; err != nil {
-					return err
-				}
-			}
+		// 喵~防御：默认 action 与摘要只含资源编号，审计中禁止写入 URL、API Key 或规则正文喵。
+		if err := tx.Create(&model.VirtualModelAuditLog{VirtualModelID: modelID, OwnerUserID: c.GetInt("id"), OperatorID: c.GetInt("id"), Action: "candidate_chain_replace", SummaryDigest: fmt.Sprintf("candidate_count:%d", len(input.Candidates)), CreatedTime: common.GetTimestamp()}).Error; err != nil {
+			return err
 		}
-		virtualModel.Version++
+		virtualModel.Version = input.Version + 1
 		virtualModel.UpdatedTime = common.GetTimestamp()
 		return nil
 	}); err != nil {
@@ -401,6 +446,183 @@ func ReplaceVirtualModelCandidates(c *gin.Context) {
 	common.ApiSuccess(c, response)
 }
 
+// createVirtualModelCandidateWithConfig 创建新候选及其来源专属配置，确保整个操作受调用方事务保护喵。
+func createVirtualModelCandidateWithConfig(tx *gorm.DB, virtualModelID int, stableOrder int, candidateInput virtualModelCandidateInput) error {
+	// 喵~防御：事务连接、模型编号和顺序无效时拒绝写入，避免脱离原子更新边界喵。
+	if tx == nil || virtualModelID <= 0 || stableOrder < 0 {
+		return errors.New("虚拟模型候选无效")
+	}
+	candidate := &model.VirtualModelCandidate{VirtualModelID: virtualModelID, StableOrder: stableOrder, SourceType: candidateInput.SourceType, Enabled: candidateInput.Enabled, MaxRetries: candidateInput.MaxRetries, TimeoutSeconds: candidateInput.TimeoutSeconds, Version: 1, CreatedTime: common.GetTimestamp(), UpdatedTime: common.GetTimestamp()}
+	// 喵~防御：在创建主候选行前校验来源专属字段，避免校验失败时留下孤立候选喵。
+	if err := validateVirtualModelCandidateSourceInput(candidate.SourceType, candidateInput, true); err != nil {
+		return err
+	}
+	if err := model.ValidateVirtualModelCandidate(candidate); err != nil {
+		return err
+	}
+	if err := tx.Create(candidate).Error; err != nil {
+		return err
+	}
+	return saveVirtualModelCandidateSourceConfig(tx, candidate, candidateInput, true)
+}
+
+// updateVirtualModelCandidateWithConfig 更新保留候选并保留不受本次修改影响的关联资源喵。
+func updateVirtualModelCandidateWithConfig(tx *gorm.DB, candidate *model.VirtualModelCandidate, stableOrder int, candidateInput virtualModelCandidateInput) error {
+	// 喵~防御：候选必须存在且归属有效模型，避免跨模型或零值更新喵。
+	if tx == nil || candidate == nil || candidate.ID <= 0 || candidate.VirtualModelID <= 0 || stableOrder < 0 {
+		return errors.New("虚拟模型候选无效")
+	}
+	// 喵~防御：来源专属字段先通过校验，避免更新通用候选后才发现来源配置非法喵。
+	if err := validateVirtualModelCandidateSourceInput(candidate.SourceType, candidateInput, false); err != nil {
+		return err
+	}
+	candidate.StableOrder = stableOrder
+	candidate.Enabled = candidateInput.Enabled
+	candidate.MaxRetries = candidateInput.MaxRetries
+	candidate.TimeoutSeconds = candidateInput.TimeoutSeconds
+	candidate.Version++
+	candidate.UpdatedTime = common.GetTimestamp()
+	if err := model.ValidateVirtualModelCandidate(candidate); err != nil {
+		return err
+	}
+	if err := tx.Model(&model.VirtualModelCandidate{}).Where("id = ? AND virtual_model_id = ?", candidate.ID, candidate.VirtualModelID).Select("stable_order", "enabled", "max_retries", "timeout_seconds", "version", "updated_time").Updates(candidate).Error; err != nil {
+		return err
+	}
+	return saveVirtualModelCandidateSourceConfig(tx, candidate, candidateInput, false)
+}
+
+// validateVirtualModelCandidateSourceInput 验证候选来源专属字段，避免写入主候选后才发现配置无法执行喵。
+func validateVirtualModelCandidateSourceInput(sourceType model.VirtualModelSourceType, candidateInput virtualModelCandidateInput, isNewCandidate bool) error {
+	// 喵~防御：内部候选必须有明确分组和真实模型，避免请求意外落入默认分组或空模型喵。
+	if sourceType == model.VirtualModelSourceInternal {
+		if strings.TrimSpace(candidateInput.GroupName) == "" || strings.TrimSpace(candidateInput.RealModelName) == "" {
+			return errors.New("内部候选必须提供分组和真实模型")
+		}
+		return nil
+	}
+	// 喵~防御：未知来源不接受任何配置，避免未经实现的执行分支进入数据面喵。
+	if sourceType != model.VirtualModelSourceCustom {
+		return errors.New("虚拟模型候选来源无效")
+	}
+	if strings.TrimSpace(candidateInput.RealModelName) == "" {
+		return errors.New("自定义候选必须提供真实模型")
+	}
+	baseURL := strings.TrimSpace(candidateInput.BaseURL)
+	// 喵~防御：已有候选可省略完整 URL 以保留服务端密文，避免脱敏摘要覆盖带路径的真实上游地址喵。
+	if baseURL == "" && !isNewCandidate {
+		if _, normalizeAuthError := model.NormalizeVirtualModelAuthStyle(candidateInput.AuthStyle); normalizeAuthError != nil {
+			return normalizeAuthError
+		}
+		return nil
+	}
+	if baseURL == "" {
+		return errors.New("自定义候选必须提供地址和真实模型")
+	}
+	if _, validateURLError := virtualmodelservice.ValidateCustomBaseURL(baseURL); validateURLError != nil {
+		return validateURLError
+	}
+	if _, normalizeAuthError := model.NormalizeVirtualModelAuthStyle(candidateInput.AuthStyle); normalizeAuthError != nil {
+		return normalizeAuthError
+	}
+	// 喵~防御：新自定义候选没有旧密文可保留，因此必须提交一次非空凭据喵。
+	if isNewCandidate && strings.TrimSpace(candidateInput.APIKey) == "" {
+		return errors.New("自定义候选必须提供地址、凭据和真实模型")
+	}
+	return nil
+}
+
+// saveVirtualModelCandidateSourceConfig 保存内部或自定义来源配置，新建自定义候选必须带凭据，保留候选可省略凭据喵。
+func saveVirtualModelCandidateSourceConfig(tx *gorm.DB, candidate *model.VirtualModelCandidate, candidateInput virtualModelCandidateInput, isNewCandidate bool) error {
+	// 喵~防御：候选来源和事务边界必须完整，避免创建孤立配置或以未知来源发送外部请求喵。
+	if tx == nil || candidate == nil || candidate.ID <= 0 {
+		return errors.New("虚拟模型候选无效")
+	}
+	if candidate.SourceType == model.VirtualModelSourceInternal {
+		if strings.TrimSpace(candidateInput.GroupName) == "" || strings.TrimSpace(candidateInput.RealModelName) == "" {
+			return errors.New("内部候选必须提供分组和真实模型")
+		}
+		// 喵~防御：保留候选保存也必须验证来源字段，防止直接调用本 helper 时绕过创建或更新入口喵。
+		if err := validateVirtualModelCandidateSourceInput(candidate.SourceType, candidateInput, isNewCandidate); err != nil {
+			return err
+		}
+		internalCandidate := &model.VirtualModelInternalCandidate{CandidateID: candidate.ID, GroupName: strings.TrimSpace(candidateInput.GroupName), RealModelName: strings.TrimSpace(candidateInput.RealModelName)}
+		return tx.Where("candidate_id = ?", candidate.ID).Assign(internalCandidate).FirstOrCreate(&model.VirtualModelInternalCandidate{}).Error
+	}
+	if candidate.SourceType != model.VirtualModelSourceCustom {
+		return errors.New("虚拟模型候选来源无效")
+	}
+	// 喵~防御：保存层再次验证自定义来源字段，避免未来调用方绕过入口校验写入不可执行凭据喵。
+	if err := validateVirtualModelCandidateSourceInput(candidate.SourceType, candidateInput, isNewCandidate); err != nil {
+		return err
+	}
+	customCandidate := &model.VirtualModelCustomCandidate{}
+	customCandidateQueryError := tx.Where("candidate_id = ?", candidate.ID).First(customCandidate).Error
+	if customCandidateQueryError != nil && !errors.Is(customCandidateQueryError, gorm.ErrRecordNotFound) {
+		return customCandidateQueryError
+	}
+	apiKey := strings.TrimSpace(candidateInput.APIKey)
+	baseURL := strings.TrimSpace(candidateInput.BaseURL)
+	// 喵~防御：保留候选省略地址时仅保留既有加密 URL，不用脱敏摘要重建或覆盖真正目标喵。
+	if baseURL != "" {
+		parsedURL, validateURLError := virtualmodelservice.ValidateCustomBaseURL(baseURL)
+		if validateURLError != nil {
+			return validateURLError
+		}
+		encryptedBaseURL, credentialVersion, encryptBaseURLError := virtualmodelservice.EncryptCredential(parsedURL.String())
+		if encryptBaseURLError != nil {
+			return encryptBaseURLError
+		}
+		customCandidate.EncryptedBaseURL = encryptedBaseURL
+		customCandidate.CredentialVersion = credentialVersion
+		customCandidate.BaseURLSummary = virtualmodelservice.SummarizeCustomBaseURL(parsedURL)
+		customCandidate.BaseURLFingerprint = virtualmodelservice.CredentialFingerprint(parsedURL.String())
+	}
+	normalizedAuthStyle, normalizeAuthError := model.NormalizeVirtualModelAuthStyle(candidateInput.AuthStyle)
+	if normalizeAuthError != nil {
+		return normalizeAuthError
+	}
+	customCandidate.CandidateID = candidate.ID
+	customCandidate.RealModelName = strings.TrimSpace(candidateInput.RealModelName)
+	customCandidate.AuthStyle = normalizedAuthStyle
+	if apiKey != "" {
+		encryptedAPIKey, _, encryptAPIKeyError := virtualmodelservice.EncryptCredential(apiKey)
+		if encryptAPIKeyError != nil {
+			return encryptAPIKeyError
+		}
+		customCandidate.EncryptedAPIKey = encryptedAPIKey
+		customCandidate.APIKeyFingerprint = virtualmodelservice.CredentialFingerprint(apiKey)
+	}
+	// 喵~防御：保留候选省略凭据时只有已存在密文才可保存，防止空凭据候选进入运行时喵。
+	if strings.TrimSpace(customCandidate.EncryptedAPIKey) == "" {
+		return errors.New("自定义候选必须提供地址、凭据和真实模型")
+	}
+	return tx.Where("candidate_id = ?", candidate.ID).Assign(customCandidate).FirstOrCreate(&model.VirtualModelCustomCandidate{}).Error
+}
+
+// deleteVirtualModelCandidatesWithAssociations 删除明确移除的候选及其规则、冻结和加密配置喵。
+func deleteVirtualModelCandidatesWithAssociations(tx *gorm.DB, candidateIDs []int) error {
+	// 喵~防御：空删除集合安全跳过，避免生成无条件关联删除喵。
+	if len(candidateIDs) == 0 {
+		return nil
+	}
+	if tx == nil {
+		return errors.New("虚拟模型数据库不可用")
+	}
+	if err := tx.Unscoped().Where("candidate_id IN ?", candidateIDs).Delete(&model.VirtualModelFailureRule{}).Error; err != nil {
+		return err
+	}
+	if err := tx.Unscoped().Where("candidate_id IN ?", candidateIDs).Delete(&model.VirtualModelInternalCandidate{}).Error; err != nil {
+		return err
+	}
+	if err := tx.Unscoped().Where("candidate_id IN ?", candidateIDs).Delete(&model.VirtualModelCustomCandidate{}).Error; err != nil {
+		return err
+	}
+	if err := tx.Unscoped().Where("candidate_id IN ?", candidateIDs).Delete(&model.VirtualModelManualFreeze{}).Error; err != nil {
+		return err
+	}
+	return tx.Unscoped().Where("id IN ?", candidateIDs).Delete(&model.VirtualModelCandidate{}).Error
+}
+
 // ReplaceVirtualModelBindings 原子替换当前用户 API Key 授权关系喵。
 func ReplaceVirtualModelBindings(c *gin.Context) {
 	modelID, ok := parseVirtualModelID(c)
@@ -414,6 +636,10 @@ func ReplaceVirtualModelBindings(c *gin.Context) {
 	var input virtualModelBindingInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		common.ApiError(c, err)
+		return
+	}
+	if input.Version <= 0 {
+		common.ApiError(c, errors.New("虚拟模型版本无效"))
 		return
 	}
 	seenTokenIDs := make(map[int]struct{}, len(input.TokenIDs))
@@ -477,7 +703,8 @@ func FreezeVirtualModelCandidate(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, ok := loadOwnedVirtualModel(c, modelID); !ok {
+	virtualModel, ok := loadOwnedVirtualModel(c, modelID)
+	if !ok {
 		return
 	}
 	candidateID, parseError := strconv.Atoi(c.Param("candidateId"))
@@ -485,28 +712,68 @@ func FreezeVirtualModelCandidate(c *gin.Context) {
 		virtualModelNotFound(c)
 		return
 	}
-	var candidate model.VirtualModelCandidate
-	if err := model.DB.Where("id = ? AND virtual_model_id = ?", candidateID, modelID).First(&candidate).Error; err != nil {
-		virtualModelNotFound(c)
-		return
-	}
-	var input struct {
-		ExpiresAt int64 `json:"expires_at"`
-	}
+	var input virtualModelFreezeInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	if input.ExpiresAt <= common.GetTimestamp() {
-		common.ApiError(c, errors.New("冻结到期时间必须晚于当前时间"))
+	currentTimestamp := common.GetTimestamp()
+	// 喵~防御：冻结必须携带当前版本并处于最多一天的未来时间窗内，避免长期不可用或陈旧覆盖喵。
+	if input.Version <= 0 {
+		common.ApiError(c, errors.New("虚拟模型版本无效"))
 		return
 	}
-	freeze := &model.VirtualModelManualFreeze{CandidateID: candidate.ID, OperatorID: c.GetInt("id"), StartedAt: common.GetTimestamp(), ExpiresAt: input.ExpiresAt}
-	if err := model.DB.Create(freeze).Error; err != nil {
+	if input.ExpiresAt <= currentTimestamp || input.ExpiresAt-currentTimestamp > 86400 {
+		common.ApiError(c, errors.New("冻结到期时间必须在未来 86400 秒内"))
+		return
+	}
+	if input.Version != virtualModel.Version {
+		c.JSON(http.StatusConflict, gin.H{"success": false, "code": "virtual_model_version_conflict", "message": "虚拟模型已被其他请求修改"})
+		return
+	}
+	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		var candidate model.VirtualModelCandidate
+		// 喵~防御：候选查询同时限制模型归属，避免跨模型候选被用户冻结喵。
+		if err := tx.Where("id = ? AND virtual_model_id = ?", candidateID, modelID).First(&candidate).Error; err != nil {
+			return gorm.ErrRecordNotFound
+		}
+		updateResult := tx.Model(&model.VirtualModel{}).Where("id = ? AND owner_user_id = ? AND version = ?", modelID, c.GetInt("id"), input.Version).Updates(map[string]any{"version": input.Version + 1, "updated_time": currentTimestamp})
+		if updateResult.Error != nil {
+			return updateResult.Error
+		}
+		if updateResult.RowsAffected != 1 {
+			return errors.New("virtual_model_version_conflict")
+		}
+		freeze := &model.VirtualModelManualFreeze{}
+		freezeQueryError := tx.Where("candidate_id = ?", candidate.ID).First(freeze).Error
+		if freezeQueryError != nil && !errors.Is(freezeQueryError, gorm.ErrRecordNotFound) {
+			return freezeQueryError
+		}
+		freeze.CandidateID = candidate.ID
+		freeze.OperatorID = c.GetInt("id")
+		freeze.StartedAt = currentTimestamp
+		freeze.ExpiresAt = input.ExpiresAt
+		if errors.Is(freezeQueryError, gorm.ErrRecordNotFound) {
+			if err := tx.Create(freeze).Error; err != nil {
+				return err
+			}
+		} else if err := tx.Save(freeze).Error; err != nil {
+			return err
+		}
+		return tx.Create(&model.VirtualModelAuditLog{VirtualModelID: modelID, OwnerUserID: c.GetInt("id"), OperatorID: c.GetInt("id"), Action: "manual_freeze", SummaryDigest: fmt.Sprintf("candidate:%d", candidateID), CreatedTime: currentTimestamp}).Error
+	}); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			virtualModelNotFound(c)
+			return
+		}
+		if err.Error() == "virtual_model_version_conflict" {
+			c.JSON(http.StatusConflict, gin.H{"success": false, "code": "virtual_model_version_conflict", "message": "虚拟模型已被其他请求修改"})
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"candidate_id": candidateID, "expires_at": input.ExpiresAt})
+	common.ApiSuccess(c, gin.H{"candidate_id": candidateID, "expires_at": input.ExpiresAt, "operator_id": c.GetInt("id"), "version": input.Version + 1})
 }
 
 // UnfreezeVirtualModelCandidate 解除当前用户模型候选的所有有效手动冻结喵。
@@ -515,7 +782,8 @@ func UnfreezeVirtualModelCandidate(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, ok := loadOwnedVirtualModel(c, modelID); !ok {
+	virtualModel, ok := loadOwnedVirtualModel(c, modelID)
+	if !ok {
 		return
 	}
 	candidateID, parseError := strconv.Atoi(c.Param("candidateId"))
@@ -523,16 +791,52 @@ func UnfreezeVirtualModelCandidate(c *gin.Context) {
 		virtualModelNotFound(c)
 		return
 	}
-	var candidate model.VirtualModelCandidate
-	if err := model.DB.Where("id = ? AND virtual_model_id = ?", candidateID, modelID).First(&candidate).Error; err != nil {
-		virtualModelNotFound(c)
-		return
-	}
-	if err := model.DB.Where("candidate_id = ?", candidate.ID).Delete(&model.VirtualModelManualFreeze{}).Error; err != nil {
+	var input virtualModelFreezeInput
+	if err := c.ShouldBindJSON(&input); err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"candidate_id": candidateID})
+	// 喵~防御：解冻必须携带当前版本，避免过期界面取消一个较新的冻结喵。
+	if input.Version <= 0 {
+		common.ApiError(c, errors.New("虚拟模型版本无效"))
+		return
+	}
+	if input.Version != virtualModel.Version {
+		c.JSON(http.StatusConflict, gin.H{"success": false, "code": "virtual_model_version_conflict", "message": "虚拟模型已被其他请求修改"})
+		return
+	}
+	currentTimestamp := common.GetTimestamp()
+	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		var candidate model.VirtualModelCandidate
+		// 喵~防御：候选查询同时限制模型归属，避免跨模型候选被用户解冻喵。
+		if err := tx.Where("id = ? AND virtual_model_id = ?", candidateID, modelID).First(&candidate).Error; err != nil {
+			return gorm.ErrRecordNotFound
+		}
+		updateResult := tx.Model(&model.VirtualModel{}).Where("id = ? AND owner_user_id = ? AND version = ?", modelID, c.GetInt("id"), input.Version).Updates(map[string]any{"version": input.Version + 1, "updated_time": currentTimestamp})
+		if updateResult.Error != nil {
+			return updateResult.Error
+		}
+		if updateResult.RowsAffected != 1 {
+			return errors.New("virtual_model_version_conflict")
+		}
+		if err := tx.Unscoped().Where("candidate_id = ?", candidate.ID).Delete(&model.VirtualModelManualFreeze{}).Error; err != nil {
+			return err
+		}
+		// 喵~防御：不存在冻结时仍视为幂等成功，使重复解冻不会泄漏状态或阻塞恢复流程喵。
+		return tx.Create(&model.VirtualModelAuditLog{VirtualModelID: modelID, OwnerUserID: c.GetInt("id"), OperatorID: c.GetInt("id"), Action: "manual_unfreeze", SummaryDigest: fmt.Sprintf("candidate:%d", candidateID), CreatedTime: currentTimestamp}).Error
+	}); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			virtualModelNotFound(c)
+			return
+		}
+		if err.Error() == "virtual_model_version_conflict" {
+			c.JSON(http.StatusConflict, gin.H{"success": false, "code": "virtual_model_version_conflict", "message": "虚拟模型已被其他请求修改"})
+			return
+		}
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"candidate_id": candidateID, "version": input.Version + 1})
 }
 
 // GetVirtualModelAuditLog 返回当前用户模型的脱敏操作摘要喵。
@@ -566,10 +870,10 @@ func GetVirtualModelStatus(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"model": virtualModel.VirtualModelName(), "enabled": virtualModel.Enabled, "candidate_count": len(candidates), "available_candidates": countEnabledVirtualCandidates(candidates)})
+	common.ApiSuccess(c, gin.H{"model": virtualModel.VirtualModelName(), "enabled": virtualModel.Enabled, "candidate_count": len(candidates), "enabled_candidates": countEnabledVirtualCandidates(candidates)})
 }
 
-// countEnabledVirtualCandidates 统计当前配置中启用的候选数量喵。
+// countEnabledVirtualCandidates 统计当前配置中启用而非实时健康的候选数量喵。
 func countEnabledVirtualCandidates(candidates []model.VirtualModelCandidate) int {
 	count := 0
 	for _, candidate := range candidates {

@@ -190,7 +190,7 @@ export function VirtualModelDeleteDialog({
     mutationFn: async () => {
       // 喵~防御：无选中模型时不产生删除请求，避免误删或路径零值错误喵。
       if (!model) throw new Error(t('Select a virtual model first'))
-      const response = await deleteVirtualModel(model.id)
+      const response = await deleteVirtualModel(model.id, { version: model.version })
       if (!response.success) throw new Error(response.message || t('Unable to delete virtual model'))
     },
     onSuccess: () => {

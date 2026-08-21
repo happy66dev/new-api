@@ -42,10 +42,14 @@ type VirtualModelAuthStyle string
 const (
 	// VirtualModelAuthBearer 表示使用 Authorization Bearer 认证喵。
 	VirtualModelAuthBearer VirtualModelAuthStyle = "bearer"
-	// VirtualModelAuthAPIKey 表示使用 x-api-key 认证喵。
-	VirtualModelAuthAPIKey VirtualModelAuthStyle = "x-api-key"
+	// VirtualModelAuthAPIKey 表示使用通用 x-api-key 认证喵。
+	VirtualModelAuthAPIKey VirtualModelAuthStyle = "api_key"
 	// VirtualModelAuthAnthropic 表示使用 Anthropic x-api-key 认证喵。
-	VirtualModelAuthAnthropic VirtualModelAuthStyle = "anthropic-x-api-key"
+	VirtualModelAuthAnthropic VirtualModelAuthStyle = "anthropic"
+	// virtualModelAuthLegacyAPIKey 保留已写入数据库的旧通用 API Key 枚举兼容性喵。
+	virtualModelAuthLegacyAPIKey VirtualModelAuthStyle = "x-api-key"
+	// virtualModelAuthLegacyAnthropic 保留已写入数据库的旧 Anthropic 枚举兼容性喵。
+	virtualModelAuthLegacyAnthropic VirtualModelAuthStyle = "anthropic-x-api-key"
 )
 
 // VirtualModel 保存用户私有虚拟模型的主配置喵。
@@ -152,6 +156,31 @@ type VirtualModelAuditLog struct {
 	Action         string `json:"action" gorm:"type:varchar(64);not null"`
 	SummaryDigest  string `json:"summary_digest" gorm:"type:varchar(128)"`
 	CreatedTime    int64  `json:"created_time" gorm:"bigint"`
+}
+
+// NormalizeVirtualModelAuthStyle 将控制面稳定认证值与历史持久化值统一为当前安全枚举喵。
+func NormalizeVirtualModelAuthStyle(authStyle VirtualModelAuthStyle) (VirtualModelAuthStyle, error) {
+	// 喵~防御：未知认证方式直接拒绝，避免请求在无认证或错误认证状态下泄漏到上游喵。
+	switch authStyle {
+	case VirtualModelAuthBearer:
+		return VirtualModelAuthBearer, nil
+	case VirtualModelAuthAPIKey, virtualModelAuthLegacyAPIKey:
+		return VirtualModelAuthAPIKey, nil
+	case VirtualModelAuthAnthropic, virtualModelAuthLegacyAnthropic:
+		return VirtualModelAuthAnthropic, nil
+	default:
+		return "", errors.New("自定义候选认证方式无效")
+	}
+}
+
+// VirtualModelAuthStyleFromStorage 读取历史数据库值时返回可执行的稳定认证方式喵。
+func VirtualModelAuthStyleFromStorage(authStyle VirtualModelAuthStyle) VirtualModelAuthStyle {
+	normalizedAuthStyle, normalizeError := NormalizeVirtualModelAuthStyle(authStyle)
+	// 喵~防御：异常的历史值保留原值，使执行层安全拒绝而不是错误降级认证方式喵。
+	if normalizeError != nil {
+		return authStyle
+	}
+	return normalizedAuthStyle
 }
 
 var virtualModelNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
@@ -337,6 +366,10 @@ func GetEnabledVirtualModelCandidateSnapshotsWithDB(database *gorm.DB, virtualMo
 		Where("virtual_model_candidates.virtual_model_id = ? AND virtual_model_candidates.enabled = ?", virtualModelID, true).
 		Order("virtual_model_candidates.stable_order ASC, virtual_model_candidates.id ASC").
 		Find(&candidateSnapshots).Error
+	// 喵~防御：历史数据库可能含旧认证枚举，读取时统一为稳定值以避免控制面回显内部实现细节喵。
+	for candidateIndex := range candidateSnapshots {
+		candidateSnapshots[candidateIndex].AuthStyle = VirtualModelAuthStyleFromStorage(candidateSnapshots[candidateIndex].AuthStyle)
+	}
 	return candidateSnapshots, queryError
 }
 
@@ -485,10 +518,10 @@ func ClearVirtualModelCustomFreezeState(ownerUserID int, identityDigest string, 
 	return ClearVirtualModelCustomFreezeStateWithDB(DB, ownerUserID, identityDigest, currentTimestamp)
 }
 
-// DeleteVirtualModelByOwner 在事务内删除所有关联数据并写入不可还原审计喵。
-func DeleteVirtualModelByOwner(virtualModelID int, ownerUserID int, operatorID int) error {
-	// 喵~防御：拒绝无效身份和资源编号，避免误删或全表操作喵。
-	if virtualModelID <= 0 || ownerUserID <= 0 || operatorID <= 0 {
+// DeleteVirtualModelByOwnerWithVersion 在版本匹配时事务删除所有关联数据并写入不可还原审计喵。
+func DeleteVirtualModelByOwnerWithVersion(virtualModelID int, ownerUserID int, operatorID int, expectedVersion int64) error {
+	// 喵~防御：无效身份、资源编号或版本拒绝执行，避免误删或陈旧页面删除新配置喵。
+	if virtualModelID <= 0 || ownerUserID <= 0 || operatorID <= 0 || expectedVersion <= 0 {
 		return gorm.ErrRecordNotFound
 	}
 	return DB.Transaction(func(tx *gorm.DB) error {
@@ -496,33 +529,60 @@ func DeleteVirtualModelByOwner(virtualModelID int, ownerUserID int, operatorID i
 		if err := tx.Where("id = ? AND owner_user_id = ?", virtualModelID, ownerUserID).First(virtualModel).Error; err != nil {
 			return gorm.ErrRecordNotFound
 		}
+		// 喵~防御：读取后再次比较事务内版本，确保删除不会覆盖在并发窗口内发生的配置更新喵。
+		if virtualModel.Version != expectedVersion {
+			return errors.New("virtual_model_version_conflict")
+		}
 		var candidateIDs []int
 		if err := tx.Model(&VirtualModelCandidate{}).Where("virtual_model_id = ?", virtualModelID).Pluck("id", &candidateIDs).Error; err != nil {
 			return err
 		}
 		if len(candidateIDs) > 0 {
-			if err := tx.Where("candidate_id IN ?", candidateIDs).Delete(&VirtualModelFailureRule{}).Error; err != nil {
+			if err := tx.Unscoped().Where("candidate_id IN ?", candidateIDs).Delete(&VirtualModelFailureRule{}).Error; err != nil {
 				return err
 			}
-			if err := tx.Where("candidate_id IN ?", candidateIDs).Delete(&VirtualModelInternalCandidate{}).Error; err != nil {
+			if err := tx.Unscoped().Where("candidate_id IN ?", candidateIDs).Delete(&VirtualModelInternalCandidate{}).Error; err != nil {
 				return err
 			}
-			if err := tx.Where("candidate_id IN ?", candidateIDs).Delete(&VirtualModelCustomCandidate{}).Error; err != nil {
+			// 喵~防御：自定义候选含加密密文，模型删除时必须硬删除，避免残留可被未来代码误解密喵。
+			if err := tx.Unscoped().Where("candidate_id IN ?", candidateIDs).Delete(&VirtualModelCustomCandidate{}).Error; err != nil {
 				return err
 			}
-			if err := tx.Where("candidate_id IN ?", candidateIDs).Delete(&VirtualModelManualFreeze{}).Error; err != nil {
+			if err := tx.Unscoped().Where("candidate_id IN ?", candidateIDs).Delete(&VirtualModelManualFreeze{}).Error; err != nil {
 				return err
 			}
-			if err := tx.Where("candidate_id IN ?", candidateIDs).Delete(&VirtualModelCandidate{}).Error; err != nil {
+			// 喵~防御：候选使用硬删除，避免软删除记录占用模型候选顺序唯一索引喵。
+			if err := tx.Unscoped().Where("id IN ?", candidateIDs).Delete(&VirtualModelCandidate{}).Error; err != nil {
 				return err
 			}
 		}
-		if err := tx.Where("virtual_model_id = ?", virtualModelID).Delete(&VirtualModelTokenBinding{}).Error; err != nil {
+		if err := tx.Unscoped().Where("virtual_model_id = ?", virtualModelID).Delete(&VirtualModelTokenBinding{}).Error; err != nil {
 			return err
 		}
 		if err := tx.Create(&VirtualModelAuditLog{VirtualModelID: virtualModelID, OwnerUserID: ownerUserID, OperatorID: operatorID, Action: "delete", SummaryDigest: fmt.Sprintf("model:%d", virtualModelID), CreatedTime: time.Now().Unix()}).Error; err != nil {
 			return err
 		}
-		return tx.Delete(virtualModel).Error
+		// 喵~防御：主模型必须通过版本条件实际删除，否则整个事务回滚，避免留下伪造的删除审计喵。
+		deleteResult := tx.Unscoped().Where("id = ? AND owner_user_id = ? AND version = ?", virtualModelID, ownerUserID, expectedVersion).Delete(&VirtualModel{})
+		if deleteResult.Error != nil {
+			return deleteResult.Error
+		}
+		if deleteResult.RowsAffected != 1 {
+			return errors.New("virtual_model_version_conflict")
+		}
+		return nil
 	})
+}
+
+// DeleteVirtualModelByOwner 在事务内删除所有关联数据并写入不可还原审计喵。
+func DeleteVirtualModelByOwner(virtualModelID int, ownerUserID int, operatorID int) error {
+	// 喵~防御：兼容旧调用方时先按当前版本读取再执行版本化删除，避免复制一套删除逻辑喵。
+	if virtualModelID <= 0 || ownerUserID <= 0 || operatorID <= 0 {
+		return gorm.ErrRecordNotFound
+	}
+	virtualModel := &VirtualModel{}
+	if err := DB.Where("id = ? AND owner_user_id = ?", virtualModelID, ownerUserID).First(virtualModel).Error; err != nil {
+		return gorm.ErrRecordNotFound
+	}
+	return DeleteVirtualModelByOwnerWithVersion(virtualModelID, ownerUserID, operatorID, virtualModel.Version)
 }
