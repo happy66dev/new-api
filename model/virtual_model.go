@@ -229,6 +229,35 @@ func GetVirtualModelByOwnerName(ownerUserID int, normalizedName string) (*Virtua
 	return virtualModel, err
 }
 
+// GetVirtualModelsByOwnerToken 查询当前用户通过指定 API Key 显式授权的启用模型喵。
+func GetVirtualModelsByOwnerToken(ownerUserID int, tokenID int) ([]VirtualModel, error) {
+	// 喵~防御：身份或 API Key 无效时拒绝执行无条件查询，避免越权读取喵。
+	if ownerUserID <= 0 || tokenID <= 0 {
+		return []VirtualModel{}, nil
+	}
+	virtualModels := make([]VirtualModel, 0)
+	queryError := DB.Model(&VirtualModel{}).
+		Joins("JOIN virtual_model_token_bindings ON virtual_model_token_bindings.virtual_model_id = virtual_models.id").
+		Where("virtual_models.owner_user_id = ? AND virtual_model_token_bindings.owner_user_id = ? AND virtual_model_token_bindings.token_id = ? AND virtual_models.enabled = ?", ownerUserID, ownerUserID, tokenID, true).
+		Order("virtual_models.normalized_name ASC").
+		Find(&virtualModels).Error
+	return virtualModels, queryError
+}
+
+// GetEnabledVirtualModelByOwnerTokenName 查询指定 API Key 可调用的单个启用虚拟模型喵。
+func GetEnabledVirtualModelByOwnerTokenName(ownerUserID int, tokenID int, normalizedName string) (*VirtualModel, error) {
+	// 喵~防御：拒绝无效身份、API Key 或模型名称，防止空条件命中资源喵。
+	if ownerUserID <= 0 || tokenID <= 0 || normalizedName == "" {
+		return nil, gorm.ErrRecordNotFound
+	}
+	virtualModel := &VirtualModel{}
+	queryError := DB.Model(&VirtualModel{}).
+		Joins("JOIN virtual_model_token_bindings ON virtual_model_token_bindings.virtual_model_id = virtual_models.id").
+		Where("virtual_models.owner_user_id = ? AND virtual_model_token_bindings.owner_user_id = ? AND virtual_model_token_bindings.token_id = ? AND virtual_models.enabled = ? AND virtual_models.normalized_name = ?", ownerUserID, ownerUserID, tokenID, true, normalizedName).
+		First(virtualModel).Error
+	return virtualModel, queryError
+}
+
 // DeleteVirtualModelByOwner 在事务内删除所有关联数据并写入不可还原审计喵。
 func DeleteVirtualModelByOwner(virtualModelID int, ownerUserID int, operatorID int) error {
 	// 喵~防御：拒绝无效身份和资源编号，避免误删或全表操作喵。

@@ -1,6 +1,12 @@
 package model
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/glebarez/sqlite"
+	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
+)
 
 // TestNormalizeVirtualModelName 验证虚拟模型名称的规范化和非法输入防御喵。
 func TestNormalizeVirtualModelName(t *testing.T) {
@@ -56,4 +62,48 @@ func TestValidateVirtualModelConfiguration(t *testing.T) {
 	if err := ValidateVirtualModelConfiguration(&invalidTimeout); err == nil {
 		t.Fatal("model with excessive timeout should be rejected")
 	}
+}
+
+// TestGetVirtualModelsByOwnerToken 验证用户和 API Key 双重隔离以及启用状态过滤喵。
+func TestGetVirtualModelsByOwnerToken(t *testing.T) {
+	// 使用独立内存数据库，避免测试污染真实数据库连接喵。
+	database, err := gorm.Open(sqlite.Open("file:virtual-model-query-test?mode=memory&cache=shared"), &gorm.Config{})
+	// 喵~防御：数据库初始化失败时立即终止测试，避免后续空指针或假阳性喵。
+	require.NoError(t, err)
+	// 保存全局数据库指针，测试结束后恢复调用方环境喵。
+	originalDatabase := DB
+	DB = database
+	// 恢复全局数据库指针并关闭临时连接，避免资源泄漏喵。
+	t.Cleanup(func() {
+		DB = originalDatabase
+		sqlDatabase, closeError := database.DB()
+		if closeError == nil {
+			_ = sqlDatabase.Close()
+		}
+	})
+	// 创建授权查询需要的两张表喵。
+	require.NoError(t, database.AutoMigrate(&VirtualModel{}, &VirtualModelTokenBinding{}))
+	// 插入当前用户授权且启用的模型作为正向样本喵。
+	enabledModel := VirtualModel{OwnerUserID: 7, NormalizedName: "enabled-model", DisplayName: "Enabled", Enabled: true}
+	require.NoError(t, database.Create(&enabledModel).Error)
+	require.NoError(t, database.Create(&VirtualModelTokenBinding{VirtualModelID: enabledModel.ID, TokenID: 11, OwnerUserID: 7}).Error)
+	// 插入停用模型，验证停用资源不会进入目录喵。
+	disabledModel := VirtualModel{OwnerUserID: 7, NormalizedName: "disabled-model", DisplayName: "Disabled", Enabled: false}
+	require.NoError(t, database.Create(&disabledModel).Error)
+	require.NoError(t, database.Create(&VirtualModelTokenBinding{VirtualModelID: disabledModel.ID, TokenID: 11, OwnerUserID: 7}).Error)
+	// 插入其他用户的同名授权，验证同名资源仍然保持用户隔离喵。
+	otherOwnerModel := VirtualModel{OwnerUserID: 8, NormalizedName: "other-model", DisplayName: "Other", Enabled: true}
+	require.NoError(t, database.Create(&otherOwnerModel).Error)
+	require.NoError(t, database.Create(&VirtualModelTokenBinding{VirtualModelID: otherOwnerModel.ID, TokenID: 11, OwnerUserID: 8}).Error)
+	// 查询当前用户和当前 API Key 的可调用模型喵。
+	virtualModels, queryError := GetVirtualModelsByOwnerToken(7, 11)
+	// 查询必须成功且只返回唯一的启用模型喵。
+	require.NoError(t, queryError)
+	require.Len(t, virtualModels, 1)
+	require.Equal(t, "enabled-model", virtualModels[0].NormalizedName)
+	// 使用其他 API Key 查询时不得返回当前绑定关系喵。
+	otherTokenModels, otherTokenError := GetVirtualModelsByOwnerToken(7, 12)
+	// 喵~防御：未绑定 API Key 应返回空集合而不是数据库错误喵。
+	require.NoError(t, otherTokenError)
+	require.Empty(t, otherTokenModels)
 }

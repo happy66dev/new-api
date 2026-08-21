@@ -39,6 +39,11 @@ func Distribute() func(c *gin.Context) {
 			abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidRequest, map[string]any{"Error": err.Error()}))
 			return
 		}
+		if shouldSelectChannel && isVirtualModelRequest(modelRequest.Model) {
+			if !handleVirtualModelRequest(c, modelRequest.Model) {
+				return
+			}
+		}
 		if ok {
 			id, err := strconv.Atoi(channelId.(string))
 			if err != nil {
@@ -175,6 +180,37 @@ func Distribute() func(c *gin.Context) {
 			service.RecordChannelAffinity(c, channel.Id)
 		}
 	}
+}
+
+// isVirtualModelRequest 判断请求模型是否进入独立虚拟模型命名空间喵。
+func isVirtualModelRequest(modelName string) bool {
+	return strings.HasPrefix(strings.TrimSpace(modelName), "virtual/")
+}
+
+// handleVirtualModelRequest 验证虚拟模型授权并在执行器上线前安全拒绝数据面调用喵。
+func handleVirtualModelRequest(c *gin.Context, requestedModelName string) bool {
+	// 喵~防御：功能关闭时立即拒绝，避免控制面数据意外进入既有 Channel 分发链喵。
+	if !model.VirtualModelFunctionEnabled() {
+		abortWithOpenAiMessage(c, http.StatusNotFound, "virtual model execution is disabled", types.ErrorCode("virtual_model_disabled"))
+		return false
+	}
+	normalizedName, normalizeError := model.NormalizeVirtualModelName(requestedModelName)
+	// 喵~防御：无效名称不触发数据库查询，避免异常输入扩大资源占用或泄露校验细节喵。
+	if normalizeError != nil {
+		abortWithOpenAiMessage(c, http.StatusBadRequest, "invalid virtual model request", types.ErrorCode("virtual_model_invalid_request"))
+		return false
+	}
+	ownerUserID := c.GetInt("id")
+	tokenID := common.GetContextKeyInt(c, constant.ContextKeyTokenId)
+	virtualModel, queryError := model.GetEnabledVirtualModelByOwnerTokenName(ownerUserID, tokenID, normalizedName)
+	// 喵~防御：未绑定、停用、跨用户和查询失败统一隐藏资源存在性，避免模型枚举喵。
+	if queryError != nil || virtualModel == nil {
+		abortWithOpenAiMessage(c, http.StatusNotFound, "virtual model not found", types.ErrorCode("virtual_model_not_found"))
+		return false
+	}
+	// 喵~防御：执行器尚未完成时禁止继续普通 Channel 选路，避免请求错误发往无关上游喵。
+	abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
+	return false
 }
 
 // channelSupportsRequestPath reports whether a channel can serve the request path.

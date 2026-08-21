@@ -180,6 +180,46 @@ func buildOpenAIModel(modelName string, ownerByModel map[string]string) dto.Open
 	return oaiModel
 }
 
+func buildVirtualOpenAIModel(virtualModel model.VirtualModel) dto.OpenAIModels {
+	// 喵~防御：虚拟模型目录只返回公开名称和固定归属，不暴露候选、用户或凭据字段喵。
+	createdTime := virtualModel.CreatedTime
+	if createdTime <= 0 {
+		createdTime = 1626777600
+	}
+	return dto.OpenAIModels{
+		Id:      virtualModel.VirtualModelName(),
+		Object:  "model",
+		Created: int(createdTime),
+		OwnedBy: "virtual",
+	}
+}
+
+// getTokenBoundVirtualModels 读取当前用户和 API Key 已明确授权的启用虚拟模型喵。
+func getTokenBoundVirtualModels(c *gin.Context) ([]model.VirtualModel, error) {
+	// 喵~防御：功能关闭时不读取虚拟模型，避免控制面部署影响既有模型目录喵。
+	if !model.VirtualModelFunctionEnabled() {
+		return []model.VirtualModel{}, nil
+	}
+	ownerUserID := c.GetInt("id")
+	tokenID := common.GetContextKeyInt(c, constant.ContextKeyTokenId)
+	return model.GetVirtualModelsByOwnerToken(ownerUserID, tokenID)
+}
+
+func buildVirtualAnthropicModel(virtualModel model.VirtualModel) dto.AnthropicModel {
+	// 喵~防御：Anthropic 目录同样只暴露公开模型名称，避免泄露内部配置喵。
+	createdTime := virtualModel.CreatedTime
+	if createdTime <= 0 {
+		createdTime = 1626777600
+	}
+	return dto.AnthropicModel{
+		ID:          virtualModel.VirtualModelName(),
+		CreatedAt:   time.Unix(createdTime, 0).UTC().Format(time.RFC3339),
+		DisplayName: virtualModel.DisplayName,
+		Type:        "model",
+	}
+}
+
+// modelListGroups 保存模型目录计算所需的用户组和 Token 组信息喵。
 type modelListGroups struct {
 	userGroup   string
 	tokenGroup  string
@@ -283,12 +323,35 @@ func ListModels(c *gin.Context, modelType int) {
 		}
 	}
 
+	boundVirtualModels, virtualModelError := getTokenBoundVirtualModels(c)
+	boundVirtualModelByName := make(map[string]model.VirtualModel, len(boundVirtualModels))
+	seenModelNames := make(map[string]struct{}, len(userModelNames)+len(boundVirtualModels))
+	for _, modelName := range userModelNames {
+		seenModelNames[modelName] = struct{}{}
+	}
+	if virtualModelError != nil {
+		common.SysLog(fmt.Sprintf("GetTokenBoundVirtualModels error: %v", virtualModelError))
+	} else {
+		for _, virtualModel := range boundVirtualModels {
+			virtualModelName := virtualModel.VirtualModelName()
+			boundVirtualModelByName[virtualModelName] = virtualModel
+			if _, alreadyIncluded := seenModelNames[virtualModelName]; !alreadyIncluded {
+				userModelNames = append(userModelNames, virtualModelName)
+				seenModelNames[virtualModelName] = struct{}{}
+			}
+		}
+	}
+
 	ownerByModel := map[string]string{}
 	if len(ownerGroups) > 0 {
 		ownerByModel = getPreferredModelOwners(userModelNames, ownerGroups)
 	}
 	userOpenAiModels := make([]dto.OpenAIModels, 0, len(userModelNames))
 	for _, modelName := range userModelNames {
+		if virtualModel, isVirtualModel := boundVirtualModelByName[modelName]; isVirtualModel {
+			userOpenAiModels = append(userOpenAiModels, buildVirtualOpenAIModel(virtualModel))
+			continue
+		}
 		userOpenAiModels = append(userOpenAiModels, buildOpenAIModel(modelName, ownerByModel))
 	}
 
@@ -358,8 +421,37 @@ func EnabledListModels(c *gin.Context) {
 }
 
 func RetrieveModel(c *gin.Context, modelType int) {
-	modelId := c.Param("model")
-	if aiModel, ok := openAIModelsMap[modelId]; ok {
+	modelID := strings.TrimPrefix(c.Param("model"), "/")
+	if strings.HasPrefix(modelID, "virtual/") {
+		// 喵~防御：功能关闭时不暴露虚拟模型存在性，保持数据面默认关闭喵。
+		if !model.VirtualModelFunctionEnabled() {
+			writeModelNotFound(c, modelID)
+			return
+		}
+		normalizedName, normalizeError := model.NormalizeVirtualModelName(modelID)
+		// 喵~防御：非法名称统一按不存在处理，避免将校验细节泄露给未授权调用方喵。
+		if normalizeError != nil {
+			writeModelNotFound(c, modelID)
+			return
+		}
+		ownerUserID := c.GetInt("id")
+		tokenID := common.GetContextKeyInt(c, constant.ContextKeyTokenId)
+		virtualModel, queryError := model.GetEnabledVirtualModelByOwnerTokenName(ownerUserID, tokenID, normalizedName)
+		// 喵~防御：未绑定、停用、跨用户和查询失败统一按不存在处理，防止资源枚举喵。
+		if queryError != nil || virtualModel == nil {
+			writeModelNotFound(c, modelID)
+			return
+		}
+		virtualOpenAIModel := buildVirtualOpenAIModel(*virtualModel)
+		switch modelType {
+		case constant.ChannelTypeAnthropic:
+			c.JSON(http.StatusOK, buildVirtualAnthropicModel(*virtualModel))
+		default:
+			c.JSON(http.StatusOK, virtualOpenAIModel)
+		}
+		return
+	}
+	if aiModel, ok := openAIModelsMap[modelID]; ok {
 		switch modelType {
 		case constant.ChannelTypeAnthropic:
 			c.JSON(200, dto.AnthropicModel{
@@ -371,15 +463,20 @@ func RetrieveModel(c *gin.Context, modelType int) {
 		default:
 			c.JSON(200, aiModel)
 		}
-	} else {
-		openAIError := types.OpenAIError{
-			Message: fmt.Sprintf("The model '%s' does not exist", modelId),
-			Type:    "invalid_request_error",
-			Param:   "model",
-			Code:    "model_not_found",
-		}
-		c.JSON(200, gin.H{
-			"error": openAIError,
-		})
+		return
 	}
+	writeModelNotFound(c, modelID)
+}
+
+// writeModelNotFound 复用既有模型详情错误协议，避免资源存在性泄露喵。
+func writeModelNotFound(c *gin.Context, modelID string) {
+	openAIError := types.OpenAIError{
+		Message: fmt.Sprintf("The model '%s' does not exist", modelID),
+		Type:    "invalid_request_error",
+		Param:   "model",
+		Code:    "model_not_found",
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"error": openAIError,
+	})
 }
