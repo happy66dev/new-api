@@ -285,6 +285,9 @@ func SetApiRouter(router *gin.Engine) {
 			virtualModelRoute.PUT("/:id/candidates", controller.ReplaceVirtualModelCandidates)
 			virtualModelRoute.PUT("/:id/key-bindings", controller.ReplaceVirtualModelBindings)
 			virtualModelRoute.GET("/:id/status", controller.GetVirtualModelStatus)
+			virtualModelRoute.POST("/:id/candidates/:candidateId/freeze", controller.FreezeVirtualModelCandidate)
+			virtualModelRoute.DELETE("/:id/candidates/:candidateId/freeze", controller.UnfreezeVirtualModelCandidate)
+			virtualModelRoute.GET("/:id/audit-log", controller.GetVirtualModelAuditLog)
 		}
 
 		tokenRoute := apiRouter.Group("/token")

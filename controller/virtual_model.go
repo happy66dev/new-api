@@ -452,7 +452,87 @@ func ReplaceVirtualModelBindings(c *gin.Context) {
 	common.ApiSuccess(c, response)
 }
 
-// GetVirtualModelStatus 返回候选的静态状态摘要，运行时指标将在执行器接入后补充喵。
+// FreezeVirtualModelCandidate 手动冻结当前用户拥有模型中的候选喵。
+func FreezeVirtualModelCandidate(c *gin.Context) {
+	modelID, ok := parseVirtualModelID(c)
+	if !ok {
+		return
+	}
+	if _, ok := loadOwnedVirtualModel(c, modelID); !ok {
+		return
+	}
+	candidateID, parseError := strconv.Atoi(c.Param("candidateId"))
+	if parseError != nil || candidateID <= 0 {
+		virtualModelNotFound(c)
+		return
+	}
+	var candidate model.VirtualModelCandidate
+	if err := model.DB.Where("id = ? AND virtual_model_id = ?", candidateID, modelID).First(&candidate).Error; err != nil {
+		virtualModelNotFound(c)
+		return
+	}
+	var input struct {
+		ExpiresAt int64 `json:"expires_at"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if input.ExpiresAt <= common.GetTimestamp() {
+		common.ApiError(c, errors.New("冻结到期时间必须晚于当前时间"))
+		return
+	}
+	freeze := &model.VirtualModelManualFreeze{CandidateID: candidate.ID, OperatorID: c.GetInt("id"), StartedAt: common.GetTimestamp(), ExpiresAt: input.ExpiresAt}
+	if err := model.DB.Create(freeze).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"candidate_id": candidateID, "expires_at": input.ExpiresAt})
+}
+
+// UnfreezeVirtualModelCandidate 解除当前用户模型候选的所有有效手动冻结喵。
+func UnfreezeVirtualModelCandidate(c *gin.Context) {
+	modelID, ok := parseVirtualModelID(c)
+	if !ok {
+		return
+	}
+	if _, ok := loadOwnedVirtualModel(c, modelID); !ok {
+		return
+	}
+	candidateID, parseError := strconv.Atoi(c.Param("candidateId"))
+	if parseError != nil || candidateID <= 0 {
+		virtualModelNotFound(c)
+		return
+	}
+	var candidate model.VirtualModelCandidate
+	if err := model.DB.Where("id = ? AND virtual_model_id = ?", candidateID, modelID).First(&candidate).Error; err != nil {
+		virtualModelNotFound(c)
+		return
+	}
+	if err := model.DB.Where("candidate_id = ?", candidate.ID).Delete(&model.VirtualModelManualFreeze{}).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"candidate_id": candidateID})
+}
+
+// GetVirtualModelAuditLog 返回当前用户模型的脱敏操作摘要喵。
+func GetVirtualModelAuditLog(c *gin.Context) {
+	modelID, ok := parseVirtualModelID(c)
+	if !ok {
+		return
+	}
+	if _, ok := loadOwnedVirtualModel(c, modelID); !ok {
+		return
+	}
+	var auditLogs []model.VirtualModelAuditLog
+	if err := model.DB.Where("virtual_model_id = ? AND owner_user_id = ?", modelID, c.GetInt("id")).Order("created_time desc").Limit(100).Find(&auditLogs).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, auditLogs)
+}
+
 func GetVirtualModelStatus(c *gin.Context) {
 	modelID, ok := parseVirtualModelID(c)
 	if !ok {
