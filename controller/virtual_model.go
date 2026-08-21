@@ -29,23 +29,40 @@ type virtualModelInput struct {
 
 // virtualModelCandidateInput 描述候选链编辑需要的非敏感字段喵。
 type virtualModelCandidateInput struct {
-	ID             int                          `json:"id"`
-	StableOrder    int                          `json:"stable_order"`
-	SourceType     model.VirtualModelSourceType `json:"source_type"`
-	Enabled        bool                         `json:"enabled"`
-	MaxRetries     int                          `json:"max_retries"`
-	TimeoutSeconds int                          `json:"timeout_seconds"`
-	GroupName      string                       `json:"group_name"`
-	RealModelName  string                       `json:"real_model_name"`
-	BaseURL        string                       `json:"base_url"`
-	APIKey         string                       `json:"api_key"`
-	AuthStyle      model.VirtualModelAuthStyle  `json:"auth_style"`
+	ID             int                            `json:"id"`
+	StableOrder    int                            `json:"stable_order"`
+	SourceType     model.VirtualModelSourceType   `json:"source_type"`
+	Enabled        bool                           `json:"enabled"`
+	MaxRetries     int                            `json:"max_retries"`
+	TimeoutSeconds int                            `json:"timeout_seconds"`
+	GroupName      string                         `json:"group_name"`
+	RealModelName  string                         `json:"real_model_name"`
+	BaseURL        string                         `json:"base_url"`
+	APIKey         string                         `json:"api_key"`
+	AuthStyle      model.VirtualModelAuthStyle    `json:"auth_style"`
+	FailureRules   []virtualModelFailureRuleInput `json:"failure_rules,omitempty"`
 }
 
 // virtualModelCandidatesReplaceInput 描述带模型版本保护的候选链整体保存请求喵。
 type virtualModelCandidatesReplaceInput struct {
 	Version    int64                        `json:"version"`
 	Candidates []virtualModelCandidateInput `json:"candidates"`
+}
+
+// virtualModelFailureRuleInput 描述一个候选失败规则的可编辑字段喵。
+type virtualModelFailureRuleInput struct {
+	ID            int                             `json:"id"`
+	HTTPStatus    int                             `json:"http_status"`
+	ErrorClass    string                          `json:"error_class"`
+	BodyRegex     string                          `json:"body_regex"`
+	Action        model.VirtualModelFailureAction `json:"action"`
+	FreezeSeconds int                             `json:"freeze_seconds"`
+}
+
+// virtualModelFailureRulesReplaceInput 描述候选失败规则的版本化整体替换请求喵。
+type virtualModelFailureRulesReplaceInput struct {
+	Version int64                          `json:"version"`
+	Rules   []virtualModelFailureRuleInput `json:"rules"`
 }
 
 // virtualModelBindingInput 描述当前用户 API Key 的授权关系喵。
@@ -130,6 +147,9 @@ func buildVirtualModelResponse(virtualModel *model.VirtualModel) (*virtualModelR
 			candidateResponse.BaseURL = customCandidate.BaseURLSummary
 			// 喵~防御：历史认证枚举不得回显为旧内部值，控制面只输出稳定 wire value 喵。
 			candidateResponse.AuthStyle = model.VirtualModelAuthStyleFromStorage(customCandidate.AuthStyle)
+		}
+		if err := model.DB.Where("candidate_id = ?", candidate.ID).Order("rule_order asc, id asc").Find(&candidateResponse.FailureRules).Error; err != nil {
+			return nil, err
 		}
 		candidateResponses = append(candidateResponses, candidateResponse)
 	}
@@ -622,6 +642,82 @@ func deleteVirtualModelCandidatesWithAssociations(tx *gorm.DB, candidateIDs []in
 		return err
 	}
 	return tx.Unscoped().Where("id IN ?", candidateIDs).Delete(&model.VirtualModelCandidate{}).Error
+}
+
+// ReplaceVirtualModelCandidateFailureRules 原子替换一个候选的排序失败规则，并通过父模型版本避免并发覆盖喵。
+func ReplaceVirtualModelCandidateFailureRules(c *gin.Context) {
+	// 喵~防御：路径模型与候选编号非法时统一返回资源不存在，避免越权枚举喵。
+	modelID, validModelID := parseVirtualModelID(c)
+	if !validModelID {
+		return
+	}
+	candidateID, candidateIDError := strconv.Atoi(c.Param("candidateId"))
+	if candidateIDError != nil || candidateID <= 0 {
+		virtualModelNotFound(c)
+		return
+	}
+	var input virtualModelFailureRulesReplaceInput
+	// 喵~防御：请求体格式错误时拒绝写入，避免零值规则覆盖现有故障策略喵。
+	if bindError := c.ShouldBindJSON(&input); bindError != nil || input.Version <= 0 || len(input.Rules) > 32 {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "code": "virtual_model_invalid_request", "message": "虚拟模型失败规则请求无效"})
+		return
+	}
+	virtualModel, foundModel := loadOwnedVirtualModel(c, modelID)
+	if !foundModel {
+		return
+	}
+	if input.Version != virtualModel.Version {
+		c.JSON(http.StatusConflict, gin.H{"success": false, "code": "virtual_model_version_conflict", "message": "虚拟模型已被其他请求修改"})
+		return
+	}
+	transactionError := model.DB.Transaction(func(transactionDatabase *gorm.DB) error {
+		candidate := &model.VirtualModelCandidate{}
+		// 喵~防御：候选查询同时限制当前模型归属，防止用户借路径参数覆盖其他模型候选规则喵。
+		if candidateError := transactionDatabase.Where("id = ? AND virtual_model_id = ?", candidateID, modelID).First(candidate).Error; candidateError != nil {
+			return gorm.ErrRecordNotFound
+		}
+		// 喵~防御：确认候选存在后才推进父模型版本，避免无效候选请求无谓制造版本冲突喵。
+		updateResult := transactionDatabase.Model(&model.VirtualModel{}).Where("id = ? AND owner_user_id = ? AND version = ?", modelID, c.GetInt("id"), input.Version).Updates(map[string]any{"version": input.Version + 1, "updated_time": common.GetTimestamp()})
+		if updateResult.Error != nil {
+			return updateResult.Error
+		}
+		if updateResult.RowsAffected != 1 {
+			return errors.New("virtual_model_version_conflict")
+		}
+		// 喵~防御：先硬删除旧规则再按请求顺序创建，避免中间排序唯一约束冲突或遗留失效规则喵。
+		if deleteError := transactionDatabase.Unscoped().Where("candidate_id = ?", candidateID).Delete(&model.VirtualModelFailureRule{}).Error; deleteError != nil {
+			return deleteError
+		}
+		for ruleOrder, ruleInput := range input.Rules {
+			failureRule := &model.VirtualModelFailureRule{CandidateID: candidateID, RuleOrder: ruleOrder, HTTPStatus: ruleInput.HTTPStatus, ErrorClass: strings.TrimSpace(ruleInput.ErrorClass), BodyRegex: strings.TrimSpace(ruleInput.BodyRegex), Action: ruleInput.Action, FreezeSeconds: ruleInput.FreezeSeconds}
+			if validateError := virtualmodelservice.ValidateCandidateFailureRule(failureRule); validateError != nil {
+				return validateError
+			}
+			if createError := transactionDatabase.Create(failureRule).Error; createError != nil {
+				return createError
+			}
+		}
+		return transactionDatabase.Create(&model.VirtualModelAuditLog{VirtualModelID: modelID, OwnerUserID: c.GetInt("id"), OperatorID: c.GetInt("id"), Action: "failure_rule_replace", SummaryDigest: fmt.Sprintf("candidate:%d;rules:%d", candidateID, len(input.Rules)), CreatedTime: common.GetTimestamp()}).Error
+	})
+	if transactionError != nil {
+		if transactionError.Error() == "virtual_model_version_conflict" {
+			c.JSON(http.StatusConflict, gin.H{"success": false, "code": "virtual_model_version_conflict", "message": "虚拟模型已被其他请求修改"})
+			return
+		}
+		if errors.Is(transactionError, gorm.ErrRecordNotFound) {
+			virtualModelNotFound(c)
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "code": "virtual_model_invalid_request", "message": transactionError.Error()})
+		return
+	}
+	virtualModel.Version = input.Version + 1
+	response, responseError := buildVirtualModelResponse(virtualModel)
+	if responseError != nil {
+		common.ApiError(c, responseError)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": response})
 }
 
 // ReplaceVirtualModelBindings 原子替换当前用户 API Key 授权关系喵。
