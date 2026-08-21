@@ -128,7 +128,8 @@ func buildVirtualModelResponse(virtualModel *model.VirtualModel) (*virtualModelR
 			}
 			candidateResponse.RealModelName = customCandidate.RealModelName
 			candidateResponse.BaseURL = customCandidate.BaseURLSummary
-			candidateResponse.AuthStyle = customCandidate.AuthStyle
+			// 喵~防御：历史认证枚举不得回显为旧内部值，控制面只输出稳定 wire value 喵。
+			candidateResponse.AuthStyle = model.VirtualModelAuthStyleFromStorage(customCandidate.AuthStyle)
 		}
 		candidateResponses = append(candidateResponses, candidateResponse)
 	}
