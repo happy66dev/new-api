@@ -432,11 +432,20 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 			AuthStyle:      candidate.AuthStyle,
 			TimeoutSeconds: candidate.TimeoutSeconds,
 		})
-		// 成功响应已由透传器直接写出，此时清除历史冻结状态并中止后续 controller relay 喵。
+		// 成功响应已由透传器直接写出，此时仅清除请求开始前已观察到的历史冻结并中止后续 controller relay 喵。
 		if executionError == nil {
 			identityDigest := virtualmodelservice.CustomCandidateIdentityDigest(*candidate)
-			// 喵~防御：清除冻结状态失败不影响已提交成功响应，仅保留后续请求可能继续跳过该候选的保守状态喵。
-			_ = model.ClearVirtualModelCustomFreezeState(c.GetInt("id"), identityDigest, common.GetTimestamp())
+			// 喵~防御：只清除请求开始时观察到的历史冻结，避免并发失败请求写入的新冻结被成功响应误删喵。
+			expectedUpdatedTime := int64(0)
+			if executionState, foundState := getVirtualModelExecutionState(c); foundState {
+				if freezeState, foundFreezeState := executionState.automaticFreezeStatesByIdentity[identityDigest]; foundFreezeState {
+					expectedUpdatedTime = freezeState.UpdatedTime
+				}
+			}
+			if expectedUpdatedTime > 0 {
+				// 喵~防御：冻结清理失败不影响已提交成功响应，仅保留后续请求可能继续跳过该候选的保守状态喵。
+				_ = model.ClearVirtualModelCustomFreezeState(c.GetInt("id"), identityDigest, expectedUpdatedTime, common.GetTimestamp())
+			}
 			c.Abort()
 			return false
 		}

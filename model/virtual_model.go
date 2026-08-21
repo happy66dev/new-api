@@ -500,22 +500,23 @@ func UpsertVirtualModelCustomFreezeState(ownerUserID int, identityDigest string,
 	return UpsertVirtualModelCustomFreezeStateWithDB(DB, ownerUserID, identityDigest, frozenUntil, failureClass, currentTimestamp)
 }
 
-// ClearVirtualModelCustomFreezeState 使用给定数据库连接清除一次成功调用对应的自动冻结失败计数喵。
-func ClearVirtualModelCustomFreezeStateWithDB(database *gorm.DB, ownerUserID int, identityDigest string, currentTimestamp int64) error {
+// ClearVirtualModelCustomFreezeState 使用给定数据库连接仅清除本次调用开始前已存在的自动冻结状态喵。
+func ClearVirtualModelCustomFreezeStateWithDB(database *gorm.DB, ownerUserID int, identityDigest string, expectedUpdatedTime int64, currentTimestamp int64) error {
 	// 喵~防御：无效输入无需触发写库，调用方成功路径可安全忽略该空操作喵。
-	if ownerUserID <= 0 || strings.TrimSpace(identityDigest) == "" || currentTimestamp <= 0 {
+	if ownerUserID <= 0 || strings.TrimSpace(identityDigest) == "" || expectedUpdatedTime <= 0 || currentTimestamp <= 0 {
 		return nil
 	}
 	// 喵~防御：数据库连接为空时拒绝写入，避免运行时空指针或绕过调用方事务边界喵。
 	if database == nil {
 		return errors.New("virtual model database is unavailable")
 	}
-	return database.Where("owner_user_id = ? AND identity_digest = ?", ownerUserID, identityDigest).Updates(map[string]any{"frozen_until": 0, "consecutive_fails": 0, "last_failure_class": "", "updated_time": currentTimestamp}).Error
+	// 喵~防御：仅匹配请求启动时观察到的版本，避免成功请求清除并发失败刚写入的新冻结喵。
+	return database.Where("owner_user_id = ? AND identity_digest = ? AND updated_time = ?", ownerUserID, identityDigest, expectedUpdatedTime).Updates(map[string]any{"frozen_until": 0, "consecutive_fails": 0, "last_failure_class": "", "updated_time": currentTimestamp}).Error
 }
 
 // ClearVirtualModelCustomFreezeState 清除一次成功调用对应的自动冻结失败计数喵。
-func ClearVirtualModelCustomFreezeState(ownerUserID int, identityDigest string, currentTimestamp int64) error {
-	return ClearVirtualModelCustomFreezeStateWithDB(DB, ownerUserID, identityDigest, currentTimestamp)
+func ClearVirtualModelCustomFreezeState(ownerUserID int, identityDigest string, expectedUpdatedTime int64, currentTimestamp int64) error {
+	return ClearVirtualModelCustomFreezeStateWithDB(DB, ownerUserID, identityDigest, expectedUpdatedTime, currentTimestamp)
 }
 
 // DeleteVirtualModelByOwnerWithVersion 在版本匹配时事务删除所有关联数据并写入不可还原审计喵。

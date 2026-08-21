@@ -78,7 +78,16 @@ func TestVirtualModelRuntimeSnapshotQueries(t *testing.T) {
 	require.Equal(t, int64(200), automaticFreezeStates["identity-one"].FrozenUntil)
 	require.Equal(t, 1, automaticFreezeStates["identity-one"].ConsecutiveFails)
 	// 成功候选清理后，自动冻结查询不得继续返回已恢复身份喵。
-	require.NoError(t, ClearVirtualModelCustomFreezeStateWithDB(database, 7, "identity-one", 101))
+	require.NoError(t, ClearVirtualModelCustomFreezeStateWithDB(database, 7, "identity-one", 100, 101))
+	automaticFreezeStates, automaticFreezeError = GetVirtualModelCustomFreezeStatesWithDB(database, 7, []string{"identity-one"}, 101)
+	require.NoError(t, automaticFreezeError)
+	require.Empty(t, automaticFreezeStates)
+
+	require.NoError(t, UpsertVirtualModelCustomFreezeStateWithDB(database, 7, "identity-one", 300, "rate_limited", 102))
+	require.NoError(t, ClearVirtualModelCustomFreezeStateWithDB(database, 7, "identity-one", 100, 103))
+	automaticFreezeStates, automaticFreezeError = GetVirtualModelCustomFreezeStatesWithDB(database, 7, []string{"identity-one"}, 103)
+	require.NoError(t, automaticFreezeError)
+	require.Contains(t, automaticFreezeStates, "identity-one")
 	automaticFreezeStates, automaticFreezeError = GetVirtualModelCustomFreezeStatesWithDB(database, 7, []string{"identity-one"}, 101)
 	require.NoError(t, automaticFreezeError)
 	require.Empty(t, automaticFreezeStates)
