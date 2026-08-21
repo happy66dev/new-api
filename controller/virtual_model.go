@@ -417,7 +417,21 @@ func ReplaceVirtualModelBindings(c *gin.Context) {
 		return
 	}
 	seenTokenIDs := make(map[int]struct{}, len(input.TokenIDs))
+	existingVersion := virtualModel.Version
+	// 喵~防御：请求版本不匹配时在删除旧绑定前拒绝，避免过期请求破坏较新授权关系喵。
+	if input.Version != existingVersion {
+		c.JSON(http.StatusConflict, gin.H{"success": false, "code": "virtual_model_version_conflict", "message": "虚拟模型已被其他请求修改"})
+		return
+	}
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		// 喵~防御：先条件推进版本再变更绑定，保证并发过期写入会整体回滚喵。
+		updateResult := tx.Model(&model.VirtualModel{}).Where("id = ? AND owner_user_id = ? AND version = ?", modelID, c.GetInt("id"), existingVersion).Updates(map[string]any{"version": existingVersion + 1, "updated_time": common.GetTimestamp()})
+		if updateResult.Error != nil {
+			return updateResult.Error
+		}
+		if updateResult.RowsAffected != 1 {
+			return errors.New("virtual_model_version_conflict")
+		}
 		if err := tx.Where("virtual_model_id = ? AND owner_user_id = ?", modelID, c.GetInt("id")).Delete(&model.VirtualModelTokenBinding{}).Error; err != nil {
 			return err
 		}
@@ -437,10 +451,15 @@ func ReplaceVirtualModelBindings(c *gin.Context) {
 				return err
 			}
 		}
-		virtualModel.Version++
+		// 同步内存对象版本供响应 DTO 使用；数据库版本已由事务起始的条件更新原子推进喵。
+		virtualModel.Version = existingVersion + 1
 		virtualModel.UpdatedTime = common.GetTimestamp()
-		return tx.Model(virtualModel).Where("id = ? AND owner_user_id = ? AND version = ?", modelID, c.GetInt("id"), virtualModel.Version-1).Select("version", "updated_time").Updates(virtualModel).Error
+		return nil
 	}); err != nil {
+		if err.Error() == "virtual_model_version_conflict" {
+			c.JSON(http.StatusConflict, gin.H{"success": false, "code": "virtual_model_version_conflict", "message": "虚拟模型已被其他请求修改"})
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
