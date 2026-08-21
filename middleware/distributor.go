@@ -189,7 +189,21 @@ func isVirtualModelRequest(modelName string) bool {
 	return strings.HasPrefix(strings.TrimSpace(modelName), "virtual/")
 }
 
-// handleVirtualModelRequest 验证虚拟模型授权并将首个内部候选接入原生渠道分发喵。
+// virtualModelExecutionState 保存单个请求不可变的候选、规则、冻结和原始 JSON 请求体喵。
+// 主人注意：虚拟模型会保留原始请求体以便跨内部候选重写 model；请求体上限仍受全局 BodyStorage 限制喵。
+type virtualModelExecutionState struct {
+	virtualModelName                string
+	ownerUserID                     int
+	executionSnapshot               *model.VirtualModelExecutionSnapshot
+	manualFrozenCandidateIDs        map[int]bool
+	automaticFreezeStatesByIdentity map[string]model.VirtualModelCustomFreezeState
+	originalRequestBody             []byte
+	modelRequest                    *ModelRequest
+	currentCandidateIndex           int
+	skippedCandidateIDs             map[int]bool
+}
+
+// handleVirtualModelRequest 验证虚拟模型授权、构造请求级快照并激活首个可执行候选喵。
 func handleVirtualModelRequest(c *gin.Context, modelRequest *ModelRequest) bool {
 	// 喵~防御：空 Gin 上下文无法安全写出 API 错误，直接终止以避免空指针喵。
 	if c == nil {
@@ -224,10 +238,25 @@ func handleVirtualModelRequest(c *gin.Context, modelRequest *ModelRequest) bool 
 		abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
 		return false
 	}
-	candidateSnapshots := executionSnapshot.Candidates
-	candidateIDs := make([]int, 0, len(candidateSnapshots))
-	for _, candidateSnapshot := range candidateSnapshots {
+	bodyStorage, bodyError := common.GetBodyStorage(c)
+	// 喵~防御：无法读取原始 JSON 请求体时不允许候选切换，避免把已改写请求发给后备候选喵。
+	if bodyError != nil {
+		abortWithOpenAiMessage(c, http.StatusBadRequest, "invalid virtual model request", types.ErrorCode("virtual_model_invalid_request"))
+		return false
+	}
+	originalRequestBody, bodyError := bodyStorage.Bytes()
+	// 喵~防御：虚拟模型只支持可安全重放的有效 JSON 请求，防止重写 multipart 或损坏的请求体喵。
+	if bodyError != nil || !gjson.ValidBytes(originalRequestBody) {
+		abortWithOpenAiMessage(c, http.StatusBadRequest, "invalid virtual model request", types.ErrorCode("virtual_model_invalid_request"))
+		return false
+	}
+	candidateIDs := make([]int, 0, len(executionSnapshot.Candidates))
+	customIdentityDigests := make([]string, 0, len(executionSnapshot.Candidates))
+	for _, candidateSnapshot := range executionSnapshot.Candidates {
 		candidateIDs = append(candidateIDs, candidateSnapshot.CandidateID)
+		if candidateSnapshot.SourceType == model.VirtualModelSourceCustom {
+			customIdentityDigests = append(customIdentityDigests, virtualmodelservice.CustomCandidateIdentityDigest(candidateSnapshot))
+		}
 	}
 	manualFrozenCandidateIDs, manualFreezeError := model.GetActiveVirtualModelManualFreezeCandidateIDs(candidateIDs, common.GetTimestamp())
 	// 喵~防御：无法确认冻结状态时保守拒绝，避免冻结候选因数据库故障被执行喵。
@@ -235,47 +264,140 @@ func handleVirtualModelRequest(c *gin.Context, modelRequest *ModelRequest) bool 
 		abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
 		return false
 	}
-	customIdentityDigests := make([]string, 0)
-	for _, candidateSnapshot := range candidateSnapshots {
-		if candidateSnapshot.SourceType == model.VirtualModelSourceCustom {
-			customIdentityDigests = append(customIdentityDigests, virtualmodelservice.CustomCandidateIdentityDigest(candidateSnapshot))
-		}
-	}
 	automaticFreezeStatesByIdentity, automaticFreezeError := model.GetVirtualModelCustomFreezeStates(ownerUserID, customIdentityDigests, common.GetTimestamp())
 	// 喵~防御：无法确认自动冻结状态时保守拒绝，避免冻结候选因数据库故障被执行喵。
 	if automaticFreezeError != nil {
 		abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
 		return false
 	}
-	for candidateIndex := range candidateSnapshots {
-		candidateSnapshot := &candidateSnapshots[candidateIndex]
-		if manualFrozenCandidateIDs[candidateSnapshot.CandidateID] {
+	// 喵~防御：内存候选快照必须与原始请求体完全隔离，避免调用方意外复用或修改底层缓存喵。
+	originalRequestBodySnapshot := append([]byte(nil), originalRequestBody...)
+	executionState := &virtualModelExecutionState{
+		virtualModelName:                virtualModel.VirtualModelName(),
+		ownerUserID:                     ownerUserID,
+		executionSnapshot:               executionSnapshot,
+		manualFrozenCandidateIDs:        manualFrozenCandidateIDs,
+		automaticFreezeStatesByIdentity: automaticFreezeStatesByIdentity,
+		originalRequestBody:             originalRequestBodySnapshot,
+		modelRequest:                    modelRequest,
+		currentCandidateIndex:           -1,
+		skippedCandidateIDs:             make(map[int]bool),
+	}
+	common.SetContextKey(c, constant.ContextKeyVirtualModelExecutionState, executionState)
+	if activateNextVirtualModelCandidate(c, executionState) {
+		return true
+	}
+	// 喵~防御：自定义候选已提交响应或错误时不得继续原生 Channel 分发，避免重复写响应喵。
+	if c.Writer != nil && c.Writer.Written() {
+		return false
+	}
+	abortWithOpenAiMessage(c, http.StatusBadGateway, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
+	return false
+}
+
+// AdvanceVirtualModelAfterNativeFailure 在一个内部候选完成全部原生 Channel 重试后决定是否切换喵。
+// 返回值依次表示是否已激活下一个内部候选、是否已有自定义候选提交了最终响应喵。
+func AdvanceVirtualModelAfterNativeFailure(c *gin.Context, nativeError *types.NewAPIError) (bool, bool) {
+	// 喵~防御：响应已提交、错误为空或不存在虚拟执行状态时绝不能重新选择候选喵。
+	if c == nil || nativeError == nil || c.Request == nil || (c.Writer != nil && c.Writer.Written()) {
+		return false, false
+	}
+	executionState, foundState := getVirtualModelExecutionState(c)
+	if !foundState || executionState.currentCandidateIndex < 0 || executionState.currentCandidateIndex >= len(executionState.executionSnapshot.Candidates) {
+		return false, false
+	}
+	currentCandidate := executionState.executionSnapshot.Candidates[executionState.currentCandidateIndex]
+	// 喵~防御：只允许 JSON body 路径进行内部候选重写，避免 WebSocket、路径模型或表单请求在失败后被错误重放喵。
+	if !strings.HasPrefix(strings.ToLower(c.Request.Header.Get("Content-Type")), "application/json") {
+		return false, false
+	}
+	// 喵~防御：仅当前内部候选才可从原生 relay 失败回切候选链，防止错误状态使 custom 候选被重复执行喵。
+	if currentCandidate.SourceType != model.VirtualModelSourceInternal {
+		return false, false
+	}
+	// 内部候选没有可安全共享的自定义冻结身份；retry 在原生 Channel 重试耗尽后等价于切换下一候选喵。
+	nativeFailure := virtualmodelservice.NormalizeCandidateFailure(nativeError.StatusCode, nil, nil, nil)
+	action, _ := virtualmodelservice.DecideCandidateFailureAction(executionState.executionSnapshot.FailureRulesByCandidateID[currentCandidate.CandidateID], nativeFailure)
+	if action == model.VirtualModelActionPassthrough {
+		return false, false
+	}
+	// internal 的 retry 与 freeze 都不会重放已耗尽的原生 Channel；两者安全地继续后备候选喵。
+	if activateNextVirtualModelCandidate(c, executionState) {
+		return true, false
+	}
+	if c.Writer != nil && c.Writer.Written() {
+		return false, true
+	}
+	return false, false
+}
+
+// GetActiveVirtualModelCandidateID 返回当前请求已激活内部候选的编号，用于隔离计费尝试标识喵。
+func GetActiveVirtualModelCandidateID(c *gin.Context) int {
+	// 喵~防御：缺少执行状态或候选索引异常时返回零，调用方必须保留原请求标识喵。
+	executionState, foundState := getVirtualModelExecutionState(c)
+	if !foundState || executionState.currentCandidateIndex < 0 || executionState.currentCandidateIndex >= len(executionState.executionSnapshot.Candidates) {
+		return 0
+	}
+	return executionState.executionSnapshot.Candidates[executionState.currentCandidateIndex].CandidateID
+}
+
+// getVirtualModelExecutionState 从请求上下文安全读取私有执行状态喵。
+func getVirtualModelExecutionState(c *gin.Context) (*virtualModelExecutionState, bool) {
+	// 喵~防御：上下文或类型不匹配时不进行断言访问，避免中间件组合导致 panic 喵。
+	if c == nil {
+		return nil, false
+	}
+	value, found := common.GetContextKey(c, constant.ContextKeyVirtualModelExecutionState)
+	if !found {
+		return nil, false
+	}
+	executionState, validState := value.(*virtualModelExecutionState)
+	return executionState, validState && executionState != nil && executionState.executionSnapshot != nil
+}
+
+// activateNextVirtualModelCandidate 按请求快照顺序跳过冻结候选并激活下一个内部或自定义候选喵。
+func activateNextVirtualModelCandidate(c *gin.Context, executionState *virtualModelExecutionState) bool {
+	// 喵~防御：状态不完整时拒绝候选切换，避免使用控制面后续修改后的数据喵。
+	if c == nil || executionState == nil || executionState.executionSnapshot == nil {
+		return false
+	}
+	for candidateIndex := executionState.currentCandidateIndex + 1; candidateIndex < len(executionState.executionSnapshot.Candidates); candidateIndex++ {
+		candidateSnapshot := &executionState.executionSnapshot.Candidates[candidateIndex]
+		if executionState.skippedCandidateIDs[candidateSnapshot.CandidateID] || executionState.manualFrozenCandidateIDs[candidateSnapshot.CandidateID] {
 			continue
 		}
 		if candidateSnapshot.SourceType == model.VirtualModelSourceCustom {
 			identityDigest := virtualmodelservice.CustomCandidateIdentityDigest(*candidateSnapshot)
-			if _, automaticallyFrozen := automaticFreezeStatesByIdentity[identityDigest]; automaticallyFrozen {
+			if _, automaticallyFrozen := executionState.automaticFreezeStatesByIdentity[identityDigest]; automaticallyFrozen {
 				continue
 			}
 		}
+		executionState.currentCandidateIndex = candidateIndex
 		if candidateSnapshot.SourceType == model.VirtualModelSourceInternal {
-			// 内部候选继续复用 new-api 原生 Channel retry、计费和 relay；首个可用内部候选被选中后不由虚拟层重复执行喵。
-			return applyInternalVirtualModelCandidate(c, modelRequest, virtualModel.VirtualModelName(), candidateSnapshot)
-		}
-		if candidateSnapshot.SourceType == model.VirtualModelSourceCustom {
-			if executeCustomVirtualModelCandidate(c, candidateSnapshot, executionSnapshot.FailureRulesByCandidateID[candidateSnapshot.CandidateID]) {
+			if restoreVirtualModelOriginalRequest(c, executionState.originalRequestBody) && applyInternalVirtualModelCandidate(c, executionState.modelRequest, executionState.virtualModelName, candidateSnapshot) {
 				return true
 			}
-			// 喵~防御：已提交上游成功响应或已写出错误时绝不切换候选，避免响应体混合喵。
+			// 喵~防御：内部候选无法安全接入原生 relay 时立即终止本次选择，避免把鉴权或配置错误误伪装为候选故障喵。
+			return false
+		}
+		if candidateSnapshot.SourceType == model.VirtualModelSourceCustom {
+			executeCustomVirtualModelCandidate(c, candidateSnapshot, executionState.executionSnapshot.FailureRulesByCandidateID[candidateSnapshot.CandidateID])
 			if c.Writer != nil && c.Writer.Written() {
 				return false
 			}
-			continue
+			executionState.skippedCandidateIDs[candidateSnapshot.CandidateID] = true
 		}
 	}
-	// 喵~防御：所有候选均停用、手动冻结、自动冻结或失败时仅返回受控不可用响应，禁止泄露候选链详情喵。
-	abortWithOpenAiMessage(c, http.StatusBadGateway, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
 	return false
+}
+
+// restoreVirtualModelOriginalRequest 在每次内部候选激活前恢复客户端原始 JSON，再由候选替换顶层 model 喵。
+func restoreVirtualModelOriginalRequest(c *gin.Context, originalRequestBody []byte) bool {
+	// 喵~防御：空请求体或非 JSON 内容不得恢复，防止用错误数据覆盖当前请求喵。
+	if c == nil || c.Request == nil || len(originalRequestBody) == 0 || !gjson.ValidBytes(originalRequestBody) || !strings.HasPrefix(strings.ToLower(c.Request.Header.Get("Content-Type")), "application/json") {
+		return false
+	}
+	return common.ReplaceRequestBody(c, originalRequestBody) == nil
 }
 
 // executeCustomVirtualModelCandidate 在当前 middleware 生命周期内安全完成单次自定义候选透传喵。

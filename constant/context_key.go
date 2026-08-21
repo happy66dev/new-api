@@ -7,14 +7,15 @@ const (
 	ContextKeyPromptTokens    ContextKey = "prompt_tokens"
 	ContextKeyEstimatedTokens ContextKey = "estimated_tokens"
 
-	ContextKeyOriginalModel ContextKey = "original_model"
+	ContextKeyOriginalModel              ContextKey = "original_model"
 	// ContextKeySelectedModel is the concrete model selected by Auto routing
 	// for the current channel. OriginalModel remains the client-facing model
 	// used for billing, logs, and retry accounting.
-	ContextKeySelectedModel    ContextKey = "selected_model"
-	ContextKeyRequestStartTime ContextKey = "request_start_time"
-	ContextKeyVirtualModelName         ContextKey = "virtual_model_name"
-	ContextKeyInternalCandidateApplied ContextKey = "virtual_model_internal_candidate_applied"
+	ContextKeySelectedModel               ContextKey = "selected_model"
+	ContextKeyRequestStartTime            ContextKey = "request_start_time"
+	ContextKeyVirtualModelName            ContextKey = "virtual_model_name"
+	ContextKeyVirtualModelExecutionState  ContextKey = "virtual_model_execution_state"
+	ContextKeyInternalCandidateApplied    ContextKey = "virtual_model_internal_candidate_applied"
 
 	/* token related keys */
 	ContextKeyTokenUnlimited         ContextKey = "token_unlimited_quota"

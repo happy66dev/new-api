@@ -26,6 +26,7 @@ import (
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	hosttypes "github.com/QuantumNous/new-api/types"
 
 	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/samber/lo"
@@ -202,78 +203,117 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 	}()
 
-	retryParam := &service.RetryParam{
-		Ctx:         c,
-		TokenGroup:  relayInfo.TokenGroup,
-		ModelName:   relayInfo.OriginModelName,
-		RequestPath: c.Request.URL.Path,
-		Retry:       common.GetPointer(0),
-	}
-	relayInfo.RetryIndex = 0
-	relayInfo.LastError = nil
-
-	for ; ; retryParam.IncreaseRetry() {
-		relayInfo.RetryIndex = retryParam.GetRetry()
-		channel, channelErr := getChannel(c, relayInfo, retryParam)
-		if channelErr != nil {
-			logger.LogError(c, channelErr.Error())
-			newAPIError = channelErr
-			break
+candidateRelayLoop:
+	for {
+		retryParam := &service.RetryParam{
+			Ctx:         c,
+			TokenGroup:  relayInfo.TokenGroup,
+			ModelName:   relayInfo.OriginModelName,
+			RequestPath: c.Request.URL.Path,
+			Retry:       common.GetPointer(0),
 		}
-		addUsedChannel(c, channel.Id)
-		if billingErr := service.PrepareTieredBillingForSelectedGroup(c, relayInfo); billingErr != nil {
-			newAPIError = billingErr
-			break
-		}
+		relayInfo.RetryIndex = 0
+		relayInfo.LastError = nil
 
-		bodyStorage, bodyErr := common.GetBodyStorage(c)
-		if bodyErr != nil {
-			// Ensure consistent 413 for oversized bodies even when error occurs later (e.g., retry path)
-			if common.IsRequestBodyTooLargeError(bodyErr) || errors.Is(bodyErr, common.ErrRequestBodyTooLarge) {
-				newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusRequestEntityTooLarge, types.ErrOptionWithSkipRetry())
-			} else {
-				newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		for ; ; retryParam.IncreaseRetry() {
+			relayInfo.RetryIndex = retryParam.GetRetry()
+			channel, channelErr := getChannel(c, relayInfo, retryParam)
+			if channelErr != nil {
+				logger.LogError(c, channelErr.Error())
+				newAPIError = channelErr
+				break
 			}
-			break
+			addUsedChannel(c, channel.Id)
+			if billingErr := service.PrepareTieredBillingForSelectedGroup(c, relayInfo); billingErr != nil {
+				newAPIError = billingErr
+				break
+			}
+
+			bodyStorage, bodyErr := common.GetBodyStorage(c)
+			if bodyErr != nil {
+				// Ensure consistent 413 for oversized bodies even when error occurs later (e.g., retry path)
+				if common.IsRequestBodyTooLargeError(bodyErr) || errors.Is(bodyErr, common.ErrRequestBodyTooLarge) {
+					newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusRequestEntityTooLarge, types.ErrOptionWithSkipRetry())
+				} else {
+					newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+				}
+				break
+			}
+			c.Request.Body = io.NopCloser(bodyStorage)
+
+			switch relayFormat {
+			case types.RelayFormatOpenAIRealtime, types.RelayFormatUnrealSpeechWebSocket:
+				newAPIError = relay.WssHelper(c, relayInfo)
+			case types.RelayFormatClaude:
+				newAPIError = relay.ClaudeHelper(c, relayInfo)
+			case types.RelayFormatGemini:
+				newAPIError = geminiRelayHandler(c, relayInfo)
+			default:
+				newAPIError = relayHandler(c, relayInfo)
+			}
+
+			if newAPIError == nil {
+				relayInfo.LastError = nil
+				return
+			}
+
+			newAPIError = service.NormalizeViolationFeeError(newAPIError)
+			relayInfo.LastError = newAPIError
+
+			processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
+
+			retryTimes := getRetryTimesForCurrentGroup(c, relayInfo.TokenGroup)
+			if !shouldRetry(c, newAPIError, retryTimes-retryParam.GetRetry()) {
+				break
+			}
 		}
-		c.Request.Body = io.NopCloser(bodyStorage)
 
-		switch relayFormat {
-		case types.RelayFormatOpenAIRealtime, types.RelayFormatUnrealSpeechWebSocket:
-			newAPIError = relay.WssHelper(c, relayInfo)
-		case types.RelayFormatClaude:
-			newAPIError = relay.ClaudeHelper(c, relayInfo)
-		case types.RelayFormatGemini:
-			newAPIError = geminiRelayHandler(c, relayInfo)
-		default:
-			newAPIError = relayHandler(c, relayInfo)
+		if newAPIError != nil {
+			// 喵~防御：只有内部候选完成全部原生 Channel 重试且尚未提交任何响应时，才允许虚拟层选择后备候选喵。
+			if nextInternalCandidateActivated, customCandidateCommitted := middleware.AdvanceVirtualModelAfterNativeFailure(c, newAPIError); nextInternalCandidateActivated {
+				// 切换候选后先退还失败候选的预扣额度，再重新建立后备候选的独立计费状态喵。
+				if relayInfo.Billing != nil {
+					if refundError := relayInfo.Billing.RefundImmediately(c); refundError != nil {
+						newAPIError = types.NewError(refundError, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+						break candidateRelayLoop
+					}
+				}
+				relayInfo.Billing = nil
+				relayInfo.FinalPreConsumedQuota = 0
+				relayInfo.BillingSource = ""
+				relayInfo.SubscriptionId = 0
+				relayInfo.SubscriptionPreConsumed = 0
+				relayInfo.SubscriptionPostDelta = 0
+				if pricingError := refreshVirtualModelCandidatePricing(c, relayInfo, meta); pricingError != nil {
+					newAPIError = pricingError
+				} else {
+					newAPIError = nil
+					continue candidateRelayLoop
+				}
+			} else if customCandidateCommitted {
+				// 自定义候选已安全提交响应，先退还失败内部候选预扣额度，再阻止 defer 追加第二个错误正文喵。
+				if relayInfo.Billing != nil {
+					if refundError := relayInfo.Billing.RefundImmediately(c); refundError != nil {
+						newAPIError = types.NewError(refundError, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+						break candidateRelayLoop
+					}
+				}
+				newAPIError = nil
+				return
+			}
 		}
 
-		if newAPIError == nil {
-			relayInfo.LastError = nil
-			return
+		useChannel := c.GetStringSlice("use_channel")
+		if len(useChannel) > 1 {
+			retryLogStr := fmt.Sprintf("重试：%s", strings.Trim(strings.Join(strings.Fields(fmt.Sprint(useChannel)), "->"), "[]"))
+			logger.LogInfo(c, retryLogStr)
 		}
-
-		newAPIError = service.NormalizeViolationFeeError(newAPIError)
-		relayInfo.LastError = newAPIError
-
-		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
-
-		retryTimes := getRetryTimesForCurrentGroup(c, relayInfo.TokenGroup)
-		if !shouldRetry(c, newAPIError, retryTimes-retryParam.GetRetry()) {
-			break
+		if newAPIError != nil {
+			gopool.Go(func() {
+				perfmetrics.RecordRelaySample(relayInfo, false, 0, nil)
+			})
 		}
-	}
-
-	useChannel := c.GetStringSlice("use_channel")
-	if len(useChannel) > 1 {
-		retryLogStr := fmt.Sprintf("重试：%s", strings.Trim(strings.Join(strings.Fields(fmt.Sprint(useChannel)), "->"), "[]"))
-		logger.LogInfo(c, retryLogStr)
-	}
-	if newAPIError != nil {
-		gopool.Go(func() {
-			perfmetrics.RecordRelaySample(relayInfo, false, 0, nil)
-		})
+		break candidateRelayLoop
 	}
 }
 
@@ -288,6 +328,53 @@ func addUsedChannel(c *gin.Context, channelId int) {
 	useChannel := c.GetStringSlice("use_channel")
 	useChannel = append(useChannel, fmt.Sprintf("%d", channelId))
 	c.Set("use_channel", useChannel)
+}
+
+// refreshVirtualModelCandidatePricing 将已激活的后备内部候选重新绑定到当前 relay 与计费会话喵。
+func refreshVirtualModelCandidatePricing(c *gin.Context, relayInfo *relaycommon.RelayInfo, meta *types.TokenCountMeta) *types.NewAPIError {
+	// 喵~防御：候选切换必须具备完整上下文、relay 信息和 token 元数据，缺失时安全终止而非复用旧候选定价喵。
+	if c == nil || relayInfo == nil || meta == nil {
+		return types.NewError(errors.New("virtual model candidate pricing context is unavailable"), types.ErrorCodeModelPriceError, types.ErrOptionWithSkipRetry())
+	}
+	candidateID := middleware.GetActiveVirtualModelCandidateID(c)
+	// 喵~防御：普通 relay 请求没有虚拟候选编号，不允许误入候选定价重置路径喵。
+	if candidateID <= 0 {
+		return types.NewError(errors.New("virtual model candidate is unavailable"), types.ErrorCodeModelPriceError, types.ErrOptionWithSkipRetry())
+	}
+	relayInfo.OriginModelName = common.GetContextKeyString(c, constant.ContextKeyOriginalModel)
+	relayInfo.TokenGroup = common.GetContextKeyString(c, constant.ContextKeyTokenGroup)
+	relayInfo.UsingGroup = common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
+	// 喵~防御：切换后必须拥有真实模型和固定分组，避免沿用失败候选或进入 auto 路由喵。
+	if strings.TrimSpace(relayInfo.OriginModelName) == "" || strings.TrimSpace(relayInfo.TokenGroup) == "" || relayInfo.TokenGroup == "auto" {
+		return types.NewError(errors.New("virtual model candidate routing is invalid"), types.ErrorCodeModelPriceError, types.ErrOptionWithSkipRetry())
+	}
+	// 每个订阅候选尝试需要独立幂等预扣标识，避免后备候选与失败候选共享订阅记录喵。
+	baseRequestID := c.GetString(common.RequestIdKey)
+	if baseRequestID == "" {
+		baseRequestID = relayInfo.RequestId
+	}
+	relayInfo.RequestId = fmt.Sprintf("%s:virtual-candidate-%d", baseRequestID, candidateID)
+	relayInfo.ChannelMeta = nil
+	relayInfo.UpstreamModelName = ""
+	relayInfo.RetryIndex = 0
+	relayInfo.LastError = nil
+	relayInfo.PriceData = hosttypes.PriceData{}
+	relayInfo.TieredBillingSnapshot = nil
+	priceData, priceError := helper.ModelPriceHelper(c, relayInfo, relayInfo.GetEstimatePromptTokens(), meta)
+	if priceError != nil {
+		return types.NewError(priceError, types.ErrorCodeModelPriceError, types.ErrOptionWithStatusCode(http.StatusBadRequest))
+	}
+	if priceData.FreeModel {
+		return nil
+	}
+	if relayInfo.Billing == nil {
+		return service.PreConsumeBilling(c, priceData.QuotaToPreConsume, relayInfo)
+	}
+	if reserveError := relayInfo.Billing.Reserve(priceData.QuotaToPreConsume); reserveError != nil {
+		return types.NewError(reserveError, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+	}
+	relayInfo.FinalPreConsumedQuota = relayInfo.Billing.GetPreConsumedQuota()
+	return nil
 }
 
 func fastTokenCountMetaForPricing(request dto.Request) *types.TokenCountMeta {

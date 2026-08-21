@@ -323,6 +323,8 @@ func (*recordingBillingSettler) Settle(int) error { return nil }
 
 func (*recordingBillingSettler) Refund(*gin.Context) {}
 
+func (*recordingBillingSettler) RefundImmediately(*gin.Context) error { return nil }
+
 func (*recordingBillingSettler) NeedsRefund() bool { return false }
 
 func (s *recordingBillingSettler) GetPreConsumedQuota() int {

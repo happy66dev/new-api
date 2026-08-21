@@ -79,6 +79,52 @@ func (s *BillingSession) Settle(actualQuota int) error {
 	return tokenErr
 }
 
+// RefundImmediately 同步退还所有预扣费，供同一个请求切换虚拟模型内部候选前释放旧候选额度喵。
+// 主人注意：该路径持有计费会话锁直到退款结束，仅用于请求内候选切换，以避免并发结算或二次退款破坏额度一致性喵。
+func (s *BillingSession) RefundImmediately(c *gin.Context) error {
+	// 喵~防御：空计费会话不需要退款，直接作为幂等成功返回喵。
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// 喵~防御：已结算、已退款或无预扣状态时不得再次增加余额，避免重复退款喵。
+	if s.settled || s.refunded || !s.needsRefundLocked() {
+		return nil
+	}
+	tokenId := s.relayInfo.TokenId
+	tokenKey := s.relayInfo.TokenKey
+	isPlayground := s.relayInfo.IsPlayground
+	tokenConsumed := s.tokenConsumed
+	extraReserved := s.extraReserved
+	subscriptionId := s.relayInfo.SubscriptionId
+	funding := s.funding
+	// 喵~防御：资金来源缺失时不能继续切换候选，避免旧预扣额度永久锁定喵。
+	if funding == nil {
+		return errors.New("billing funding source is unavailable")
+	}
+	logger.LogInfo(c, fmt.Sprintf("用户 %d 切换虚拟模型候选，立即返还失败候选预扣费（token_quota=%s, funding=%s）",
+		s.relayInfo.UserId,
+		logger.FormatQuota(tokenConsumed),
+		funding.Source(),
+	))
+	if refundError := funding.Refund(); refundError != nil {
+		return refundError
+	}
+	if extraReserved > 0 && funding.Source() == BillingSourceSubscription && subscriptionId > 0 {
+		if refundError := model.PostConsumeUserSubscriptionDelta(subscriptionId, -int64(extraReserved)); refundError != nil {
+			return refundError
+		}
+	}
+	if tokenConsumed > 0 && !isPlayground {
+		if refundError := model.IncreaseTokenQuota(tokenId, tokenKey, tokenConsumed); refundError != nil {
+			return refundError
+		}
+	}
+	s.refunded = true
+	return nil
+}
+
 // Refund 退还所有预扣费，幂等安全，异步执行。
 func (s *BillingSession) Refund(c *gin.Context) {
 	s.mu.Lock()
