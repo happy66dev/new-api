@@ -373,6 +373,15 @@ func migrateDBFast() error {
 		{&SystemTaskLock{}, "SystemTaskLock"},
 		{&SupportConversation{}, "SupportConversation"},
 		{&SupportMessage{}, "SupportMessage"},
+		{&VirtualModel{}, "VirtualModel"},
+		{&VirtualModelCandidate{}, "VirtualModelCandidate"},
+		{&VirtualModelInternalCandidate{}, "VirtualModelInternalCandidate"},
+		{&VirtualModelCustomCandidate{}, "VirtualModelCustomCandidate"},
+		{&VirtualModelFailureRule{}, "VirtualModelFailureRule"},
+		{&VirtualModelTokenBinding{}, "VirtualModelTokenBinding"},
+		{&VirtualModelManualFreeze{}, "VirtualModelManualFreeze"},
+		{&VirtualModelCustomFreezeState{}, "VirtualModelCustomFreezeState"},
+		{&VirtualModelAuditLog{}, "VirtualModelAuditLog"},
 	}
 	// 动态计算migration数量，确保errChan缓冲区足够大
 	errChan := make(chan error, len(migrations))
