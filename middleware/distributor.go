@@ -199,6 +199,10 @@ type virtualModelExecutionState struct {
 	automaticFreezeStatesByIdentity map[string]model.VirtualModelCustomFreezeState
 	originalRequestBody             []byte
 	modelRequest                    *ModelRequest
+	requestDeadline                 time.Time
+	loopEnabled                     bool
+	loopRoundsCompleted             int
+	maximumLoopRounds               int
 	currentCandidateIndex           int
 	skippedCandidateIDs             map[int]bool
 }
@@ -280,6 +284,9 @@ func handleVirtualModelRequest(c *gin.Context, modelRequest *ModelRequest) bool 
 		automaticFreezeStatesByIdentity: automaticFreezeStatesByIdentity,
 		originalRequestBody:             originalRequestBodySnapshot,
 		modelRequest:                    modelRequest,
+		requestDeadline:                 time.Now().Add(time.Duration(virtualModel.TotalTimeoutSeconds) * time.Second),
+		loopEnabled:                     virtualModel.LoopEnabled,
+		maximumLoopRounds:               virtualModel.MaxLoopRounds,
 		currentCandidateIndex:           -1,
 		skippedCandidateIDs:             make(map[int]bool),
 	}
@@ -306,6 +313,10 @@ func AdvanceVirtualModelAfterNativeFailure(c *gin.Context, nativeError *types.Ne
 	if !foundState || executionState.currentCandidateIndex < 0 || executionState.currentCandidateIndex >= len(executionState.executionSnapshot.Candidates) {
 		return false, false
 	}
+	// 喵~防御：总请求 deadline 到期后不得继续后备候选，避免每个候选 timeout 相加造成无界执行喵。
+	if !executionState.requestDeadline.IsZero() && !time.Now().Before(executionState.requestDeadline) {
+		return false, false
+	}
 	currentCandidate := executionState.executionSnapshot.Candidates[executionState.currentCandidateIndex]
 	// 喵~防御：只允许 JSON body 路径进行内部候选重写，避免 WebSocket、路径模型或表单请求在失败后被错误重放喵。
 	if !strings.HasPrefix(strings.ToLower(c.Request.Header.Get("Content-Type")), "application/json") {
@@ -324,6 +335,15 @@ func AdvanceVirtualModelAfterNativeFailure(c *gin.Context, nativeError *types.Ne
 	// internal 的 retry 与 freeze 都不会重放已耗尽的原生 Channel；两者安全地继续后备候选喵。
 	if activateNextVirtualModelCandidate(c, executionState) {
 		return true, false
+	}
+	// 喵~防御：只有显式启用循环、尚未超出轮数且响应未提交时才允许回到链首，避免默认无限重试喵。
+	if executionState.loopEnabled && executionState.loopRoundsCompleted+1 < executionState.maximumLoopRounds && (executionState.requestDeadline.IsZero() || time.Now().Before(executionState.requestDeadline)) {
+		executionState.loopRoundsCompleted++
+		executionState.currentCandidateIndex = -1
+		executionState.skippedCandidateIDs = make(map[int]bool)
+		if activateNextVirtualModelCandidate(c, executionState) {
+			return true, false
+		}
 	}
 	if c.Writer != nil && c.Writer.Written() {
 		return false, true
@@ -359,6 +379,10 @@ func getVirtualModelExecutionState(c *gin.Context) (*virtualModelExecutionState,
 func activateNextVirtualModelCandidate(c *gin.Context, executionState *virtualModelExecutionState) bool {
 	// 喵~防御：状态不完整时拒绝候选切换，避免使用控制面后续修改后的数据喵。
 	if c == nil || executionState == nil || executionState.executionSnapshot == nil {
+		return false
+	}
+	// 喵~防御：候选推进必须服从总 deadline 与客户端取消，避免失效请求继续访问上游喵。
+	if (!executionState.requestDeadline.IsZero() && !time.Now().Before(executionState.requestDeadline)) || (c.Request != nil && c.Request.Context().Err() != nil) {
 		return false
 	}
 	for candidateIndex := executionState.currentCandidateIndex + 1; candidateIndex < len(executionState.executionSnapshot.Candidates); candidateIndex++ {
@@ -416,14 +440,18 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 	}
 	// 失败规则随请求快照传入，禁止在候选执行期间二次读取已可能被控制面替换的规则喵。
 	maximumRetries := candidate.MaxRetries
-	// 喵~防御：自定义候选重试次数最多三次，避免错误配置耗尽总请求预算喵。
+	// 喵~防御：自定义候选重试次数与控制面上限一致，并由总请求 deadline 进一步约束喵。
 	if maximumRetries < 0 {
 		maximumRetries = 0
 	}
-	if maximumRetries > 3 {
-		maximumRetries = 3
+	if maximumRetries > 20 {
+		maximumRetries = 20
 	}
 	for retryIndex := 0; retryIndex <= maximumRetries; retryIndex++ {
+		// 喵~防御：候选重试前检查全局 deadline 与取消状态，防止单个 custom 候选耗尽请求预算后继续外发喵。
+		if executionState, foundState := getVirtualModelExecutionState(c); foundState && ((!executionState.requestDeadline.IsZero() && !time.Now().Before(executionState.requestDeadline)) || c.Request == nil || c.Request.Context().Err() != nil) {
+			return false
+		}
 		executionError := virtualmodelservice.ExecuteCustomCandidate(c, virtualmodelservice.CustomCandidateExecutionInput{
 			CandidateID:    candidate.CandidateID,
 			BaseURL:        baseURL,
@@ -462,7 +490,16 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 		action, freezeSeconds := virtualmodelservice.DecideCandidateFailureAction(failureRules, customFailure.Failure)
 		if action == model.VirtualModelActionRetry && retryIndex < maximumRetries {
 			retryDelay := time.Duration(virtualmodelservice.RetryBackoffSeconds(retryIndex)) * time.Second
-			// 喵~防御：退避等待必须响应客户端取消，避免断开请求仍占用 goroutine 和连接喵。
+			// 喵~防御：退避等待必须响应客户端取消和总 deadline，避免断开请求仍占用 goroutine 和连接喵。
+			if executionState, foundState := getVirtualModelExecutionState(c); foundState && !executionState.requestDeadline.IsZero() {
+				remainingDuration := time.Until(executionState.requestDeadline)
+				if remainingDuration <= 0 {
+					return false
+				}
+				if retryDelay > remainingDuration {
+					retryDelay = remainingDuration
+				}
+			}
 			select {
 			case <-time.After(retryDelay):
 				continue
