@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // VirtualModelSourceType 标记候选来自 new-api 内部模型还是用户自定义上游喵。
@@ -258,30 +259,190 @@ func GetEnabledVirtualModelByOwnerTokenName(ownerUserID int, tokenID int, normal
 	return virtualModel, queryError
 }
 
-// VirtualModelInternalCandidateSnapshot 保存候选执行所需的不可变基础字段喵。
-type VirtualModelInternalCandidateSnapshot struct {
-	CandidateID    int
-	VirtualModelID int
-	StableOrder    int
-	SourceType     VirtualModelSourceType
-	GroupName      string
-	RealModelName  string
+// VirtualModelCandidateSnapshot 保存一次虚拟模型请求的候选不可变执行配置喵。
+type VirtualModelCandidateSnapshot struct {
+	CandidateID       int                    // 候选唯一编号，用于冻结、规则和审计关联喵。
+	VirtualModelID    int                    // 虚拟模型唯一编号，用于校验候选归属喵。
+	StableOrder       int                    // 候选稳定顺序，数值越小越优先喵。
+	SourceType        VirtualModelSourceType // 候选来源类型，决定内部 relay 或自定义透传路径喵。
+	Enabled           bool                   // 候选是否启用，禁用候选不会进入本请求快照喵。
+	MaxRetries        int                    // 自定义候选的最大附加重试次数，单位：次喵。
+	TimeoutSeconds    int                    // 单次候选执行超时，单位：秒喵。
+	GroupName         string                 // 内部候选目标分组，自定义候选为空喵。
+	RealModelName     string                 // 上游或内部实际请求模型名称喵。
+	EncryptedBaseURL  string                 // 自定义候选加密后的上游基址，内部候选为空喵。
+	EncryptedAPIKey   string                 // 自定义候选加密后的认证凭据，内部候选为空喵。
+	APIKeyFingerprint string                 // 自定义候选 API Key 不可逆摘要，用于共享冻结身份喵。
+	CredentialVersion int                    // 自定义候选凭据加密版本喵。
+	AuthStyle         VirtualModelAuthStyle  // 自定义候选认证头样式喵。
+}
+
+// VirtualModelInternalCandidateSnapshot 保留旧名称兼容现有内部候选调用代码喵。
+type VirtualModelInternalCandidateSnapshot = VirtualModelCandidateSnapshot
+
+// GetEnabledVirtualModelCandidateSnapshots 使用给定数据库连接按稳定顺序读取本次请求的所有启用候选快照喵。
+func GetEnabledVirtualModelCandidateSnapshotsWithDB(database *gorm.DB, virtualModelID int) ([]VirtualModelCandidateSnapshot, error) {
+	// 喵~防御：拒绝无效模型编号，避免候选查询退化为全表扫描喵。
+	if virtualModelID <= 0 {
+		return []VirtualModelCandidateSnapshot{}, gorm.ErrRecordNotFound
+	}
+	// 喵~防御：数据库连接为空时拒绝查询，避免运行时空指针或绕过调用方事务边界喵。
+	if database == nil {
+		return nil, errors.New("virtual model database is unavailable")
+	}
+	candidateSnapshots := make([]VirtualModelCandidateSnapshot, 0)
+	queryError := database.Model(&VirtualModelCandidate{}).
+		Select("virtual_model_candidates.id AS candidate_id, virtual_model_candidates.virtual_model_id, virtual_model_candidates.stable_order, virtual_model_candidates.source_type, virtual_model_candidates.enabled, virtual_model_candidates.max_retries, virtual_model_candidates.timeout_seconds, virtual_model_internal_candidates.group_name, COALESCE(virtual_model_internal_candidates.real_model_name, virtual_model_custom_candidates.real_model_name) AS real_model_name, virtual_model_custom_candidates.encrypted_base_url, virtual_model_custom_candidates.encrypted_api_key, virtual_model_custom_candidates.api_key_fingerprint, virtual_model_custom_candidates.credential_version, virtual_model_custom_candidates.auth_style").
+		Joins("LEFT JOIN virtual_model_internal_candidates ON virtual_model_internal_candidates.candidate_id = virtual_model_candidates.id").
+		Joins("LEFT JOIN virtual_model_custom_candidates ON virtual_model_custom_candidates.candidate_id = virtual_model_candidates.id").
+		Where("virtual_model_candidates.virtual_model_id = ? AND virtual_model_candidates.enabled = ?", virtualModelID, true).
+		Order("virtual_model_candidates.stable_order ASC, virtual_model_candidates.id ASC").
+		Find(&candidateSnapshots).Error
+	return candidateSnapshots, queryError
+}
+
+// GetEnabledVirtualModelCandidateSnapshots 按稳定顺序读取本次请求的所有启用候选快照喵。
+func GetEnabledVirtualModelCandidateSnapshots(virtualModelID int) ([]VirtualModelCandidateSnapshot, error) {
+	return GetEnabledVirtualModelCandidateSnapshotsWithDB(DB, virtualModelID)
+}
+
+// GetVirtualModelFailureRulesByCandidateIDs 使用给定数据库连接按候选和规则顺序读取失败规则快照喵。
+func GetVirtualModelFailureRulesByCandidateIDsWithDB(database *gorm.DB, candidateIDs []int) (map[int][]VirtualModelFailureRule, error) {
+	// 喵~防御：空候选集合直接返回空映射，避免生成 IN (NULL) 或无条件查询喵。
+	if len(candidateIDs) == 0 {
+		return map[int][]VirtualModelFailureRule{}, nil
+	}
+	// 喵~防御：数据库连接为空时拒绝查询，避免运行时空指针或绕过调用方事务边界喵。
+	if database == nil {
+		return nil, errors.New("virtual model database is unavailable")
+	}
+	failureRules := make([]VirtualModelFailureRule, 0)
+	queryError := database.Where("candidate_id IN ?", candidateIDs).Order("candidate_id ASC, rule_order ASC, id ASC").Find(&failureRules).Error
+	if queryError != nil {
+		return nil, queryError
+	}
+	failureRulesByCandidateID := make(map[int][]VirtualModelFailureRule, len(candidateIDs))
+	for _, failureRule := range failureRules {
+		failureRulesByCandidateID[failureRule.CandidateID] = append(failureRulesByCandidateID[failureRule.CandidateID], failureRule)
+	}
+	return failureRulesByCandidateID, nil
+}
+
+// GetVirtualModelFailureRulesByCandidateIDs 按候选和规则顺序批量读取失败规则快照喵。
+func GetVirtualModelFailureRulesByCandidateIDs(candidateIDs []int) (map[int][]VirtualModelFailureRule, error) {
+	return GetVirtualModelFailureRulesByCandidateIDsWithDB(DB, candidateIDs)
+}
+
+// GetActiveVirtualModelManualFreezeCandidateIDs 使用给定数据库连接读取当前仍处于手动冻结期的候选编号集合喵。
+func GetActiveVirtualModelManualFreezeCandidateIDsWithDB(database *gorm.DB, candidateIDs []int, currentTimestamp int64) (map[int]bool, error) {
+	// 喵~防御：空候选集合或非法时间戳不执行数据库查询，避免无效条件扩大读取范围喵。
+	if len(candidateIDs) == 0 || currentTimestamp <= 0 {
+		return map[int]bool{}, nil
+	}
+	// 喵~防御：数据库连接为空时拒绝查询，避免运行时空指针或绕过调用方事务边界喵。
+	if database == nil {
+		return nil, errors.New("virtual model database is unavailable")
+	}
+	frozenCandidateIDs := make([]int, 0)
+	queryError := database.Model(&VirtualModelManualFreeze{}).Where("candidate_id IN ? AND expires_at > ?", candidateIDs, currentTimestamp).Distinct().Pluck("candidate_id", &frozenCandidateIDs).Error
+	if queryError != nil {
+		return nil, queryError
+	}
+	frozenCandidateIDSet := make(map[int]bool, len(frozenCandidateIDs))
+	for _, candidateID := range frozenCandidateIDs {
+		frozenCandidateIDSet[candidateID] = true
+	}
+	return frozenCandidateIDSet, nil
+}
+
+// GetActiveVirtualModelManualFreezeCandidateIDs 返回当前仍处于手动冻结期的候选编号集合喵。
+func GetActiveVirtualModelManualFreezeCandidateIDs(candidateIDs []int, currentTimestamp int64) (map[int]bool, error) {
+	return GetActiveVirtualModelManualFreezeCandidateIDsWithDB(DB, candidateIDs, currentTimestamp)
 }
 
 // GetFirstEnabledVirtualModelCandidate 读取候选链首个启用候选，保持配置顺序的不可变选择语义喵。
 func GetFirstEnabledVirtualModelCandidate(virtualModelID int) (*VirtualModelInternalCandidateSnapshot, error) {
-	// 喵~防御：拒绝无效模型编号，避免候选查询退化为全表扫描喵。
-	if virtualModelID <= 0 {
+	candidateSnapshots, queryError := GetEnabledVirtualModelCandidateSnapshots(virtualModelID)
+	if queryError != nil {
+		return nil, queryError
+	}
+	// 喵~防御：候选链为空时返回统一的记录不存在错误，避免调用方误把零值候选当作有效配置喵。
+	if len(candidateSnapshots) == 0 {
 		return nil, gorm.ErrRecordNotFound
 	}
-	candidateSnapshot := &VirtualModelInternalCandidateSnapshot{}
-	queryError := DB.Model(&VirtualModelCandidate{}).
-		Select("virtual_model_candidates.id AS candidate_id, virtual_model_candidates.virtual_model_id, virtual_model_candidates.stable_order, virtual_model_candidates.source_type, virtual_model_internal_candidates.group_name, virtual_model_internal_candidates.real_model_name").
-		Joins("LEFT JOIN virtual_model_internal_candidates ON virtual_model_internal_candidates.candidate_id = virtual_model_candidates.id").
-		Where("virtual_model_candidates.virtual_model_id = ? AND virtual_model_candidates.enabled = ?", virtualModelID, true).
-		Order("virtual_model_candidates.stable_order ASC, virtual_model_candidates.id ASC").
-		First(candidateSnapshot).Error
-	return candidateSnapshot, queryError
+	return &candidateSnapshots[0], nil
+}
+
+// GetVirtualModelCustomFreezeStates 使用给定数据库连接查询当前用户可见自定义候选身份的自动冻结状态喵。
+func GetVirtualModelCustomFreezeStatesWithDB(database *gorm.DB, ownerUserID int, identityDigests []string, currentTimestamp int64) (map[string]VirtualModelCustomFreezeState, error) {
+	// 喵~防御：无效 owner、空身份集合或非法时间不执行查询，避免跨用户或全表读取喵。
+	if ownerUserID <= 0 || len(identityDigests) == 0 || currentTimestamp <= 0 {
+		return map[string]VirtualModelCustomFreezeState{}, nil
+	}
+	// 喵~防御：数据库连接为空时拒绝查询，避免运行时空指针或绕过调用方事务边界喵。
+	if database == nil {
+		return nil, errors.New("virtual model database is unavailable")
+	}
+	freezeStates := make([]VirtualModelCustomFreezeState, 0)
+	queryError := database.Where("owner_user_id = ? AND identity_digest IN ? AND frozen_until > ?", ownerUserID, identityDigests, currentTimestamp).Find(&freezeStates).Error
+	if queryError != nil {
+		return nil, queryError
+	}
+	freezeStatesByIdentity := make(map[string]VirtualModelCustomFreezeState, len(freezeStates))
+	for _, freezeState := range freezeStates {
+		freezeStatesByIdentity[freezeState.IdentityDigest] = freezeState
+	}
+	return freezeStatesByIdentity, nil
+}
+
+// GetVirtualModelCustomFreezeStates 查询当前用户可见自定义候选身份的自动冻结状态喵。
+func GetVirtualModelCustomFreezeStates(ownerUserID int, identityDigests []string, currentTimestamp int64) (map[string]VirtualModelCustomFreezeState, error) {
+	return GetVirtualModelCustomFreezeStatesWithDB(DB, ownerUserID, identityDigests, currentTimestamp)
+}
+
+// UpsertVirtualModelCustomFreezeState 使用给定数据库连接在 owner 范围内更新自定义上游自动冻结状态喵。
+func UpsertVirtualModelCustomFreezeStateWithDB(database *gorm.DB, ownerUserID int, identityDigest string, frozenUntil int64, failureClass string, currentTimestamp int64) error {
+	// 喵~防御：缺少身份、所有者或时间时拒绝写入，避免创建无法隔离或永不过期的冻结状态喵。
+	if ownerUserID <= 0 || strings.TrimSpace(identityDigest) == "" || frozenUntil <= currentTimestamp || currentTimestamp <= 0 {
+		return errors.New("virtual model custom freeze state is invalid")
+	}
+	// 喵~防御：数据库连接为空时拒绝写入，避免运行时空指针或绕过调用方事务边界喵。
+	if database == nil {
+		return errors.New("virtual model database is unavailable")
+	}
+	// 喵~防御：使用数据库原子 upsert，避免并发首次冻结时唯一键竞争导致请求被错误拒绝喵。
+	return database.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "owner_user_id"}, {Name: "identity_digest"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			"frozen_until":       frozenUntil,
+			"consecutive_fails":  gorm.Expr("consecutive_fails + ?", 1),
+			"last_failure_class": strings.TrimSpace(failureClass),
+			"updated_time":       currentTimestamp,
+		}),
+	}).Create(&VirtualModelCustomFreezeState{OwnerUserID: ownerUserID, IdentityDigest: identityDigest, FrozenUntil: frozenUntil, ConsecutiveFails: 1, LastFailureClass: strings.TrimSpace(failureClass), UpdatedTime: currentTimestamp}).Error
+}
+
+// UpsertVirtualModelCustomFreezeState 在 owner 范围内更新自定义上游自动冻结状态喵。
+func UpsertVirtualModelCustomFreezeState(ownerUserID int, identityDigest string, frozenUntil int64, failureClass string, currentTimestamp int64) error {
+	return UpsertVirtualModelCustomFreezeStateWithDB(DB, ownerUserID, identityDigest, frozenUntil, failureClass, currentTimestamp)
+}
+
+// ClearVirtualModelCustomFreezeState 使用给定数据库连接清除一次成功调用对应的自动冻结失败计数喵。
+func ClearVirtualModelCustomFreezeStateWithDB(database *gorm.DB, ownerUserID int, identityDigest string, currentTimestamp int64) error {
+	// 喵~防御：无效输入无需触发写库，调用方成功路径可安全忽略该空操作喵。
+	if ownerUserID <= 0 || strings.TrimSpace(identityDigest) == "" || currentTimestamp <= 0 {
+		return nil
+	}
+	// 喵~防御：数据库连接为空时拒绝写入，避免运行时空指针或绕过调用方事务边界喵。
+	if database == nil {
+		return errors.New("virtual model database is unavailable")
+	}
+	return database.Where("owner_user_id = ? AND identity_digest = ?", ownerUserID, identityDigest).Updates(map[string]any{"frozen_until": 0, "consecutive_fails": 0, "last_failure_class": "", "updated_time": currentTimestamp}).Error
+}
+
+// ClearVirtualModelCustomFreezeState 清除一次成功调用对应的自动冻结失败计数喵。
+func ClearVirtualModelCustomFreezeState(ownerUserID int, identityDigest string, currentTimestamp int64) error {
+	return ClearVirtualModelCustomFreezeStateWithDB(DB, ownerUserID, identityDigest, currentTimestamp)
 }
 
 // DeleteVirtualModelByOwner 在事务内删除所有关联数据并写入不可还原审计喵。

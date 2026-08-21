@@ -125,20 +125,28 @@ func TestGetFirstEnabledVirtualModelCandidate(t *testing.T) {
 			_ = sqlDatabase.Close()
 		}
 	})
-	// 创建候选顺序查询所需的表结构喵。
-	require.NoError(t, database.AutoMigrate(&VirtualModelCandidate{}, &VirtualModelInternalCandidate{}))
-	// 创建顺序靠前的自定义候选，验证不会跳过它选择后续内部候选喵。
-	customCandidate := VirtualModelCandidate{VirtualModelID: 91, StableOrder: 0, SourceType: VirtualModelSourceCustom, Enabled: true}
+	// 创建候选顺序查询所需的表结构，包括自定义候选关联表喵。
+	require.NoError(t, database.AutoMigrate(&VirtualModelCandidate{}, &VirtualModelInternalCandidate{}, &VirtualModelCustomCandidate{}))
+	// 创建顺序靠前的自定义候选和其加密配置，验证快照不会跳过它选择后续内部候选喵。
+	customCandidate := VirtualModelCandidate{VirtualModelID: 91, StableOrder: 0, SourceType: VirtualModelSourceCustom, Enabled: true, MaxRetries: 2, TimeoutSeconds: 45}
 	require.NoError(t, database.Create(&customCandidate).Error)
+	require.NoError(t, database.Create(&VirtualModelCustomCandidate{CandidateID: customCandidate.ID, EncryptedBaseURL: "encrypted-url", EncryptedAPIKey: "encrypted-key", CredentialVersion: 1, RealModelName: "custom-model", AuthStyle: VirtualModelAuthBearer}).Error)
 	// 创建顺序靠后的内部候选及其目标分组和真实模型喵。
 	internalCandidate := VirtualModelCandidate{VirtualModelID: 91, StableOrder: 1, SourceType: VirtualModelSourceInternal, Enabled: true}
 	require.NoError(t, database.Create(&internalCandidate).Error)
 	require.NoError(t, database.Create(&VirtualModelInternalCandidate{CandidateID: internalCandidate.ID, GroupName: "default", RealModelName: "gpt-test"}).Error)
-	// 查询必须返回排序第一的自定义候选，供分发器安全拒绝而非越序执行喵。
+	// 查询必须返回排序第一的自定义候选，保留其完整加密快照供安全执行器使用喵。
 	candidateSnapshot, queryError := GetFirstEnabledVirtualModelCandidate(91)
 	require.NoError(t, queryError)
 	require.Equal(t, VirtualModelSourceCustom, candidateSnapshot.SourceType)
 	require.Empty(t, candidateSnapshot.GroupName)
+	require.Equal(t, "custom-model", candidateSnapshot.RealModelName)
+	require.Equal(t, "encrypted-url", candidateSnapshot.EncryptedBaseURL)
+	require.Equal(t, "encrypted-key", candidateSnapshot.EncryptedAPIKey)
+	require.Equal(t, 1, candidateSnapshot.CredentialVersion)
+	require.Equal(t, VirtualModelAuthBearer, candidateSnapshot.AuthStyle)
+	require.Equal(t, 2, candidateSnapshot.MaxRetries)
+	require.Equal(t, 45, candidateSnapshot.TimeoutSeconds)
 	// 禁用自定义候选后，查询应稳定返回下一个启用内部候选喵。
 	require.NoError(t, database.Model(&VirtualModelCandidate{}).Where("id = ?", customCandidate.ID).Update("enabled", false).Error)
 	candidateSnapshot, queryError = GetFirstEnabledVirtualModelCandidate(91)
@@ -146,4 +154,9 @@ func TestGetFirstEnabledVirtualModelCandidate(t *testing.T) {
 	require.Equal(t, VirtualModelSourceInternal, candidateSnapshot.SourceType)
 	require.Equal(t, "default", candidateSnapshot.GroupName)
 	require.Equal(t, "gpt-test", candidateSnapshot.RealModelName)
+	// 读取全部启用候选时必须按 stable_order 稳定排序且保留运行参数喵。
+	candidateSnapshots, snapshotsError := GetEnabledVirtualModelCandidateSnapshots(91)
+	require.NoError(t, snapshotsError)
+	require.Len(t, candidateSnapshots, 1)
+	require.Equal(t, internalCandidate.ID, candidateSnapshots[0].CandidateID)
 }
