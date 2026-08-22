@@ -205,6 +205,8 @@ type virtualModelExecutionState struct {
 	maximumLoopRounds               int
 	currentCandidateIndex           int
 	skippedCandidateIDs             map[int]bool
+	candidateAttemptSequence        int    // 请求内已分配的候选尝试序号，单调递增，单位：次喵。
+	currentCandidateAttemptID       string // 当前已激活候选尝试的请求内唯一标识，未激活时为空喵。
 }
 
 // handleVirtualModelRequest 验证虚拟模型授权、构造请求级快照并激活首个可执行候选喵。
@@ -361,6 +363,49 @@ func GetActiveVirtualModelCandidateID(c *gin.Context) int {
 	return executionState.executionSnapshot.Candidates[executionState.currentCandidateIndex].CandidateID
 }
 
+// VirtualModelCandidateAttempt 描述当前已激活候选尝试的身份与关联标识喵。
+// 该结构只暴露可安全写入日志的字段，禁止携带上游凭据、完整 URL 或请求正文喵。
+type VirtualModelCandidateAttempt struct {
+	CandidateID         int                          // 候选编号，用于冻结、失败规则与审计关联喵。
+	CandidateAttemptID  string                       // 请求内唯一的候选尝试标识喵。
+	AttemptSequence     int                          // 请求内候选尝试序号，从 1 开始递增，单位：次喵。
+	CandidateIndex      int                          // 候选在稳定顺序中的下标，从 0 开始喵。
+	SourceType          model.VirtualModelSourceType // 候选来源类型，决定内部 relay 或自定义透传路径喵。
+	RealModelName       string                       // 候选真实上游模型名称喵。
+	GroupName           string                       // 候选固定分组名称，自定义候选为空喵。
+	LoopRoundsCompleted int                          // 已完成的循环轮数，单位：轮喵。
+}
+
+// GetActiveVirtualModelCandidateAttempt 返回当前已激活候选尝试的身份摘要喵。
+// 普通模型请求、Token AutoRoutes 请求以及候选尚未激活时都返回 false，
+// 调用方必须在该情况下保留原有的请求级计费与日志语义喵。
+func GetActiveVirtualModelCandidateAttempt(c *gin.Context) (VirtualModelCandidateAttempt, bool) {
+	executionState, foundState := getVirtualModelExecutionState(c)
+	// 喵~防御：缺少执行状态时说明这是普通请求，绝不返回候选身份喵。
+	if !foundState {
+		return VirtualModelCandidateAttempt{}, false
+	}
+	// 喵~防御：候选索引越界说明候选尚未激活或已耗尽，不返回可能过期的身份喵。
+	if executionState.currentCandidateIndex < 0 || executionState.currentCandidateIndex >= len(executionState.executionSnapshot.Candidates) {
+		return VirtualModelCandidateAttempt{}, false
+	}
+	// 喵~防御：尝试标识为空说明上一次候选切换未完成，不允许调用方据此建立计费喵。
+	if executionState.currentCandidateAttemptID == "" {
+		return VirtualModelCandidateAttempt{}, false
+	}
+	candidateSnapshot := executionState.executionSnapshot.Candidates[executionState.currentCandidateIndex]
+	return VirtualModelCandidateAttempt{
+		CandidateID:         candidateSnapshot.CandidateID,
+		CandidateAttemptID:  executionState.currentCandidateAttemptID,
+		AttemptSequence:     executionState.candidateAttemptSequence,
+		CandidateIndex:      executionState.currentCandidateIndex,
+		SourceType:          candidateSnapshot.SourceType,
+		RealModelName:       candidateSnapshot.RealModelName,
+		GroupName:           candidateSnapshot.GroupName,
+		LoopRoundsCompleted: executionState.loopRoundsCompleted,
+	}, true
+}
+
 // getVirtualModelExecutionState 从请求上下文安全读取私有执行状态喵。
 func getVirtualModelExecutionState(c *gin.Context) (*virtualModelExecutionState, bool) {
 	// 喵~防御：上下文或类型不匹配时不进行断言访问，避免中间件组合导致 panic 喵。
@@ -385,6 +430,8 @@ func activateNextVirtualModelCandidate(c *gin.Context, executionState *virtualMo
 	if (!executionState.requestDeadline.IsZero() && !time.Now().Before(executionState.requestDeadline)) || (c.Request != nil && c.Request.Context().Err() != nil) {
 		return false
 	}
+	// 进入候选选择前先清空上一个候选的尝试标识，避免切换失败后仍留下错误关联喵。
+	executionState.currentCandidateAttemptID = ""
 	for candidateIndex := executionState.currentCandidateIndex + 1; candidateIndex < len(executionState.executionSnapshot.Candidates); candidateIndex++ {
 		candidateSnapshot := &executionState.executionSnapshot.Candidates[candidateIndex]
 		if executionState.skippedCandidateIDs[candidateSnapshot.CandidateID] || executionState.manualFrozenCandidateIDs[candidateSnapshot.CandidateID] {
@@ -397,21 +444,34 @@ func activateNextVirtualModelCandidate(c *gin.Context, executionState *virtualMo
 			}
 		}
 		executionState.currentCandidateIndex = candidateIndex
+		// 为本次候选尝试分配请求内唯一序号，供候选级计费幂等键与结构化日志隔离使用喵。
+		candidateAttemptSequence := executionState.candidateAttemptSequence + 1
+		candidateAttemptID, attemptIDError := virtualmodelservice.FormatCandidateAttemptID(candidateSnapshot.CandidateID, candidateAttemptSequence)
+		// 喵~防御：无法分配唯一尝试标识时立即停止候选链，避免两个候选共享同一个计费幂等键喵。
+		if attemptIDError != nil {
+			return false
+		}
+		executionState.candidateAttemptSequence = candidateAttemptSequence
+		executionState.currentCandidateAttemptID = candidateAttemptID
 		if candidateSnapshot.SourceType == model.VirtualModelSourceInternal {
 			if restoreVirtualModelOriginalRequest(c, executionState.originalRequestBody) && applyInternalVirtualModelCandidate(c, executionState.modelRequest, executionState.virtualModelName, candidateSnapshot) {
 				return true
 			}
 			// 喵~防御：内部候选无法安全接入原生 relay 时立即终止本次选择，避免把鉴权或配置错误误伪装为候选故障喵。
+			executionState.currentCandidateAttemptID = ""
 			return false
 		}
 		if candidateSnapshot.SourceType == model.VirtualModelSourceCustom {
 			executeCustomVirtualModelCandidate(c, candidateSnapshot, executionState.executionSnapshot.FailureRulesByCandidateID[candidateSnapshot.CandidateID])
+			// 自定义候选已提交响应时保留其尝试标识，便于最终日志定位真正写出响应的候选喵。
 			if c.Writer != nil && c.Writer.Written() {
 				return false
 			}
 			executionState.skippedCandidateIDs[candidateSnapshot.CandidateID] = true
 		}
 	}
+	// 候选链耗尽时清空当前尝试标识，避免外层误判仍存在活动候选喵。
+	executionState.currentCandidateAttemptID = ""
 	return false
 }
 
