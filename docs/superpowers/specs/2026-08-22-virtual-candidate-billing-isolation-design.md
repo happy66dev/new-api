@@ -388,3 +388,119 @@ type ViolationFeeContext struct {
 - 普通模型和 Token.AutoRoutes 的行为回归测试通过喵。
 - 计费、候选状态和请求关联 ID 测试覆盖正常、空值、非法值、并发和基础设施失败场景喵。
 - Go 格式化、静态检查和可用的单元/集成测试均已执行，并如实记录依赖阻塞项喵。
+
+## 15. 当前代码核对基线
+
+以下基线来自当前实现审查，后续开发必须以实际代码为准，不得把“清空字段后继续复用”误认为候选级隔离已经完成喵。
+
+- `controller/relay.go` 当前只在入口调用一次 `relaycommon.GenRelayInfo`，随后在同一个 `relayInfo` 上计算初始价格、预扣、Channel retry、候选 handoff 和最终 defer 喵。
+- 当前候选循环只重置 `RetryIndex` 与 `LastError`，候选切换时通过 `Billing.RefundImmediately`、清空 billing 兼容字段和 `refreshVirtualModelCandidatePricing` 重新绑定，仍属于同一对象复位喵。
+- 当前 `middleware/distributor.go` 已保存请求级候选快照、原始请求体、冻结状态、deadline 和候选索引，但还没有独立的 `CandidateAttempt`、候选 usage、候选终态或候选级计费对象喵。
+- 当前 `RelayInfo` 同时承载 Channel、模型、协议转换、价格、tiered billing、retry、错误、usage、响应统计和 billing 兼容字段，不能作为多个候选的共享可变容器喵。
+- 当前 `BillingSession` 仍持有 `relayInfo` 并把预扣、订阅兼容字段反写回该对象，候选切换必须创建绑定新候选 `RelayInfo` 的新会话，不能在旧会话上继续 `Reserve` 喵。
+- 当前 `BillingSettler` 的 `Refund` 是异步接口，候选切换不得使用它；当前已提供的 `RefundImmediately` 仍需要补充部分失败状态、资金来源非幂等和重试语义喵。
+- 当前自定义候选已经具备凭据解密、请求透传、错误预提交和受限 passthrough，但失败结构仍需补充网络、timeout、响应提交和来源字段喵。
+
+## 16. Gin 上下文隔离要求
+
+只复制 `RelayInfo` 不足以实现候选隔离，因为现有 native handler 和 Channel 选择器还会通过 Gin context 读取或写入当前模型、分组、Channel、auto-group 和转换配置喵。
+
+每个 internal 候选开始前，执行器必须建立候选专属的上下文视图，至少明确处理以下状态喵：
+
+- `ContextKeyOriginalModel`、`ContextKeyTokenGroup`、`ContextKeyUsingGroup` 和当前候选真实模型/固定分组喵。
+- `ContextKeyChannelId`、`ContextKeyChannelType`、`ContextKeyChannelKey`、Channel Base URL、Channel setting、模型映射和请求转换相关字段喵。
+- `ContextKeyAutoGroup`、Token AutoRoutes 相关状态和 `RetryParam.SelectedModel` 喵。
+- 当前候选的 `use_channel`、`RetryIndex`、`LastError`、请求体读取位置和响应状态喵。
+
+候选上下文必须在候选结束后恢复请求级基线；下一个候选不能读取前一个候选留下的 Channel key、模型映射、auto-group、selected model 或 converter cache 喵。
+
+虚拟模型候选固定使用用户明确配置的非 `auto` 分组，执行器不得读取、写入或修改 Token AutoRoutes 的 context key，也不得进入 `routeModelAndRetry` 的 auto 分支喵。
+
+如果当前 Gin context 无法安全地为每个候选创建独立副本，必须采用“候选开始前保存基线、候选结束后恢复基线、每次候选重新写入全部候选字段”的兼容方案，并为保存和恢复增加单元测试喵。
+
+候选切换发生在 native handler 返回之后，因此旧候选的 Channel context、转换缓存和请求体必须在创建后备 `RelayInfo` 之前清理；不能先创建新 billing 再尝试修复旧 context 喵。
+
+## 17. 资金来源与幂等补充约束
+
+钱包和订阅 funding source 的退款能力和幂等语义不同，候选级 billing adapter 必须在接口层统一状态，但不能假设底层 `FundingSource.Refund` 天然幂等喵。
+
+每个候选必须使用包含 `CandidateAttemptID` 的唯一 RequestID；订阅预扣、补扣、退款和结算必须使用该 ID 或等价的唯一幂等键，不能复用虚拟请求基础 RequestID 喵。
+
+钱包退款在调用前必须由候选 billing 状态机确认尚未退款；调用后只有在所有相关回滚步骤成功，或已记录可安全重试的补偿状态时，才能进入 `refunded` 终态喵。
+
+订阅 funding 的基础预扣可能忽略传入的增量金额并按最小单位预扣，因此 `CandidateBillingContext` 必须分别记录基础预扣、额外预扣、已使用额度和应回滚额度，不能只保存一个总 quota 喵。
+
+`fundingSettled=true` 表示资金来源已经提交结算，之后禁止退款；如果 Token quota 调整失败，必须记录补偿任务或高优先级系统错误，但不能再次退款资金来源喵。
+
+候选切换前任何退款或失败结算返回错误，都必须阻止后备 internal 候选的预扣和上游连接创建；只有明确完成旧候选终态后才允许下一次 `Reserve` 喵。
+
+## 18. Native 与 AutoRoutes 回归边界
+
+普通 relay 继续保持“一次入口 `RelayInfo`、同一请求内原生 Channel retry、一次初始预扣、成功结算或最终失败退款”的现有语义喵。
+
+普通请求必须继续支持以下既有场景，虚拟模型隔离改造不得改变结果喵：
+
+- 普通固定分组请求和免费模型请求喵。
+- tiered billing、钱包优先、订阅优先及 funding fallback 喵。
+- 非流式、流式、OpenAI、Anthropic、Gemini、Responses、图像、音频和其他现有 relay format 喵。
+- specific channel、channel affinity、Channel retry、自动禁用和错误 rewrite 喵。
+- Token AutoRoutes 无路由、单模型路由、多模型路由、跨分组 retry 和 route index 映射喵。
+
+虚拟 internal 候选不得把候选顺序映射成 Token AutoRoutes，不得改变 Token 的 auto route 存储、route index、`ContextKeyTokenAutoRoutes` 或原生 auto retry 次数喵。
+
+`refreshVirtualModelCandidatePricing`、候选级 billing factory 和候选 handoff 必须在没有虚拟候选状态时完全不可达；普通请求若误进入这些路径必须安全返回内部错误而不是修改普通 billing 喵。
+
+回归测试必须验证普通请求的 `relayInfo.Billing` fallback、`FinalPreConsumedQuota`、tiered snapshot、error rewrite、Channel 日志和最终计费记录仍保持原有生命周期喵。
+
+## 19. 现有测试与新增测试映射
+
+当前已有测试可作为基线，但不能替代候选级生命周期测试喵。
+
+- `service/billing_session_test.go` 目前主要覆盖订阅偏好和白名单，需要新增状态机、重复收尾、退款失败和候选 RequestID 测试喵。
+- `relay/common/relay_info_test.go` 目前主要覆盖 converter 和 reasoning，需要新增候选工厂字段清理、context 基线恢复和不可共享字段测试喵。
+- `service/tiered_settle_test.go` 已覆盖 tiered 计算和 Reserve，需要新增连续 internal 候选的独立 snapshot、预扣、usage settle 和失败退款测试喵。
+- `model/virtual_model_runtime_test.go` 已覆盖快照、规则、手动冻结和自动冻结，需要增加候选尝试元数据与自动冻结写入失败的模型层测试喵。
+- `service/virtualmodel/custom_candidate_test.go` 已覆盖 body、header、URL、passthrough 和基础 probe，需要新增 OpenAI/Anthropic SSE 事件分类、首事件错误、放流后 read error 和 custom 不计费测试喵。
+- `controller/relay_retry_test.go` 已覆盖原生 retry helper，需要增加 virtual handoff 只在 native retry 耗尽后触发以及普通 auto route 不受影响的测试喵。
+
+新增的 Gate A 测试必须使用可记录的 fake funding、fake billing、fake native adapter 和 fake usage parser，断言调用顺序而不仅是最终余额喵。
+
+每个候选测试至少断言以下字段互不相等或互不覆盖：`CandidateAttemptID`、候选 RequestID、`PriceData`、`ChannelMeta`、tiered snapshot、`FinalPreConsumedQuota`、usage、settlement state 和 `LastError` 喵。
+
+## 20. Gate A 具体验收矩阵
+
+| 场景 | 候选 A | 候选 B | 必须验证 |
+| --- | --- | --- | --- |
+| 无 usage 失败后成功 | 预扣后失败并同步退款 | 新建独立预扣并成功结算 | A/B billing、RequestID、价格和 Channel 状态完全隔离喵 |
+| 有 usage 失败后成功 | 按 A 真实模型/分组结算 usage | 按 B 真实模型/分组单独结算 | A 的 usage 不覆盖 B，最终账单包含两条独立内部记录喵 |
+| A 退款失败 | 进入计费基础设施错误 | 不创建、不预扣、不连接 | 只写一次终态并保留可审计补偿信息喵 |
+| A passthrough | 不产生后备 internal | 不执行 | 不追加第二个 JSON 错误喵 |
+| A 放流后断开 | 当前流结束 | 不执行 | 不发生 handoff、循环、重放或追加错误喵 |
+| A/B 并发请求 | 各自独立 | 各自独立 | 不共享 billing、RequestID、context 和余额状态喵 |
+| 重复 defer | 已处于 settled/refunded | 不适用 | 不重复结算、退款或 violation fee 喵 |
+| 普通 auto route | 不适用 | 不适用 | route index、cross-group retry 和原生账单与基线一致喵 |
+
+Gate A 通过条件是所有矩阵场景都满足，并且 race 检查没有发现候选状态、billing 状态或 context 基线的数据竞争喵。
+
+## 21. 实现禁区
+
+不得通过把多个候选的 billing 放进一个数组后继续共享一个可变 `RelayInfo` 来声称完成隔离喵。
+
+不得在候选切换后仅设置 `relayInfo.Billing=nil`、`FinalPreConsumedQuota=0` 或清空订阅字段来掩盖旧候选的未结算状态喵。
+
+不得先异步调用 `Refund` 再立即为后备候选执行 `PreConsumeBilling`，因为资金释放和新候选预扣之间会产生竞态喵。
+
+不得为了候选切换修改普通 relay 的 `SettleBilling`、Token AutoRoutes、Channel retry 或全局 error rewrite 语义，除非新增显式虚拟候选分支并有回归测试喵。
+
+不得在日志、审计、fake 测试断言或错误上下文中保存真实 API Key、完整 Channel key、完整 Base URL、请求正文或完整上游响应喵。
+
+## 22. 本规格完成定义
+
+除原有完成定义外，还必须满足以下可观测事实喵：
+
+- 代码审查可以指出每一个候选 `RelayInfo` 的创建点、终态点和销毁/脱离共享状态点喵。
+- 代码审查可以指出每一个候选 billing 的 Reserve、Settle、Refund 和 Finalize 调用，并证明外层 defer 不会重复调用喵。
+- 代码审查可以证明候选切换前 Gin context 已恢复请求基线，后备候选不会读取前一个候选的 Channel 或 AutoRoutes 状态喵。
+- 测试日志可以通过 `VirtualRequestID` 和 `CandidateAttemptID` 分别重建候选 A、候选 B 的执行、计费和最终结果喵。
+- 任何计费基础设施错误都能阻止后备 internal 候选创建，并留下可重试或可人工处理的错误记录喵。
+- 普通模型、Token AutoRoutes 和 custom 不计费语义的回归测试全部通过喵。
