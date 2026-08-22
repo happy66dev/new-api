@@ -26,9 +26,11 @@ func buildChannelAffinityStatsContextForTest(ruleName, usingGroup, keyFP string)
 }
 
 func TestObserveChannelAffinityUsageCacheByRelayFormat_ClaudeMode(t *testing.T) {
-	ruleName := fmt.Sprintf("rule_%d", time.Now().UnixNano())
+	// 喵~防御：Windows 的 time.Now() 粒度可能让相邻用例取到相同纳秒值，必须叠加用例名保证统计键唯一喵。
+	ruleName := fmt.Sprintf("rule_%s_%d", t.Name(), time.Now().UnixNano())
 	usingGroup := "default"
-	keyFP := fmt.Sprintf("fp_%d", time.Now().UnixNano())
+	// 喵~防御：Key 指纹同样叠加用例名，避免不同用例共享同一条亲和缓存统计记录喵。
+	keyFP := fmt.Sprintf("fp_%s_%d", t.Name(), time.Now().UnixNano())
 	ctx := buildChannelAffinityStatsContextForTest(ruleName, usingGroup, keyFP)
 
 	usage := &dto.Usage{
@@ -53,9 +55,11 @@ func TestObserveChannelAffinityUsageCacheByRelayFormat_ClaudeMode(t *testing.T) 
 }
 
 func TestObserveChannelAffinityUsageCacheByRelayFormat_MixedMode(t *testing.T) {
-	ruleName := fmt.Sprintf("rule_%d", time.Now().UnixNano())
+	// 喵~防御：Windows 的 time.Now() 粒度可能让相邻用例取到相同纳秒值，必须叠加用例名保证统计键唯一喵。
+	ruleName := fmt.Sprintf("rule_%s_%d", t.Name(), time.Now().UnixNano())
 	usingGroup := "default"
-	keyFP := fmt.Sprintf("fp_%d", time.Now().UnixNano())
+	// 喵~防御：Key 指纹同样叠加用例名，避免不同用例共享同一条亲和缓存统计记录喵。
+	keyFP := fmt.Sprintf("fp_%s_%d", t.Name(), time.Now().UnixNano())
 	ctx := buildChannelAffinityStatsContextForTest(ruleName, usingGroup, keyFP)
 
 	openAIUsage := &dto.Usage{
@@ -83,9 +87,11 @@ func TestObserveChannelAffinityUsageCacheByRelayFormat_MixedMode(t *testing.T) {
 }
 
 func TestObserveChannelAffinityUsageCacheByRelayFormat_UnsupportedModeKeepsEmpty(t *testing.T) {
-	ruleName := fmt.Sprintf("rule_%d", time.Now().UnixNano())
+	// 喵~防御：Windows 的 time.Now() 粒度可能让相邻用例取到相同纳秒值，必须叠加用例名保证统计键唯一喵。
+	ruleName := fmt.Sprintf("rule_%s_%d", t.Name(), time.Now().UnixNano())
 	usingGroup := "default"
-	keyFP := fmt.Sprintf("fp_%d", time.Now().UnixNano())
+	// 喵~防御：Key 指纹同样叠加用例名，避免不同用例共享同一条亲和缓存统计记录喵。
+	keyFP := fmt.Sprintf("fp_%s_%d", t.Name(), time.Now().UnixNano())
 	ctx := buildChannelAffinityStatsContextForTest(ruleName, usingGroup, keyFP)
 
 	usage := &dto.Usage{
