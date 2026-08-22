@@ -362,3 +362,232 @@ API Key 绑定界面需要增加搜索、分页、状态徽标、空结果和加
 9. 总开关、自定义上游、循环、流式探测和详细日志均完成灰度开启、关闭新请求和在途快照继续执行的回滚演练喵。
 
 在完成定义满足前，发布状态只能写为“虚拟模型基础能力已实现，剩余规格正在验收”，不得写为完整交付喵。
+
+## 16. 模块边界与实现接口
+
+### 16.1 虚拟模型执行器
+
+新增或整理独立的虚拟模型执行器边界，负责请求级快照、候选索引、循环轮次、冻结跳过、候选切换和终态决策喵。
+
+执行器不得直接实现 new-api Channel 选择、协议转换或计费规则；这些能力通过明确的 native relay adapter 接口调用喵。
+
+建议抽象以下能力，具体接口名称可以按代码库惯例调整喵。
+
+```go
+type VirtualModelCandidateExecutor interface {
+    Execute(ctx context.Context, request *VirtualModelRequestSnapshot) (*VirtualModelExecutionResult, error)
+}
+
+type NativeCandidateRunner interface {
+    Run(ctx context.Context, attempt *VirtualModelCandidateAttempt) (*VirtualModelCandidateResult, error)
+}
+
+type CustomCandidateRunner interface {
+    Run(ctx context.Context, attempt *VirtualModelCandidateAttempt) (*VirtualModelCandidateResult, error)
+}
+
+type CandidateFailureDecider interface {
+    Decide(attempt *VirtualModelCandidateAttempt, failure VirtualModelCandidateFailure) VirtualModelCandidateDecision
+}
+```
+
+接口返回值必须区分“候选失败但可以继续”“已经提交客户端响应”“最终终止错误”和“内部基础设施错误”四类结果，不能只返回一个布尔值喵。
+
+### 16.2 native relay adapter
+
+native adapter 负责把当前候选的分组和真实模型装载到现有 relay 上下文，调用原生 Channel retry，并在原生 retry 完成后返回结构化结果喵。
+
+adapter 不得递归调用公开的 `controller.Relay`，不得创建嵌套响应 defer、重复预扣费、重复最终错误写入或重复请求日志喵。
+
+adapter 必须提供候选尝试开始、成功、失败和计费收尾的明确生命周期回调，供虚拟模型执行器写入 `candidate_attempt_id` 喵。
+
+### 16.3 custom upstream adapter
+
+custom adapter 只接收已经通过 SSRF 校验并从快照解密的短生命周期凭据，负责请求构造、认证头替换、顶层模型替换、有限探测、响应过滤和结果分类喵。
+
+custom adapter 不得读取当前数据库中的最新候选配置、规则或冻结状态；所有决策输入必须来自请求开始时的不可变快照喵。
+
+custom adapter 必须在返回结果前清理对 URL、API Key、Authorization、Cookie 和响应正文的临时引用；禁止把请求对象或完整响应缓存到异步任务喵。
+
+### 16.4 billing adapter
+
+billing adapter 负责候选级预扣、补扣、退款、成功结算和幂等收尾，虚拟模型执行器只能调用抽象接口，不得直接操作钱包、订阅或 Token quota 表喵。
+
+候选级计费对象必须拥有独立的 request ID 和 candidate attempt ID；候选切换时旧对象进入终态，新候选创建新的对象喵。
+
+如果底层计费接口当前只能绑定一个 `RelayInfo`，需要先提取候选级 billing context，再由兼容层将其映射到现有 relay 字段；兼容层不得把多个候选的状态混合存放喵。
+
+## 17. 候选状态机
+
+每次候选尝试必须遵循以下单向状态迁移，禁止从终态回到执行态喵。
+
+```text
+pending
+  -> running
+  -> retry_waiting
+  -> running
+  -> succeeded
+  -> failed_before_response
+  -> response_started
+  -> response_finished
+  -> cancelled
+  -> timed_out
+  -> infrastructure_failed
+```
+
+`failed_before_response` 才允许进入 `next`、`freeze` 或下一轮循环；`response_started` 之后只能进入 `response_finished`、`cancelled` 或 `timed_out`，不得再进入候选切换喵。
+
+`retry_waiting` 必须同时绑定 retry 序号和截止时间，等待被取消、超过总 deadline 或达到候选最大重试次数时分别转为明确终态喵。
+
+候选状态记录必须与虚拟请求状态分离；候选失败不等于虚拟请求失败，只有执行器确认没有后续候选或循环预算耗尽时，虚拟请求才进入最终失败喵。
+
+虚拟请求状态至少包含 `accepted`、`running`、`succeeded`、`failed`、`cancelled`、`timed_out` 和 `rejected` 喵。
+
+状态迁移必须具备幂等保护，重复收到上游结束、客户端断开或 controller defer 不得重复写终态事件、重复结算或重复退款喵。
+
+## 18. 决策优先级与边界表
+
+为避免规则、重试、冻结和循环之间出现歧义，执行器必须按以下优先级处理喵。
+
+1. 客户端取消、连接关闭或总 deadline 到期优先于所有候选动作喵。
+2. 已发送有效业务字节优先于失败规则，直接禁止切换和循环喵。
+3. `passthrough` 优先于 `next`、`freeze` 和循环，但只能在响应尚未提交时写出受控错误喵。
+4. `retry` 受候选最大重试次数和总预算约束，达到任一限制后降级为该候选的下一步动作喵。
+5. `freeze` 先完成冻结写入；冻结写入失败时终止请求，不得假装冻结成功后继续循环喵。
+6. `next` 推进到下一候选；没有下一候选时再判断循环，而不是在候选内部隐式重试喵。
+7. 只有所有候选完成且循环条件满足时，才允许等待自动冻结或开始下一轮喵。
+
+| 当前条件 | 允许动作 | 禁止动作 |
+| --- | --- | --- |
+| 尚未写响应，候选失败 | `retry`、`next`、`freeze`、`passthrough` | 忽略总 deadline |
+| 已写 HTTP 头但无有效业务字节 | 仅按协议安全结束或受限失败处理 | 重放并追加第二个响应 |
+| 已写有效业务字节 | 结束当前流并记录失败 | 切换、循环、重试请求、追加 JSON |
+| 客户端已取消 | 取消当前尝试并收尾 | 新建后备上游连接 |
+| 自动冻结写入失败 | 返回基础设施错误 | 继续执行同一身份 |
+| 候选链耗尽且循环关闭 | 返回最终失败 | 隐式从首候选重启 |
+| 候选链耗尽且循环开启 | 满足预算才重启或等待 | 无上限循环 |
+
+## 19. API 契约补充
+
+### 19.1 候选详情与规则响应
+
+候选读取响应必须明确区分候选基础配置、规则列表和冻结摘要，不能把规则数量与完整规则正文混成可变结构喵。
+
+建议响应结构如下，字段名称可以沿用现有 snake_case 约定喵。
+
+```json
+{
+  "id": 42,
+  "source_type": "custom",
+  "stable_order": 1,
+  "enabled": true,
+  "max_retries": 2,
+  "timeout_seconds": 60,
+  "real_model_name": "example-model",
+  "auth_style": "bearer",
+  "credential_configured": true,
+  "base_url_summary": "https://api.example.com/v1",
+  "failure_rule_count": 2,
+  "failure_rules": [],
+  "freeze": {
+    "manual_active": false,
+    "automatic_active": true,
+    "automatic_expires_at": 1790000000,
+    "last_error_class": "rate_limited"
+  }
+}
+```
+
+`failure_rules` 可以在详情接口返回，在列表接口默认只返回 `failure_rule_count`；任何接口都不得返回自定义 API Key 或可用于重放的完整凭据喵。
+
+### 19.2 规则替换
+
+规则替换请求必须携带模型版本和候选 ID，规则数组顺序就是 `rule_order`，空数组表示清空该候选规则喵。
+
+服务端必须先验证候选属于当前用户和当前模型，再在同一事务内执行版本 CAS、规则替换和审计写入；版本冲突时旧规则不得被删除喵。
+
+规则保存失败时响应必须包含稳定错误码和字段级错误位置，例如 `rules[0].body_regex`，但不得返回正则编译器可能包含敏感输入的完整异常文本喵。
+
+### 19.3 状态与运行摘要
+
+状态接口不得声称执行了主动健康检查，除非服务端确实在请求范围内执行了受限探测并明确返回探测时间与结果喵。
+
+建议增加以下只读字段喵。
+
+- `enabled_candidates`：启用候选数量喵。
+- `frozen_candidates`：当前冻结候选数量喵。
+- `candidate_rule_count`：有规则候选数量喵。
+- `last_request_at`：最近虚拟请求时间喵。
+- `last_success_at`：最近成功时间喵。
+- `last_failure_class`：最近失败分类喵。
+- `last_candidate_id`：最近完成的候选 ID 喵。
+- `observed_at`：状态摘要生成时间喵。
+
+## 20. 失败与基础设施故障处理
+
+数据库读取快照失败、主密钥缺失、冻结状态查询失败、计费服务不可用和审计写入失败必须区分处理喵。
+
+安全相关前置依赖失败时，新虚拟模型请求采用拒绝优先策略，返回 `virtual_model_unavailable`，不得降级到普通模型或 Token AutoRoutes 喵。
+
+候选级审计写入失败是否阻断请求必须固定为配置项默认值：核心安全审计写入失败阻断新请求，非关键运行采样失败只记录本地错误并允许业务继续喵。
+
+计费收尾失败不能静默吞掉；若余额或订阅状态无法确认，必须写入高优先级系统日志和候选尝试失败事件，并阻止继续创建新的 internal 后备计费会话喵。
+
+客户端错误、上游错误、配置错误、基础设施错误和取消错误必须使用不同的 `ErrorClass`，并且错误分类枚举需要在单元测试中锁定，避免不同 adapter 各自发明字符串喵。
+
+## 21. 性能、资源与并发约束
+
+每个虚拟请求最多同时存在一个活动候选尝试，候选切换前必须完成旧候选的连接关闭和计费收尾，禁止并行竞速多个上游候选喵。
+
+规则匹配最多处理固定数量规则和固定大小响应摘要；正则编译结果可以按规则版本缓存，但缓存键不得包含明文凭据或完整请求内容喵。
+
+自动冻结等待不能为每个请求创建长期独立 goroutine；应使用可取消的 timer 或统一等待机制，并在请求结束时释放 timer 喵。
+
+原始请求体、SSE 预提交缓冲和错误摘要必须受硬大小限制；超过限制时立即返回结构化错误，不允许无限追加内存喵。
+
+运行事件写入应采用有界缓冲或同步关键事件加异步非关键事件的方式，不能因为日志后端缓慢阻塞所有普通模型请求喵。
+
+并发控制面写入必须依赖数据库版本 CAS，不得以进程内 mutex 作为跨实例一致性方案喵。
+
+## 22. 代码变更清单
+
+实现阶段至少需要检查以下模块边界，实际文件以仓库当前结构为准喵。
+
+- `middleware/distributor.go`：请求快照、候选推进、循环、冻结等待和 custom handoff 喵。
+- `controller/relay.go`：native relay 生命周期、候选级计费边界和最终 defer 喵。
+- `relay/common/relay_info.go`：候选级 relay/billing context 的隔离承载结构喵。
+- `service/billing_session.go`：候选级预扣、退款、结算和幂等终态喵。
+- `service/virtualmodel/failure_rule.go`：失败结构规范化和规则决策喵。
+- `service/virtualmodel/custom_candidate.go`：custom 请求透传、探测、错误转换和响应边界喵。
+- `model/virtual_model.go`：冻结、状态、审计和快照查询喵。
+- `controller/virtual_model.go`：状态响应、规则/冻结契约、审计和冲突错误喵。
+- `router/api-router.go`：新增或调整用户侧资源路由喵。
+- `web/src/features/virtual-models/api.ts`：API 类型、分页、状态和错误契约喵。
+- `web/src/features/virtual-models/index.tsx` 及其组件：状态、冻结、授权、冲突和移动端体验喵。
+- `web/src/i18n/locales/en.json` 与 `web/src/i18n/locales/zh.json`：只维护英文和简体中文文案喵。
+
+任何涉及公共 relay 或计费的改动必须同时增加回归测试，证明普通模型和 Token AutoRoutes 行为未改变喵。
+
+## 23. 分阶段交付门槛
+
+### Gate A：计费与上下文隔离
+
+必须通过候选级独立计费单元测试、连续两个 internal 候选的失败/成功结算测试、重复收尾测试和普通 relay 回归测试喵。
+
+### Gate B：失败决策完整化
+
+必须通过 native/custom 统一失败结构测试、四种规则动作测试、凭据/解密/网络故障 handoff 测试和敏感信息扫描喵。
+
+### Gate C：循环与流式边界
+
+必须通过总 timeout、最大轮数、自动冻结等待、客户端取消、SSE 预提交和放流后禁止切换测试喵。
+
+### Gate D：控制面和可观测性
+
+必须通过状态字段语义测试、审计关联 ID 测试、冻结 UI、API Key 搜索分页、409 草稿恢复和移动端冒烟测试喵。
+
+### Gate E：发布与回滚
+
+必须通过三种数据库迁移、普通模型回归、Token AutoRoutes 回归、功能关闭在途快照测试、密钥泄漏扫描和灰度回滚演练喵。
+
+任何 Gate 未通过时，只能继续在开发或测试环境运行，不得扩大虚拟模型数据面灰度范围喵。
