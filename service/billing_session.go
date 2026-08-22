@@ -21,19 +21,63 @@ import (
 // BillingSession — 统一计费会话
 // ---------------------------------------------------------------------------
 
+// billingAttemptState 表示单次计费尝试所处的生命周期阶段喵。
+// 用显式状态取代多个互相牵制的布尔标志，避免"已退款还能再结算"这类组合非法却无人拦截喵。
+type billingAttemptState int
+
+const (
+	// billingAttemptStatePending 表示会话已创建但尚未成功预扣任何额度喵。
+	billingAttemptStatePending billingAttemptState = iota
+	// billingAttemptStateReserved 表示预扣已完成，会话正持有可退还或可结算的额度喵。
+	billingAttemptStateReserved
+	// billingAttemptStateSettled 是终态，表示额度已按实际消耗结算，禁止再退款喵。
+	billingAttemptStateSettled
+	// billingAttemptStateRefunded 是终态，表示预扣额度已全部退还，禁止再结算喵。
+	billingAttemptStateRefunded
+)
+
+// String 返回状态的可读名称，仅用于日志与错误信息喵。
+func (state billingAttemptState) String() string {
+	// 按枚举值逐一映射，未知取值统一返回 unknown 以便排查异常喵。
+	switch state {
+	case billingAttemptStatePending:
+		return "pending"
+	case billingAttemptStateReserved:
+		return "reserved"
+	case billingAttemptStateSettled:
+		return "settled"
+	case billingAttemptStateRefunded:
+		return "refunded"
+	default:
+		return "unknown"
+	}
+}
+
 // BillingSession 封装单次请求的预扣费/结算/退款生命周期。
 // 实现 relaycommon.BillingSettler 接口。
+//
+// 生命周期喵：pending -> reserved -> settled 或 refunded，两个终态互斥且不可回退喵。
+// 虚拟模型候选切换会在同一个请求里创建多个会话，每个候选各自独立走完这条状态机喵。
 type BillingSession struct {
 	relayInfo        *relaycommon.RelayInfo
 	funding          FundingSource
-	preConsumedQuota int  // 实际预扣额度（信任用户可能为 0）
-	tokenConsumed    int  // 令牌额度实际扣减量
-	extraReserved    int  // 发送前补充预扣的额度（订阅退款时需要单独回滚）
-	trusted          bool // 是否命中信任额度旁路
-	fundingSettled   bool // funding.Settle 已成功，资金来源已提交
-	settled          bool // Settle 全部完成（资金 + 令牌）
-	refunded         bool // Refund 已调用
+	preConsumedQuota int                 // 实际预扣额度（信任用户可能为 0）
+	tokenConsumed    int                 // 令牌额度实际扣减量
+	extraReserved    int                 // 发送前补充预扣的额度（订阅退款时需要单独回滚）
+	trusted          bool                // 是否命中信任额度旁路
+	fundingSettled   bool                // funding.Settle 已成功，资金来源已提交
+	state            billingAttemptState // 当前计费尝试所处的生命周期阶段喵。
+	fundingRefunded  bool                // funding.Refund 已成功，重试退款时必须跳过该步骤喵。
+	extraRefunded    bool                // 订阅额外预扣已回滚，重试退款时必须跳过该步骤喵。
+	tokenRefunded    bool                // 令牌预扣额度已退回，重试退款时必须跳过该步骤喵。
+	refundInFlight   bool                // 是否已有异步退款协程在执行，避免并发重复退款喵。
 	mu               sync.Mutex
+}
+
+// isTerminalLocked 判断会话是否已进入结算或退款终态，调用前必须持有会话锁喵。
+func (s *BillingSession) isTerminalLocked() bool {
+	// 两个终态都意味着资金动作已完成，后续任何资金操作都必须被拒绝或忽略喵。
+	return s.state == billingAttemptStateSettled || s.state == billingAttemptStateRefunded
 }
 
 // Settle 根据实际消耗额度进行结算。
@@ -42,12 +86,17 @@ type BillingSession struct {
 func (s *BillingSession) Settle(actualQuota int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.settled {
+	// 重复结算按幂等成功处理，避免上层多次调用造成二次扣费喵。
+	if s.state == billingAttemptStateSettled {
 		return nil
+	}
+	// 喵~防御：预扣额度已经退还后再结算会凭空多扣一次费用，必须显式报错而不是静默继续喵。
+	if s.state == billingAttemptStateRefunded {
+		return fmt.Errorf("billing session already refunded (state=%s), refusing to settle", s.state)
 	}
 	delta := actualQuota - s.preConsumedQuota
 	if delta == 0 {
-		s.settled = true
+		s.state = billingAttemptStateSettled
 		return nil
 	}
 	// 1) 调整资金来源（仅在尚未提交时执行，防止重复调用）
@@ -75,8 +124,55 @@ func (s *BillingSession) Settle(actualQuota int) error {
 	if s.funding.Source() == BillingSourceSubscription {
 		s.relayInfo.SubscriptionPostDelta += int64(delta)
 	}
-	s.settled = true
+	s.state = billingAttemptStateSettled
 	return tokenErr
+}
+
+// refundLocked 按步骤退还本次尝试的全部预扣额度，调用前必须持有会话锁喵。
+//
+// 整体思路喵：退款由"资金来源、订阅额外预扣、令牌额度"三个独立步骤组成，
+// 其中钱包退款 IncreaseUserQuota 是非幂等的加法操作，重复执行会把额度多退给用户喵。
+// 因此每个步骤成功后都会被单独标记，任一步骤失败时只返回错误而不改变已完成标记，
+// 这样上层重试退款时会跳过已完成步骤，既不会多退也不会漏退喵。
+// 全部步骤成功后才把会话推进到 refunded 终态喵。
+//
+// 输出：nil 表示全部步骤已完成；非 nil 表示仍有步骤待重试，会话保持在 reserved 阶段喵。
+func (s *BillingSession) refundLocked() error {
+	// 已进入终态或本就没有可退额度时按幂等成功返回喵。
+	if s.isTerminalLocked() || !s.needsRefundLocked() {
+		return nil
+	}
+	// 喵~防御：资金来源缺失时无法安全退款，必须报错让调用方感知额度仍被占用喵。
+	if s.funding == nil {
+		return errors.New("billing funding source is unavailable")
+	}
+	// 第一步：退还资金来源预扣；只有尚未成功退还过才执行，避免钱包被重复加额喵。
+	if !s.fundingRefunded {
+		if refundError := s.funding.Refund(); refundError != nil {
+			return refundError
+		}
+		s.fundingRefunded = true
+	}
+	// 第二步：回滚发送前补充预扣的订阅额度；该额度不在 funding.Refund 覆盖范围内喵。
+	if !s.extraRefunded {
+		if s.extraReserved > 0 && s.funding.Source() == BillingSourceSubscription && s.relayInfo.SubscriptionId > 0 {
+			if refundError := model.PostConsumeUserSubscriptionDelta(s.relayInfo.SubscriptionId, -int64(s.extraReserved)); refundError != nil {
+				return refundError
+			}
+		}
+		s.extraRefunded = true
+	}
+	// 第三步：退还令牌维度的预扣额度；Playground 请求不扣令牌额度所以直接跳过喵。
+	if !s.tokenRefunded {
+		if s.tokenConsumed > 0 && !s.relayInfo.IsPlayground {
+			if refundError := model.IncreaseTokenQuota(s.relayInfo.TokenId, s.relayInfo.TokenKey, s.tokenConsumed); refundError != nil {
+				return refundError
+			}
+		}
+		s.tokenRefunded = true
+	}
+	s.state = billingAttemptStateRefunded
+	return nil
 }
 
 // RefundImmediately 同步退还所有预扣费，供同一个请求切换虚拟模型内部候选前释放旧候选额度喵。
@@ -88,83 +184,54 @@ func (s *BillingSession) RefundImmediately(c *gin.Context) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// 喵~防御：已结算、已退款或无预扣状态时不得再次增加余额，避免重复退款喵。
-	if s.settled || s.refunded || !s.needsRefundLocked() {
+	// 已结算、已退款或无预扣状态时不得再次增加余额，避免重复退款喵。
+	if s.isTerminalLocked() || !s.needsRefundLocked() {
 		return nil
 	}
-	tokenId := s.relayInfo.TokenId
-	tokenKey := s.relayInfo.TokenKey
-	isPlayground := s.relayInfo.IsPlayground
-	tokenConsumed := s.tokenConsumed
-	extraReserved := s.extraReserved
-	subscriptionId := s.relayInfo.SubscriptionId
-	funding := s.funding
 	// 喵~防御：资金来源缺失时不能继续切换候选，避免旧预扣额度永久锁定喵。
-	if funding == nil {
+	if s.funding == nil {
 		return errors.New("billing funding source is unavailable")
 	}
 	logger.LogInfo(c, fmt.Sprintf("用户 %d 切换虚拟模型候选，立即返还失败候选预扣费（token_quota=%s, funding=%s）",
 		s.relayInfo.UserId,
-		logger.FormatQuota(tokenConsumed),
-		funding.Source(),
+		logger.FormatQuota(s.tokenConsumed),
+		s.funding.Source(),
 	))
-	if refundError := funding.Refund(); refundError != nil {
-		return refundError
-	}
-	if extraReserved > 0 && funding.Source() == BillingSourceSubscription && subscriptionId > 0 {
-		if refundError := model.PostConsumeUserSubscriptionDelta(subscriptionId, -int64(extraReserved)); refundError != nil {
-			return refundError
-		}
-	}
-	if tokenConsumed > 0 && !isPlayground {
-		if refundError := model.IncreaseTokenQuota(tokenId, tokenKey, tokenConsumed); refundError != nil {
-			return refundError
-		}
-	}
-	s.refunded = true
-	return nil
+	// 退款步骤全部成功才会进入 refunded 终态；部分失败时保持 reserved，交由外层 defer 重试剩余步骤喵。
+	return s.refundLocked()
 }
 
 // Refund 退还所有预扣费，幂等安全，异步执行。
 func (s *BillingSession) Refund(c *gin.Context) {
+	// 喵~防御：空计费会话没有任何预扣状态，直接返回避免空指针喵。
+	if s == nil {
+		return
+	}
 	s.mu.Lock()
-	if s.settled || s.refunded || !s.needsRefundLocked() {
+	// 已进入终态、无可退额度或已有退款协程在跑时都不再重复投递喵。
+	if s.isTerminalLocked() || !s.needsRefundLocked() || s.refundInFlight {
 		s.mu.Unlock()
 		return
 	}
-	s.refunded = true
-	s.mu.Unlock()
-
+	// 标记退款进行中，防止并发调用同时投递两个协程导致钱包被多退一次喵。
+	s.refundInFlight = true
 	logger.LogInfo(c, fmt.Sprintf("用户 %d 请求失败, 返还预扣费（token_quota=%s, funding=%s）",
 		s.relayInfo.UserId,
 		logger.FormatQuota(s.tokenConsumed),
 		s.funding.Source(),
 	))
-
-	// 复制需要的值到闭包中
-	tokenId := s.relayInfo.TokenId
-	tokenKey := s.relayInfo.TokenKey
-	isPlayground := s.relayInfo.IsPlayground
-	tokenConsumed := s.tokenConsumed
-	extraReserved := s.extraReserved
-	subscriptionId := s.relayInfo.SubscriptionId
-	funding := s.funding
+	s.mu.Unlock()
 
 	gopool.Go(func() {
-		// 1) 退还资金来源
-		if err := funding.Refund(); err != nil {
-			common.SysLog("error refunding billing source: " + err.Error())
-		}
-		if extraReserved > 0 && funding.Source() == BillingSourceSubscription && subscriptionId > 0 {
-			if err := model.PostConsumeUserSubscriptionDelta(subscriptionId, -int64(extraReserved)); err != nil {
-				common.SysLog("error refunding subscription extra reserved quota: " + err.Error())
-			}
-		}
-		// 2) 退还令牌额度
-		if tokenConsumed > 0 && !isPlayground {
-			if err := model.IncreaseTokenQuota(tokenId, tokenKey, tokenConsumed); err != nil {
-				common.SysLog("error refunding token quota: " + err.Error())
-			}
+		// 主人注意：退款在协程内持有会话锁执行数据库操作，锁粒度等同 RefundImmediately，
+		// 目的是让"哪些步骤已完成"的记录与实际数据库变更保持原子一致喵。
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		// 无论成功与否都要清除进行中标记，让后续重试仍有机会补齐剩余步骤喵。
+		defer func() { s.refundInFlight = false }()
+		// 退款失败只能记录日志；已完成步骤不会被重复执行，剩余步骤留待下一次退款调用重试喵。
+		if refundError := s.refundLocked(); refundError != nil {
+			common.SysLog("error refunding pre-consumed billing quota: " + refundError.Error())
 		}
 	})
 }
@@ -177,8 +244,8 @@ func (s *BillingSession) NeedsRefund() bool {
 }
 
 func (s *BillingSession) needsRefundLocked() bool {
-	if s.settled || s.refunded || s.fundingSettled {
-		// fundingSettled 时资金来源已提交结算，不能再退预扣费
+	if s.isTerminalLocked() || s.fundingSettled {
+		// 终态说明资金动作已完成，fundingSettled 说明资金来源已提交结算，都不能再退预扣费
 		return false
 	}
 	if s.tokenConsumed > 0 {
@@ -193,6 +260,9 @@ func (s *BillingSession) needsRefundLocked() bool {
 
 // GetPreConsumedQuota 返回实际预扣的额度。
 func (s *BillingSession) GetPreConsumedQuota() int {
+	// 与其他生命周期方法共用会话锁，避免结算与补扣并发时读到撕裂的中间值喵。
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.preConsumedQuota
 }
 
@@ -200,7 +270,8 @@ func (s *BillingSession) Reserve(targetQuota int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.settled || s.refunded || s.trusted || targetQuota <= s.preConsumedQuota {
+	// 已进入终态、命中信任旁路或目标额度未超过当前预扣时都不需要补扣喵。
+	if s.isTerminalLocked() || s.trusted || targetQuota <= s.preConsumedQuota {
 		return nil
 	}
 
@@ -279,6 +350,8 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 	}
 
 	s.preConsumedQuota = effectiveQuota
+	// 预扣阶段完成，会话进入持有额度的 reserved 阶段，后续只能走结算或退款其中一条路喵。
+	s.state = billingAttemptStateReserved
 
 	// ---- 同步 RelayInfo 兼容字段 ----
 	s.syncRelayInfo()
