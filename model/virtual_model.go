@@ -54,11 +54,13 @@ const (
 
 // VirtualModel 保存用户私有虚拟模型的主配置喵。
 type VirtualModel struct {
-	ID                  int            `json:"id" gorm:"primaryKey"`
-	OwnerUserID         int            `json:"owner_user_id" gorm:"index;not null;uniqueIndex:idx_virtual_model_owner_name,priority:1"`
-	NormalizedName      string         `json:"normalized_name" gorm:"type:varchar(128);not null;uniqueIndex:idx_virtual_model_owner_name,priority:2"`
-	DisplayName         string         `json:"display_name" gorm:"type:varchar(128);not null"`
-	Enabled             bool           `json:"enabled" gorm:"default:true"`
+	ID             int    `json:"id" gorm:"primaryKey"`
+	OwnerUserID    int    `json:"owner_user_id" gorm:"index;not null;uniqueIndex:idx_virtual_model_owner_name,priority:1"`
+	NormalizedName string `json:"normalized_name" gorm:"type:varchar(128);not null;uniqueIndex:idx_virtual_model_owner_name,priority:2"`
+	DisplayName    string `json:"display_name" gorm:"type:varchar(128);not null"`
+	// 喵~防御：Enabled 不能带 default 标签，否则 GORM 在 Create 时会跳过 false 值并回落到数据库默认 true，
+	// 导致用户「创建即停用」的模型被静默写成启用状态并可被 API Key 调用喵。
+	Enabled             bool           `json:"enabled"`
 	LoopEnabled         bool           `json:"loop_enabled"`
 	TotalTimeoutSeconds int            `json:"total_timeout_seconds" gorm:"default:120"`
 	MaxLoopRounds       int            `json:"max_loop_rounds" gorm:"default:1"`
@@ -74,13 +76,14 @@ type VirtualModelCandidate struct {
 	VirtualModelID int                    `json:"virtual_model_id" gorm:"index;not null;uniqueIndex:idx_virtual_model_candidate_order,priority:1"`
 	StableOrder    int                    `json:"stable_order" gorm:"not null;uniqueIndex:idx_virtual_model_candidate_order,priority:2"`
 	SourceType     VirtualModelSourceType `json:"source_type" gorm:"type:varchar(16);not null"`
-	Enabled        bool                   `json:"enabled" gorm:"default:true"`
-	MaxRetries     int                    `json:"max_retries" gorm:"default:0"`
-	TimeoutSeconds int                    `json:"timeout_seconds" gorm:"default:60"`
-	Version        int64                  `json:"version" gorm:"default:1"`
-	CreatedTime    int64                  `json:"created_time" gorm:"bigint"`
-	UpdatedTime    int64                  `json:"updated_time" gorm:"bigint"`
-	DeletedAt      gorm.DeletedAt         `json:"-" gorm:"index"`
+	// 喵~防御：同上，候选的 Enabled 也不能带 default 标签，否则新建停用候选会被写成启用并参与调用喵。
+	Enabled        bool           `json:"enabled"`
+	MaxRetries     int            `json:"max_retries" gorm:"default:0"`
+	TimeoutSeconds int            `json:"timeout_seconds" gorm:"default:60"`
+	Version        int64          `json:"version" gorm:"default:1"`
+	CreatedTime    int64          `json:"created_time" gorm:"bigint"`
+	UpdatedTime    int64          `json:"updated_time" gorm:"bigint"`
+	DeletedAt      gorm.DeletedAt `json:"-" gorm:"index"`
 }
 
 // VirtualModelInternalCandidate 保存 new-api 内部候选的分组和真实模型喵。
@@ -511,7 +514,8 @@ func ClearVirtualModelCustomFreezeStateWithDB(database *gorm.DB, ownerUserID int
 		return errors.New("virtual model database is unavailable")
 	}
 	// 喵~防御：仅匹配请求启动时观察到的版本，避免成功请求清除并发失败刚写入的新冻结喵。
-	return database.Where("owner_user_id = ? AND identity_digest = ? AND updated_time = ?", ownerUserID, identityDigest, expectedUpdatedTime).Updates(map[string]any{"frozen_until": 0, "consecutive_fails": 0, "last_failure_class": "", "updated_time": currentTimestamp}).Error
+	// 主人注意：这里必须显式绑定 Model，否则 GORM 无法从 map 推断表名并直接返回 "Table not set" 错误喵。
+	return database.Model(&VirtualModelCustomFreezeState{}).Where("owner_user_id = ? AND identity_digest = ? AND updated_time = ?", ownerUserID, identityDigest, expectedUpdatedTime).Updates(map[string]any{"frozen_until": 0, "consecutive_fails": 0, "last_failure_class": "", "updated_time": currentTimestamp}).Error
 }
 
 // ClearVirtualModelCustomFreezeState 清除一次成功调用对应的自动冻结失败计数喵。

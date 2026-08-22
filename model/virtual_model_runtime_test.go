@@ -83,12 +83,18 @@ func TestVirtualModelRuntimeSnapshotQueries(t *testing.T) {
 	require.NoError(t, automaticFreezeError)
 	require.Empty(t, automaticFreezeStates)
 
+	// 重新写入更长的自动冻结，模拟并发失败请求刚刚冻结同一个自定义身份喵。
 	require.NoError(t, UpsertVirtualModelCustomFreezeStateWithDB(database, 7, "identity-one", 300, "rate_limited", 102))
+	// 用请求开始时观察到的陈旧版本尝试清理，compare-and-clear 必须拒绝该操作喵。
 	require.NoError(t, ClearVirtualModelCustomFreezeStateWithDB(database, 7, "identity-one", 100, 103))
 	automaticFreezeStates, automaticFreezeError = GetVirtualModelCustomFreezeStatesWithDB(database, 7, []string{"identity-one"}, 103)
 	require.NoError(t, automaticFreezeError)
+	// 陈旧版本不匹配时新冻结必须完整保留，避免成功请求误删并发失败请求刚写入的冻结喵。
 	require.Contains(t, automaticFreezeStates, "identity-one")
-	automaticFreezeStates, automaticFreezeError = GetVirtualModelCustomFreezeStatesWithDB(database, 7, []string{"identity-one"}, 101)
+	require.Equal(t, int64(300), automaticFreezeStates["identity-one"].FrozenUntil)
+	// 使用当前版本清理时必须真正解除冻结，保证成功调用后候选可以恢复参与调用喵。
+	require.NoError(t, ClearVirtualModelCustomFreezeStateWithDB(database, 7, "identity-one", 102, 104))
+	automaticFreezeStates, automaticFreezeError = GetVirtualModelCustomFreezeStatesWithDB(database, 7, []string{"identity-one"}, 104)
 	require.NoError(t, automaticFreezeError)
 	require.Empty(t, automaticFreezeStates)
 }
