@@ -36,8 +36,20 @@ func TestCredentialVaultRoundTrip(t *testing.T) {
 	if decryptError != nil || decrypted != plaintext {
 		t.Fatalf("decrypt credential = %q, error = %v", decrypted, decryptError)
 	}
-	// 篡改任意密文字符必须触发认证失败，禁止接受损坏凭据喵。
-	mutatedCiphertext := ciphertext[:len(ciphertext)-1] + "A"
+	// 篡改密文必须触发认证失败，禁止接受损坏凭据喵。
+	// 喵~防御：不能直接改写末位 base64 字符，因为 RawStdEncoding 末组会丢弃多余的填充位，
+	// 当原末位字符与替换字符落在同一组有效位时解码结果完全相同，"篡改"其实没有生效，用例会偶发失败喵。
+	decodedEnvelope, envelopeDecodeError := base64.RawStdEncoding.DecodeString(ciphertext)
+	if envelopeDecodeError != nil {
+		t.Fatalf("decode credential envelope: %v", envelopeDecodeError)
+	}
+	// 翻转 GCM authentication tag 所在的最后一个字节，保证校验必然失败喵。
+	decodedEnvelope[len(decodedEnvelope)-1] ^= 0xFF
+	mutatedCiphertext := base64.RawStdEncoding.EncodeToString(decodedEnvelope)
+	// 喵~防御：断言密文确实发生变化，避免用例退化成重复解密原始密文喵。
+	if mutatedCiphertext == ciphertext {
+		t.Fatal("mutated credential envelope must differ from the original")
+	}
 	if _, mutationError := DecryptCredential(mutatedCiphertext, version); mutationError == nil {
 		t.Fatal("tampered credential envelope should be rejected")
 	}
