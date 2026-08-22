@@ -353,16 +353,6 @@ func AdvanceVirtualModelAfterNativeFailure(c *gin.Context, nativeError *types.Ne
 	return false, false
 }
 
-// GetActiveVirtualModelCandidateID 返回当前请求已激活内部候选的编号，用于隔离计费尝试标识喵。
-func GetActiveVirtualModelCandidateID(c *gin.Context) int {
-	// 喵~防御：缺少执行状态或候选索引异常时返回零，调用方必须保留原请求标识喵。
-	executionState, foundState := getVirtualModelExecutionState(c)
-	if !foundState || executionState.currentCandidateIndex < 0 || executionState.currentCandidateIndex >= len(executionState.executionSnapshot.Candidates) {
-		return 0
-	}
-	return executionState.executionSnapshot.Candidates[executionState.currentCandidateIndex].CandidateID
-}
-
 // VirtualModelCandidateAttempt 描述当前已激活候选尝试的身份与关联标识喵。
 // 该结构只暴露可安全写入日志的字段，禁止携带上游凭据、完整 URL 或请求正文喵。
 type VirtualModelCandidateAttempt struct {

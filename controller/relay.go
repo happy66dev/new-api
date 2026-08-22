@@ -26,7 +26,6 @@ import (
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
-	hosttypes "github.com/QuantumNous/new-api/types"
 
 	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/samber/lo"
@@ -175,6 +174,19 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	relayInfo.SetEstimatePromptTokens(tokens)
 
+	// candidateRelayBaseline 保存虚拟模型候选切换所需的请求级基线，仅虚拟请求才构造喵。
+	// 普通模型请求和 Token AutoRoutes 请求不会进入该分支，单一 RelayInfo 生命周期保持不变喵。
+	var candidateRelayBaseline *relaycommon.CandidateRelayBaseline
+	if _, isVirtualCandidateRequest := middleware.GetActiveVirtualModelCandidateAttempt(c); isVirtualCandidateRequest {
+		baseline, baselineError := relaycommon.NewCandidateRelayBaseline(relayInfo)
+		// 喵~防御：无法抽取请求级基线时立即终止，避免后续候选切换用残缺基线建立新计费喵。
+		if baselineError != nil {
+			newAPIError = types.NewError(baselineError, types.ErrorCodeGenRelayInfoFailed, types.ErrOptionWithSkipRetry())
+			return
+		}
+		candidateRelayBaseline = baseline
+	}
+
 	priceData, err := helper.ModelPriceHelper(c, relayInfo, tokens, meta)
 	if err != nil {
 		newAPIError = types.NewError(err, types.ErrorCodeModelPriceError, types.ErrOptionWithStatusCode(http.StatusBadRequest))
@@ -271,25 +283,16 @@ candidateRelayLoop:
 		if newAPIError != nil {
 			// 喵~防御：只有内部候选完成全部原生 Channel 重试且尚未提交任何响应时，才允许虚拟层选择后备候选喵。
 			if nextInternalCandidateActivated, customCandidateCommitted := middleware.AdvanceVirtualModelAfterNativeFailure(c, newAPIError); nextInternalCandidateActivated {
-				// 切换候选后先退还失败候选的预扣额度，再重新建立后备候选的独立计费状态喵。
-				if relayInfo.Billing != nil {
-					if refundError := relayInfo.Billing.RefundImmediately(c); refundError != nil {
-						newAPIError = types.NewError(refundError, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
-						break candidateRelayLoop
-					}
+				// 旧候选进入终态并完成同步退款后，才为后备候选创建独立 relay、定价与计费会话喵。
+				nextCandidateRelayInfo, candidateSwitchError := switchToNextVirtualModelCandidate(c, relayInfo, candidateRelayBaseline, relayFormat, meta)
+				if candidateSwitchError != nil {
+					newAPIError = candidateSwitchError
+					break candidateRelayLoop
 				}
-				relayInfo.Billing = nil
-				relayInfo.FinalPreConsumedQuota = 0
-				relayInfo.BillingSource = ""
-				relayInfo.SubscriptionId = 0
-				relayInfo.SubscriptionPreConsumed = 0
-				relayInfo.SubscriptionPostDelta = 0
-				if pricingError := refreshVirtualModelCandidatePricing(c, relayInfo, meta); pricingError != nil {
-					newAPIError = pricingError
-				} else {
-					newAPIError = nil
-					continue candidateRelayLoop
-				}
+				// 把当前候选替换为后备候选的独立 RelayInfo，外层 defer 之后只会收尾这一个候选喵。
+				relayInfo = nextCandidateRelayInfo
+				newAPIError = nil
+				continue candidateRelayLoop
 			} else if customCandidateCommitted {
 				// 自定义候选已安全提交响应，先退还失败内部候选预扣额度，再阻止 defer 追加第二个错误正文喵。
 				if relayInfo.Billing != nil {
@@ -309,8 +312,10 @@ candidateRelayLoop:
 			logger.LogInfo(c, retryLogStr)
 		}
 		if newAPIError != nil {
+			// 先把当前候选的 relay 信息固定到局部变量，避免异步采样读取后续可能被替换的候选状态喵。
+			sampledRelayInfo := relayInfo
 			gopool.Go(func() {
-				perfmetrics.RecordRelaySample(relayInfo, false, 0, nil)
+				perfmetrics.RecordRelaySample(sampledRelayInfo, false, 0, nil)
 			})
 		}
 		break candidateRelayLoop
@@ -330,51 +335,68 @@ func addUsedChannel(c *gin.Context, channelId int) {
 	c.Set("use_channel", useChannel)
 }
 
-// refreshVirtualModelCandidatePricing 将已激活的后备内部候选重新绑定到当前 relay 与计费会话喵。
-func refreshVirtualModelCandidatePricing(c *gin.Context, relayInfo *relaycommon.RelayInfo, meta *types.TokenCountMeta) *types.NewAPIError {
-	// 喵~防御：候选切换必须具备完整上下文、relay 信息和 token 元数据，缺失时安全终止而非复用旧候选定价喵。
-	if c == nil || relayInfo == nil || meta == nil {
-		return types.NewError(errors.New("virtual model candidate pricing context is unavailable"), types.ErrorCodeModelPriceError, types.ErrOptionWithSkipRetry())
+// switchToNextVirtualModelCandidate 结束当前候选并为已激活的后备内部候选建立独立 relay 与计费喵。
+//
+// 整体思路喵：候选之间不共享任何可变状态，所以切换必须严格按下列顺序执行，
+// 任一步失败都立刻返回错误，并阻止后备候选建立预扣或发起上游连接喵。
+//  1. 校验确实存在已激活的内部候选，普通请求误入此路径时只返回内部错误；
+//  2. 让旧候选的计费会话进入终态（同步退款），确认旧额度确实已经释放；
+//  3. 按候选真实模型重新解析请求体，禁止复用上一候选改写过的请求对象；
+//  4. 用候选工厂创建全新 RelayInfo，工厂内部会断言未继承任何候选级状态；
+//  5. 按候选模型与固定分组重新定价，并为该候选单独预扣额度。
+//
+// 输入：Gin 上下文、当前候选 relay、请求级基线、协议格式、请求级 token 元数据喵。
+// 输出：后备候选专属 RelayInfo；失败时返回可直接回传客户端的结构化错误喵。
+func switchToNextVirtualModelCandidate(c *gin.Context, currentRelayInfo *relaycommon.RelayInfo, baseline *relaycommon.CandidateRelayBaseline, relayFormat types.RelayFormat, meta *types.TokenCountMeta) (*relaycommon.RelayInfo, *types.NewAPIError) {
+	// 喵~防御：缺少上下文、旧候选 relay、请求级基线或 token 元数据时禁止切换候选喵。
+	if c == nil || currentRelayInfo == nil || baseline == nil || meta == nil {
+		return nil, types.NewError(errors.New("virtual model candidate switch context is unavailable"), types.ErrorCodeModelPriceError, types.ErrOptionWithSkipRetry())
 	}
-	candidateID := middleware.GetActiveVirtualModelCandidateID(c)
-	// 喵~防御：普通 relay 请求没有虚拟候选编号，不允许误入候选定价重置路径喵。
-	if candidateID <= 0 {
-		return types.NewError(errors.New("virtual model candidate is unavailable"), types.ErrorCodeModelPriceError, types.ErrOptionWithSkipRetry())
+	candidateAttempt, foundCandidateAttempt := middleware.GetActiveVirtualModelCandidateAttempt(c)
+	// 喵~防御：普通请求或候选未激活时绝不进入候选级计费路径，避免改动普通 billing 语义喵。
+	if !foundCandidateAttempt || candidateAttempt.SourceType != model.VirtualModelSourceInternal {
+		return nil, types.NewError(errors.New("virtual model candidate is unavailable"), types.ErrorCodeModelPriceError, types.ErrOptionWithSkipRetry())
 	}
-	relayInfo.OriginModelName = common.GetContextKeyString(c, constant.ContextKeyOriginalModel)
-	relayInfo.TokenGroup = common.GetContextKeyString(c, constant.ContextKeyTokenGroup)
-	relayInfo.UsingGroup = common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
-	// 喵~防御：切换后必须拥有真实模型和固定分组，避免沿用失败候选或进入 auto 路由喵。
-	if strings.TrimSpace(relayInfo.OriginModelName) == "" || strings.TrimSpace(relayInfo.TokenGroup) == "" || relayInfo.TokenGroup == "auto" {
-		return types.NewError(errors.New("virtual model candidate routing is invalid"), types.ErrorCodeModelPriceError, types.ErrOptionWithSkipRetry())
+	// 第一步：旧候选必须先完成同步退款；额度未确认释放前不允许为新候选预扣喵。
+	if currentRelayInfo.Billing != nil {
+		if refundError := currentRelayInfo.Billing.RefundImmediately(c); refundError != nil {
+			return nil, types.NewError(refundError, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+		}
 	}
-	// 每个订阅候选尝试需要独立幂等预扣标识，避免后备候选与失败候选共享订阅记录喵。
-	baseRequestID := c.GetString(common.RequestIdKey)
-	if baseRequestID == "" {
-		baseRequestID = relayInfo.RequestId
+	// 第二步：重新解析请求体；中间件已在激活候选时恢复原始请求并改写顶层 model 喵。
+	candidateRequest, parseError := helper.GetAndValidateRequest(c, relayFormat)
+	// 喵~防御：候选请求无法解析时停止候选链，避免把上一候选的请求对象发给新上游喵。
+	if parseError != nil {
+		return nil, types.NewError(parseError, types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
 	}
-	relayInfo.RequestId = fmt.Sprintf("%s:virtual-candidate-%d", baseRequestID, candidateID)
-	relayInfo.ChannelMeta = nil
-	relayInfo.UpstreamModelName = ""
-	relayInfo.RetryIndex = 0
-	relayInfo.LastError = nil
-	relayInfo.PriceData = hosttypes.PriceData{}
-	relayInfo.TieredBillingSnapshot = nil
-	priceData, priceError := helper.ModelPriceHelper(c, relayInfo, relayInfo.GetEstimatePromptTokens(), meta)
+	// 第三步：用候选工厂创建全新 RelayInfo，工厂会断言 Channel、计费、定价与重试状态均为初始值喵。
+	candidateRelayInfo, candidateRelayInfoError := relaycommon.NewCandidateRelayInfo(c, baseline, relaycommon.CandidateRelayIdentity{
+		CandidateID:        candidateAttempt.CandidateID,
+		CandidateAttemptID: candidateAttempt.CandidateAttemptID,
+		RealModelName:      candidateAttempt.RealModelName,
+		GroupName:          candidateAttempt.GroupName,
+	}, candidateRequest)
+	// 喵~防御：候选隔离前提不满足时立即失败，绝不退化成继续复用旧候选的 RelayInfo 喵。
+	if candidateRelayInfoError != nil {
+		return nil, types.NewError(candidateRelayInfoError, types.ErrorCodeModelPriceError, types.ErrOptionWithSkipRetry())
+	}
+	// 记录候选切换事件；只输出候选编号、尝试标识、真实模型与分组，禁止写入凭据或请求正文喵。
+	logger.LogInfo(c, fmt.Sprintf("虚拟模型切换候选：attempt=%s candidate=%d model=%s group=%s",
+		candidateAttempt.CandidateAttemptID, candidateAttempt.CandidateID, candidateAttempt.RealModelName, candidateAttempt.GroupName))
+	// 第四步：按候选自己的模型与固定分组重新定价，免费候选不建立预扣会话喵。
+	priceData, priceError := helper.ModelPriceHelper(c, candidateRelayInfo, candidateRelayInfo.GetEstimatePromptTokens(), meta)
 	if priceError != nil {
-		return types.NewError(priceError, types.ErrorCodeModelPriceError, types.ErrOptionWithStatusCode(http.StatusBadRequest))
+		return nil, types.NewError(priceError, types.ErrorCodeModelPriceError, types.ErrOptionWithStatusCode(http.StatusBadRequest))
 	}
 	if priceData.FreeModel {
-		return nil
+		logger.LogInfo(c, fmt.Sprintf("模型 %s 免费，跳过预扣费", candidateRelayInfo.OriginModelName))
+		return candidateRelayInfo, nil
 	}
-	if relayInfo.Billing == nil {
-		return service.PreConsumeBilling(c, priceData.QuotaToPreConsume, relayInfo)
+	// 第五步：为当前候选单独预扣额度；失败时不返回半成品候选 relay，避免外层继续调用上游喵。
+	if preConsumeError := service.PreConsumeBilling(c, priceData.QuotaToPreConsume, candidateRelayInfo); preConsumeError != nil {
+		return nil, preConsumeError
 	}
-	if reserveError := relayInfo.Billing.Reserve(priceData.QuotaToPreConsume); reserveError != nil {
-		return types.NewError(reserveError, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
-	}
-	relayInfo.FinalPreConsumedQuota = relayInfo.Billing.GetPreConsumedQuota()
-	return nil
+	return candidateRelayInfo, nil
 }
 
 func fastTokenCountMetaForPricing(request dto.Request) *types.TokenCountMeta {
