@@ -93,6 +93,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	defer func() {
 		if newAPIError != nil {
 			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
+			// 虚拟模型候选可能已经把响应字节交给客户端，此时必须抑制最终错误正文喵。
+			_, isVirtualCandidateRequest := middleware.GetActiveVirtualModelCandidateAttempt(c)
+			if shouldSuppressFinalErrorBody(c, isVirtualCandidateRequest) {
+				return
+			}
 			// Apply global message rewrites only after channel retries and
 			// accounting have completed. This keeps retry/auto-ban decisions
 			// and the diagnostic log based on the original upstream error while
@@ -294,11 +299,13 @@ candidateRelayLoop:
 				newAPIError = nil
 				continue candidateRelayLoop
 			} else if customCandidateCommitted {
-				// 自定义候选已安全提交响应，先退还失败内部候选预扣额度，再阻止 defer 追加第二个错误正文喵。
+				// 自定义候选已把响应字节交给客户端，此后绝不允许再向同一个响应追加第二个错误正文喵。
 				if relayInfo.Billing != nil {
 					if refundError := relayInfo.Billing.RefundImmediately(c); refundError != nil {
-						newAPIError = types.NewError(refundError, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
-						break candidateRelayLoop
+						// 喵~防御：同步退款只完成了部分步骤时只能记录日志，改用异步退款补齐剩余步骤，
+						// 绝不能把退款错误变成客户端可见的第二个响应正文，否则会破坏已提交的流式协议喵。
+						logger.LogError(c, fmt.Sprintf("自定义候选已提交响应，失败内部候选同步退款未完成，转为异步补退：%s", refundError.Error()))
+						relayInfo.Billing.Refund(c)
 					}
 				}
 				newAPIError = nil
@@ -333,6 +340,28 @@ func addUsedChannel(c *gin.Context, channelId int) {
 	useChannel := c.GetStringSlice("use_channel")
 	useChannel = append(useChannel, fmt.Sprintf("%d", channelId))
 	c.Set("use_channel", useChannel)
+}
+
+// shouldSuppressFinalErrorBody 判断最终错误正文是否必须被抑制喵。
+//
+// 判定思路喵：一旦虚拟模型的某个候选已经把有效响应字节写给客户端，
+// 后续任何收尾失败都不能再追加第二个 JSON 错误，否则会拼接在已发出的流式响应之后，
+// 让客户端把两段互不兼容的正文当成同一个响应来解析喵。
+// 普通模型请求保持上游既有行为不变，避免影响非虚拟路径的错误可见性喵。
+//
+// 输入：Gin 上下文；当前请求是否处于虚拟模型候选执行中喵。
+// 输出：true 表示必须静默返回，只留日志；false 表示照常写出错误正文喵。
+func shouldSuppressFinalErrorBody(c *gin.Context, isVirtualCandidateRequest bool) bool {
+	// 喵~防御：缺少上下文或 ResponseWriter 时按不抑制处理，保证错误仍可被观测喵。
+	if c == nil || c.Writer == nil {
+		return false
+	}
+	// 尚未写出任何字节时可以安全写出完整错误正文喵。
+	if !c.Writer.Written() {
+		return false
+	}
+	// 只有虚拟模型候选请求才抑制；普通请求维持上游原有语义喵。
+	return isVirtualCandidateRequest
 }
 
 // switchToNextVirtualModelCandidate 结束当前候选并为已激活的后备内部候选建立独立 relay 与计费喵。

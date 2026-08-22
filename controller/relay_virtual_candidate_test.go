@@ -169,3 +169,38 @@ func TestSwitchToNextVirtualModelCandidateKeepsBillingWhenRelayInfoHasNoSession(
 	require.Nil(t, candidateRelayInfo)
 	require.Nil(t, currentRelayInfo.Billing)
 }
+
+// TestShouldSuppressFinalErrorBody 验证只有"虚拟候选已提交响应"这一种组合才抑制最终错误正文喵。
+func TestShouldSuppressFinalErrorBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// 四种组合覆盖是否已写出响应与是否虚拟候选请求的全部交叉情况喵。
+	suppressionCases := []struct {
+		name                     string // 子用例名称，描述响应状态与请求类型的组合喵。
+		alreadyWroteResponse     bool   // 是否已经向客户端写出过响应字节喵。
+		isVirtualCandidate       bool   // 当前请求是否处于虚拟模型候选执行中喵。
+		expectedSuppressionState bool   // 期望的抑制判定结果喵。
+	}{
+		{name: "虚拟候选已提交响应必须抑制", alreadyWroteResponse: true, isVirtualCandidate: true, expectedSuppressionState: true},
+		{name: "虚拟候选未提交响应照常写出", alreadyWroteResponse: false, isVirtualCandidate: true, expectedSuppressionState: false},
+		{name: "普通请求已提交响应保持上游行为", alreadyWroteResponse: true, isVirtualCandidate: false, expectedSuppressionState: false},
+		{name: "普通请求未提交响应照常写出", alreadyWroteResponse: false, isVirtualCandidate: false, expectedSuppressionState: false},
+	}
+
+	for _, suppressionCase := range suppressionCases {
+		t.Run(suppressionCase.name, func(t *testing.T) {
+			// 每个子用例使用独立的 ResponseRecorder，避免写入状态互相影响喵。
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			// 通过真实写入一段字节把 ResponseWriter 置为已提交状态喵。
+			if suppressionCase.alreadyWroteResponse {
+				_, writeError := ctx.Writer.WriteString("data: committed\n\n")
+				require.NoError(t, writeError)
+				require.True(t, ctx.Writer.Written())
+			}
+			require.Equal(t, suppressionCase.expectedSuppressionState, shouldSuppressFinalErrorBody(ctx, suppressionCase.isVirtualCandidate))
+		})
+	}
+
+	// 喵~防御：上下文为空时不得抑制，否则真实错误会被完全吞掉喵。
+	require.False(t, shouldSuppressFinalErrorBody(nil, true))
+}
