@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
@@ -49,6 +50,15 @@ func GetUserGroups(c *gin.Context) {
 			"ratio":         "自动",
 			"desc":          autoDescription,
 			"default_model": ratio_setting.GetGroupDefaultModel("auto"),
+		}
+	}
+	// 用户共享分组是硬编码虚拟分组，不在站点分组配置中，手动追加到可用分组喵。
+	// 这样游乐场、API Key 分组选择与虚拟模型内部候选链都能选择"用户共享"分组喵。
+	if desc, ok := userUsableGroups[constant.GroupUserShared]; ok {
+		usableGroups[constant.GroupUserShared] = map[string]interface{}{
+			"ratio":         service.GetUserGroupRatio(userGroup, constant.GroupUserShared),
+			"desc":          desc,
+			"default_model": ratio_setting.GetGroupDefaultModel(constant.GroupUserShared),
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{

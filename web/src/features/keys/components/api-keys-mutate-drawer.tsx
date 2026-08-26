@@ -205,7 +205,8 @@ export function ApiKeysMutateDrawer({
     () =>
       Object.entries(groupsData?.data || {}).map(([key, info]) => ({
         value: key,
-        label: key,
+        // 用户共享分组统一显示本地化译名"用户共享"喵。
+        label: key === 'user-shared' ? t('User Shared') : key,
         desc: info.desc || key,
         ratio: info.ratio,
       })),
