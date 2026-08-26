@@ -22,7 +22,7 @@ func TestVirtualModelRuntimeSnapshotQueries(t *testing.T) {
 		}
 	})
 	// 创建运行时快照查询涉及的最小表集合喵。
-	require.NoError(t, database.AutoMigrate(&VirtualModelCandidate{}, &VirtualModelInternalCandidate{}, &VirtualModelCustomCandidate{}, &VirtualModelFailureRule{}, &VirtualModelManualFreeze{}, &VirtualModelCustomFreezeState{}))
+	require.NoError(t, database.AutoMigrate(&VirtualModelCandidate{}, &VirtualModelInternalCandidate{}, &VirtualModelCustomCandidate{}, &VirtualModelFailureRule{}, &VirtualModelGlobalFailureRule{}, &VirtualModelManualFreeze{}, &VirtualModelCustomFreezeState{}))
 	// 创建顺序靠前的内部候选及运行参数喵。
 	internalCandidate := VirtualModelCandidate{VirtualModelID: 301, StableOrder: 0, SourceType: VirtualModelSourceInternal, Enabled: true, MaxRetries: 0, TimeoutSeconds: 30}
 	require.NoError(t, database.Create(&internalCandidate).Error)

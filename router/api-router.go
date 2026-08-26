@@ -284,6 +284,7 @@ func SetApiRouter(router *gin.Engine) {
 			virtualModelRoute.DELETE("/:id", controller.DeleteVirtualModel)
 			virtualModelRoute.PUT("/:id/candidates", controller.ReplaceVirtualModelCandidates)
 			virtualModelRoute.PUT("/:id/candidates/:candidateId/failure-rules", controller.ReplaceVirtualModelCandidateFailureRules)
+			virtualModelRoute.PUT("/:id/failure-rules", controller.ReplaceVirtualModelGlobalFailureRules)
 			virtualModelRoute.PUT("/:id/key-bindings", controller.ReplaceVirtualModelBindings)
 			virtualModelRoute.GET("/:id/status", controller.GetVirtualModelStatus)
 			virtualModelRoute.POST("/:id/candidates/:candidateId/freeze", controller.FreezeVirtualModelCandidate)

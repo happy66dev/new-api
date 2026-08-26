@@ -11,6 +11,8 @@ import {
   ArrowUp01Icon,
   Cancel01Icon,
   Add01Icon,
+  ChevronDownIcon,
+  ChevronUpIcon,
 } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
 import { useQuery } from '@tanstack/react-query'
@@ -192,7 +194,8 @@ function validateCandidateDraft(
   }
 }
 
-// VirtualModelCandidatesEditor 管理候选链顺序，并在编辑自定义候选时强制重新提供不回显的凭据喵。
+// VirtualModelCandidatesEditor 管理候选链顺序；列表默认只显示模型名，点击候选行展开完整参数编辑喵。
+// 内部候选显示 分组/真实模型，自定义候选显示真实模型并带 Custom 标记喵。
 export function VirtualModelCandidatesEditor({
   model,
   onSaved,
@@ -203,11 +206,29 @@ export function VirtualModelCandidatesEditor({
   const { t } = useTranslation()
   const [draftCandidates, setDraftCandidates] = useState<CandidateDraft[]>([])
   const [isSaving, setIsSaving] = useState(false)
+  // expandedIndex 记录当前展开完整编辑的候选下标，同一时刻只展开一个喵。
+  const [expandedIndex, setExpandedIndex] = useState<number | null>(null)
 
   // 当服务端模型版本变化时重新生成草稿，避免对已替换候选链进行过期编辑喵。
   useEffect(() => {
     setDraftCandidates((model.candidates ?? []).map(toCandidateDraft))
+    // 列表数据刷新后收起展开态，避免展开内容与最新数据错位喵。
+    setExpandedIndex(null)
   }, [model.id, model.version])
+
+  // candidateDisplayName 生成候选行紧凑显示的模型名喵。
+  const candidateDisplayName = (candidate: CandidateDraft) => {
+    // 内部候选显示 分组/模型，便于区分同真实模型不同分组的候选喵。
+    if (candidate.sourceType === 'internal') {
+      const groupName = candidate.groupName.trim()
+      if (candidate.realModelName.trim()) {
+        return groupName ? `${groupName}/${candidate.realModelName.trim()}` : candidate.realModelName.trim()
+      }
+      return groupName || t('Unnamed candidate')
+    }
+    // 自定义候选显示真实模型名，未填写时给出占位文案喵。
+    return candidate.realModelName.trim() || t('Unnamed candidate')
+  }
 
   const updateCandidate = (index: number, patch: Partial<CandidateDraft>) => {
     setDraftCandidates((currentCandidates) =>
@@ -242,6 +263,10 @@ export function VirtualModelCandidatesEditor({
     setDraftCandidates((currentCandidates) =>
       currentCandidates.filter((_, candidateIndex) => candidateIndex !== index)
     )
+    // 删除当前展开项后收起编辑区，避免留下指向已删候选的展开状态喵。
+    if (expandedIndex === index) {
+      setExpandedIndex(null)
+    }
   }
 
   const addInternalCandidate = () => {
@@ -253,6 +278,8 @@ export function VirtualModelCandidatesEditor({
       ...currentCandidates,
       createCandidateDraft('internal'),
     ])
+    // 新候选追加后自动展开，方便立即选择模型喵。
+    setExpandedIndex(draftCandidates.length)
   }
 
   const addCustomCandidate = () => {
@@ -264,6 +291,7 @@ export function VirtualModelCandidatesEditor({
       ...currentCandidates,
       createCandidateDraft('custom'),
     ])
+    setExpandedIndex(draftCandidates.length)
   }
 
   const saveCandidates = async () => {
@@ -293,10 +321,10 @@ export function VirtualModelCandidatesEditor({
   }
 
   return (
-    <div className='space-y-4 rounded-md border p-4'>
+    <div className='space-y-4'>
       <div className='flex flex-wrap items-center justify-between gap-3'>
         <div>
-          <h3 className='font-medium'>{t('Candidate Chain')}</h3>
+          <h3 className='font-medium'>{t('Call chain')}</h3>
           <p className='text-muted-foreground text-sm'>{t('Candidates run from top to bottom when a request fails.')}</p>
         </div>
         <div className='flex gap-2'>
@@ -318,14 +346,23 @@ export function VirtualModelCandidatesEditor({
       )}
 
       {draftCandidates.map((candidate, index) => (
-        <div className='space-y-3 rounded-md border p-3' key={candidate.id ?? `new-${index}`}>
-          <div className='flex flex-wrap items-center justify-between gap-2'>
-            <div className='flex items-center gap-2'>
+        <div className='overflow-hidden rounded-md border' key={candidate.id ?? `new-${index}`}>
+          {/* 候选行折叠态只显示模型名与状态，点击整行展开或收起完整参数编辑喵。 */}
+          <div className='flex flex-wrap items-center justify-between gap-2 p-3'>
+            <button
+              className='flex min-w-0 flex-1 items-center gap-2 text-left'
+              type='button'
+              onClick={() => setExpandedIndex(expandedIndex === index ? null : index)}
+              aria-expanded={expandedIndex === index}
+            >
               <Badge variant='secondary'>{index + 1}</Badge>
               <Badge variant={candidate.sourceType === 'internal' ? 'outline' : 'secondary'}>
                 {candidate.sourceType === 'internal' ? t('Internal') : t('Custom')}
               </Badge>
-            </div>
+              <span className='min-w-0 flex-1 truncate font-medium'>{candidateDisplayName(candidate)}</span>
+              <Badge variant={candidate.enabled ? 'default' : 'secondary'}>{candidate.enabled ? t('Enabled') : t('Disabled')}</Badge>
+              <HugeiconsIcon icon={expandedIndex === index ? ChevronUpIcon : ChevronDownIcon} strokeWidth={2} className='size-4 shrink-0 text-muted-foreground' aria-hidden='true' />
+            </button>
             <div className='flex gap-1'>
               <Button type='button' size='icon-sm' variant='ghost' disabled={isSaving || index === 0} onClick={() => moveCandidate(index, 'up')} aria-label={t('Move candidate up')}>
                 <HugeiconsIcon icon={ArrowUp01Icon} strokeWidth={2} aria-hidden='true' />
@@ -339,54 +376,59 @@ export function VirtualModelCandidatesEditor({
             </div>
           </div>
 
-          {candidate.sourceType === 'internal' ? (
-            <InternalCandidateSelector
-              group={candidate.groupName}
-              model={candidate.realModelName}
-              onGroupChange={(groupName) => updateCandidate(index, { groupName })}
-              onModelChange={(realModelName) => updateCandidate(index, { realModelName })}
-              disabled={isSaving}
-            />
-          ) : (
-            <div className='grid gap-3 sm:grid-cols-2'>
-              <label className='grid gap-1 text-sm font-medium'>
-                {t('Upstream URL')}
-                <Input value={candidate.baseURL} disabled={isSaving} placeholder={candidate.id ? t('Leave blank to retain the saved upstream URL') : 'https://api.example.com'} onChange={(event) => updateCandidate(index, { baseURL: event.target.value })} />
-              </label>
-              <label className='grid gap-1 text-sm font-medium'>
-                {t('Real model name')}
-                <Input value={candidate.realModelName} disabled={isSaving} onChange={(event) => updateCandidate(index, { realModelName: event.target.value })} />
-              </label>
-              <label className='grid gap-1 text-sm font-medium'>
-                {t('Upstream API Key')}
-                <Input type='password' autoComplete='new-password' value={candidate.apiKey} disabled={isSaving} placeholder={candidate.id ? t('Enter a new API Key to save this custom candidate') : t('Enter upstream API Key')} onChange={(event) => updateCandidate(index, { apiKey: event.target.value })} />
-              </label>
-              <label className='grid gap-1 text-sm font-medium'>
-                {t('Authentication style')}
-                <select className='border-input bg-background h-9 rounded-md border px-3 text-sm' value={candidate.authStyle} disabled={isSaving} onChange={(event) => updateCandidate(index, { authStyle: event.target.value as VirtualModelCandidateAuthStyle })}>
-                  <option value='bearer'>{t('Bearer token')}</option>
-                  <option value='api_key'>{t('API Key header')}</option>
-                  <option value='anthropic'>{t('Anthropic API Key')}</option>
-                </select>
-              </label>
-              {candidate.id && <p className='text-muted-foreground text-xs sm:col-span-2'>{t('For security, the saved upstream URL and API Key are never displayed. Leave either field blank to retain it, or enter a new value to rotate it.')}</p>}
+          {/* 展开后展示该候选的完整参数编辑，保证原有配置能力不丢失喵。 */}
+          {expandedIndex === index && (
+            <div className='space-y-3 border-t p-3'>
+              {candidate.sourceType === 'internal' ? (
+                <InternalCandidateSelector
+                  group={candidate.groupName}
+                  model={candidate.realModelName}
+                  onGroupChange={(groupName) => updateCandidate(index, { groupName })}
+                  onModelChange={(realModelName) => updateCandidate(index, { realModelName })}
+                  disabled={isSaving}
+                />
+              ) : (
+                <div className='grid gap-3 sm:grid-cols-2'>
+                  <label className='grid gap-1 text-sm font-medium'>
+                    {t('Upstream URL')}
+                    <Input value={candidate.baseURL} disabled={isSaving} placeholder={candidate.id ? t('Leave blank to retain the saved upstream URL') : 'https://api.example.com'} onChange={(event) => updateCandidate(index, { baseURL: event.target.value })} />
+                  </label>
+                  <label className='grid gap-1 text-sm font-medium'>
+                    {t('Real model name')}
+                    <Input value={candidate.realModelName} disabled={isSaving} onChange={(event) => updateCandidate(index, { realModelName: event.target.value })} />
+                  </label>
+                  <label className='grid gap-1 text-sm font-medium'>
+                    {t('Upstream API Key')}
+                    <Input type='password' autoComplete='new-password' value={candidate.apiKey} disabled={isSaving} placeholder={candidate.id ? t('Enter a new API Key to save this custom candidate') : t('Enter upstream API Key')} onChange={(event) => updateCandidate(index, { apiKey: event.target.value })} />
+                  </label>
+                  <label className='grid gap-1 text-sm font-medium'>
+                    {t('Authentication style')}
+                    <select className='border-input bg-background h-9 rounded-md border px-3 text-sm' value={candidate.authStyle} disabled={isSaving} onChange={(event) => updateCandidate(index, { authStyle: event.target.value as VirtualModelCandidateAuthStyle })}>
+                      <option value='bearer'>{t('Bearer token')}</option>
+                      <option value='api_key'>{t('API Key header')}</option>
+                      <option value='anthropic'>{t('Anthropic API Key')}</option>
+                    </select>
+                  </label>
+                  {candidate.id && <p className='text-muted-foreground text-xs sm:col-span-2'>{t('For security, the saved upstream URL and API Key are never displayed. Leave either field blank to retain it, or enter a new value to rotate it.')}</p>}
+                </div>
+              )}
+
+              <div className='grid gap-3 sm:grid-cols-3'>
+                <label className='grid gap-1 text-sm font-medium'>
+                  {t('Timeout seconds')}
+                  <Input inputMode='numeric' value={candidate.timeoutSeconds} disabled={isSaving} onChange={(event) => updateCandidate(index, { timeoutSeconds: event.target.value })} />
+                </label>
+                <label className='grid gap-1 text-sm font-medium'>
+                  {t('Maximum retries')}
+                  <Input inputMode='numeric' value={candidate.maxRetries} disabled={isSaving} onChange={(event) => updateCandidate(index, { maxRetries: event.target.value })} />
+                </label>
+                <label className='flex items-end justify-between gap-3 pb-2 text-sm'>
+                  <span>{t('Enabled')}</span>
+                  <Switch checked={candidate.enabled} disabled={isSaving} onCheckedChange={(enabled) => updateCandidate(index, { enabled })} />
+                </label>
+              </div>
             </div>
           )}
-
-          <div className='grid gap-3 sm:grid-cols-3'>
-            <label className='grid gap-1 text-sm font-medium'>
-              {t('Timeout seconds')}
-              <Input inputMode='numeric' value={candidate.timeoutSeconds} disabled={isSaving} onChange={(event) => updateCandidate(index, { timeoutSeconds: event.target.value })} />
-            </label>
-            <label className='grid gap-1 text-sm font-medium'>
-              {t('Maximum retries')}
-              <Input inputMode='numeric' value={candidate.maxRetries} disabled={isSaving} onChange={(event) => updateCandidate(index, { maxRetries: event.target.value })} />
-            </label>
-            <label className='flex items-end justify-between gap-3 pb-2 text-sm'>
-              <span>{t('Enabled')}</span>
-              <Switch checked={candidate.enabled} disabled={isSaving} onCheckedChange={(enabled) => updateCandidate(index, { enabled })} />
-            </label>
-          </div>
         </div>
       ))}
 

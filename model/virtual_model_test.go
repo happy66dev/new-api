@@ -153,7 +153,7 @@ func TestDeleteVirtualModelByOwnerWithVersion(t *testing.T) {
 		}
 	})
 	// 创建删除路径依赖的全部关联表喵。
-	require.NoError(t, database.AutoMigrate(&VirtualModel{}, &VirtualModelCandidate{}, &VirtualModelInternalCandidate{}, &VirtualModelCustomCandidate{}, &VirtualModelFailureRule{}, &VirtualModelTokenBinding{}, &VirtualModelManualFreeze{}, &VirtualModelAuditLog{}))
+	require.NoError(t, database.AutoMigrate(&VirtualModel{}, &VirtualModelCandidate{}, &VirtualModelInternalCandidate{}, &VirtualModelCustomCandidate{}, &VirtualModelFailureRule{}, &VirtualModelGlobalFailureRule{}, &VirtualModelTokenBinding{}, &VirtualModelManualFreeze{}, &VirtualModelAuditLog{}))
 	virtualModel := VirtualModel{OwnerUserID: 7, NormalizedName: "reusable-name", DisplayName: "Reusable", Enabled: true, Version: 3, TotalTimeoutSeconds: 120, MaxLoopRounds: 1}
 	require.NoError(t, database.Create(&virtualModel).Error)
 	customCandidate := VirtualModelCandidate{VirtualModelID: virtualModel.ID, StableOrder: 0, SourceType: VirtualModelSourceCustom, Enabled: true, TimeoutSeconds: 60, Version: 1}

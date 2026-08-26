@@ -330,7 +330,8 @@ func AdvanceVirtualModelAfterNativeFailure(c *gin.Context, nativeError *types.Ne
 	}
 	// 内部候选没有可安全共享的自定义冻结身份；retry 在原生 Channel 重试耗尽后等价于切换下一候选喵。
 	nativeFailure := virtualmodelservice.NormalizeCandidateFailure(nativeError.StatusCode, nil, nil, nil)
-	action, _ := virtualmodelservice.DecideCandidateFailureAction(executionState.executionSnapshot.FailureRulesByCandidateID[currentCandidate.CandidateID], nativeFailure)
+	// 候选未配置失败规则时自动回退到模型级全局兜底规则喵。
+	action, _ := virtualmodelservice.DecideVirtualModelFailureAction(executionState.executionSnapshot, currentCandidate.CandidateID, nativeFailure)
 	if action == model.VirtualModelActionPassthrough {
 		return false, false
 	}
@@ -452,7 +453,8 @@ func activateNextVirtualModelCandidate(c *gin.Context, executionState *virtualMo
 			return false
 		}
 		if candidateSnapshot.SourceType == model.VirtualModelSourceCustom {
-			executeCustomVirtualModelCandidate(c, candidateSnapshot, executionState.executionSnapshot.FailureRulesByCandidateID[candidateSnapshot.CandidateID])
+			// 传入完整执行快照，让自定义候选执行内部按需回退模型级全局兜底规则喵。
+			executeCustomVirtualModelCandidate(c, candidateSnapshot, executionState.executionSnapshot)
 			// 自定义候选已提交响应时保留其尝试标识，便于最终日志定位真正写出响应的候选喵。
 			if c.Writer != nil && c.Writer.Written() {
 				return false
@@ -475,7 +477,8 @@ func restoreVirtualModelOriginalRequest(c *gin.Context, originalRequestBody []by
 }
 
 // executeCustomVirtualModelCandidate 在当前 middleware 生命周期内安全完成单次自定义候选透传喵。
-func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.VirtualModelInternalCandidateSnapshot, failureRules []model.VirtualModelFailureRule) bool {
+// executionSnapshot 提供候选级与模型级全局兜底失败规则，候选未配置规则时自动回退全局规则喵。
+func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.VirtualModelInternalCandidateSnapshot, executionSnapshot *model.VirtualModelExecutionSnapshot) bool {
 	// 喵~防御：自定义候选必须带有完整加密凭据和模型配置，缺失时绝不尝试外发请求喵。
 	if c == nil || candidate == nil || strings.TrimSpace(candidate.EncryptedBaseURL) == "" || strings.TrimSpace(candidate.EncryptedAPIKey) == "" || strings.TrimSpace(candidate.RealModelName) == "" {
 		abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
@@ -488,7 +491,7 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 		abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
 		return false
 	}
-	// 失败规则随请求快照传入，禁止在候选执行期间二次读取已可能被控制面替换的规则喵。
+	// 候选级与模型级全局兜底规则均随请求快照传入，禁止在候选执行期间二次读取已可能被控制面替换的规则喵。
 	maximumRetries := candidate.MaxRetries
 	// 喵~防御：自定义候选重试次数与控制面上限一致，并由总请求 deadline 进一步约束喵。
 	if maximumRetries < 0 {
@@ -537,7 +540,8 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 			abortWithOpenAiMessage(c, http.StatusBadGateway, "virtual model custom upstream is unavailable", types.ErrorCode("virtual_model_unavailable"))
 			return false
 		}
-		action, freezeSeconds := virtualmodelservice.DecideCandidateFailureAction(failureRules, customFailure.Failure)
+		// 候选失败后按规则决策动作；候选未配置规则时回退模型级全局兜底规则喵。
+		action, freezeSeconds := virtualmodelservice.DecideVirtualModelFailureAction(executionSnapshot, candidate.CandidateID, customFailure.Failure)
 		if action == model.VirtualModelActionRetry && retryIndex < maximumRetries {
 			retryDelay := time.Duration(virtualmodelservice.RetryBackoffSeconds(retryIndex)) * time.Second
 			// 喵~防御：退避等待必须响应客户端取消和总 deadline，避免断开请求仍占用 goroutine 和连接喵。

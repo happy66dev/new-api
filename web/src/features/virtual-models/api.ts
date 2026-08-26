@@ -56,6 +56,8 @@ export type VirtualModel = {
   version: number
   candidates?: VirtualModelCandidate[]
   binding_token_ids?: number[]
+  // global_failure_rules 是模型级全局兜底失败规则，候选未配置规则时运行时按其决策喵。
+  global_failure_rules?: VirtualModelFailureRule[]
 }
 
 export type VirtualModelInput = {
@@ -138,6 +140,15 @@ export async function replaceVirtualModelCandidateFailureRules(
     `/api/virtual-models/${modelID}/candidates/${candidateID}/failure-rules`,
     input
   )
+  return response.data
+}
+
+// replaceVirtualModelGlobalFailureRules 原子替换模型级全局兜底失败规则喵。
+export async function replaceVirtualModelGlobalFailureRules(
+  modelID: number,
+  input: VirtualModelFailureRulesReplaceInput
+): Promise<VirtualModelApiResponse<VirtualModel>> {
+  const response = await api.put(`/api/virtual-models/${modelID}/failure-rules`, input)
   return response.data
 }
 

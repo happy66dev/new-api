@@ -84,6 +84,22 @@ func DecideCandidateFailureAction(rules []model.VirtualModelFailureRule, failure
 	return model.VirtualModelActionNext, 0
 }
 
+// DecideVirtualModelFailureAction 决定一次候选失败后的编排动作，并在候选未配置规则时回退到模型级全局兜底规则喵。
+// 候选配置了自己的失效规则时仍按候选规则决策；候选规则集为空时采用模型级全局兜底规则喵。
+func DecideVirtualModelFailureAction(executionSnapshot *model.VirtualModelExecutionSnapshot, candidateID int, failure CandidateFailure) (model.VirtualModelFailureAction, int) {
+	// 喵~防御：快照为空时按无规则处理，默认切换下一候选喵。
+	if executionSnapshot == nil {
+		return model.VirtualModelActionNext, 0
+	}
+	// 读取候选自己的规则，候选没有配置任何规则时为空喵。
+	candidateRules := executionSnapshot.FailureRulesByCandidateID[candidateID]
+	// 候选未配置规则时回退到模型级全局兜底规则，保证任何失败都有明确策略喵。
+	if len(candidateRules) == 0 {
+		candidateRules = executionSnapshot.GlobalFailureRules
+	}
+	return DecideCandidateFailureAction(candidateRules, failure)
+}
+
 // candidateFailureRuleMatches 判断单条规则是否同时满足所有已配置条件喵。
 func candidateFailureRuleMatches(rule model.VirtualModelFailureRule, failure CandidateFailure) bool {
 	// HTTP 状态已配置时必须精确匹配喵。
@@ -141,23 +157,46 @@ func RetryBackoffSeconds(retryIndex int) int {
 	return backoffSeconds
 }
 
-// ValidateCandidateFailureRule 校验控制面写入的失败规则边界喵。
+// ValidateCandidateFailureRule 校验控制面写入的候选级失败规则边界喵。
 func ValidateCandidateFailureRule(rule *model.VirtualModelFailureRule) error {
-	// 喵~防御：空规则、非法候选、无效操作和超长冻结配置必须拒绝持久化喵。
-	if rule == nil || rule.CandidateID <= 0 || rule.RuleOrder < 0 || rule.HTTPStatus < 0 || rule.HTTPStatus > 599 || rule.FreezeSeconds < 0 || rule.FreezeSeconds > 24*60*60 {
+	// 喵~防御：空规则或非法候选编号必须拒绝持久化喵。
+	if rule == nil || rule.CandidateID <= 0 {
 		return errors.New("virtual model failure rule is invalid")
 	}
-	if rule.Action != model.VirtualModelActionRetry && rule.Action != model.VirtualModelActionNext && rule.Action != model.VirtualModelActionFreeze && rule.Action != model.VirtualModelActionPassthrough {
+	// 规则字段边界由共享校验函数统一把关喵。
+	return validateFailureRuleFields(rule.RuleOrder, rule.HTTPStatus, rule.FreezeSeconds, rule.ErrorClass, rule.BodyRegex, rule.Action)
+}
+
+// ValidateGlobalFailureRule 校验控制面写入的模型级全局兜底失败规则边界喵。
+func ValidateGlobalFailureRule(rule *model.VirtualModelGlobalFailureRule) error {
+	// 喵~防御：空规则或非法模型编号必须拒绝持久化，防止无主规则污染全局兜底喵。
+	if rule == nil || rule.VirtualModelID <= 0 {
+		return errors.New("virtual model failure rule is invalid")
+	}
+	// 模型级与候选级规则的字段约束一致，直接复用共享校验喵。
+	return validateFailureRuleFields(rule.RuleOrder, rule.HTTPStatus, rule.FreezeSeconds, rule.ErrorClass, rule.BodyRegex, rule.Action)
+}
+
+// validateFailureRuleFields 校验失败规则字段的通用边界喵。
+func validateFailureRuleFields(ruleOrder int, httpStatus int, freezeSeconds int, errorClass string, bodyRegex string, action model.VirtualModelFailureAction) error {
+	// 喵~防御：非法序号、越界状态码和超长冻结配置必须拒绝持久化喵。
+	if ruleOrder < 0 || httpStatus < 0 || httpStatus > 599 || freezeSeconds < 0 || freezeSeconds > 24*60*60 {
+		return errors.New("virtual model failure rule is invalid")
+	}
+	// 喵~防御：只接受四种稳定动作枚举，拒绝未知动作破坏编排状态机喵。
+	if action != model.VirtualModelActionRetry && action != model.VirtualModelActionNext && action != model.VirtualModelActionFreeze && action != model.VirtualModelActionPassthrough {
 		return errors.New("virtual model failure rule action is invalid")
 	}
-	if strings.TrimSpace(rule.ErrorClass) != "" && len(rule.ErrorClass) > 64 {
+	// 喵~防御：错误分类不得超过可检索长度，避免恶意长文本占用规则存储喵。
+	if strings.TrimSpace(errorClass) != "" && len(errorClass) > 64 {
 		return errors.New("virtual model failure rule error class is invalid")
 	}
-	if len(rule.BodyRegex) > 2048 {
+	// 喵~防御：响应体正则必须能在运行时编译，超长正则直接拒绝喵。
+	if len(bodyRegex) > 2048 {
 		return errors.New("virtual model failure rule body regex is too long")
 	}
-	if strings.TrimSpace(rule.BodyRegex) != "" {
-		if _, compileError := regexp.Compile(rule.BodyRegex); compileError != nil {
+	if strings.TrimSpace(bodyRegex) != "" {
+		if _, compileError := regexp.Compile(bodyRegex); compileError != nil {
 			return errors.New("virtual model failure rule body regex is invalid")
 		}
 	}

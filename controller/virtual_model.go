@@ -112,8 +112,10 @@ func loadOwnedVirtualModel(c *gin.Context, modelID int) (*model.VirtualModel, bo
 // virtualModelResponse 返回脱敏的主模型配置和候选链喵。
 type virtualModelResponse struct {
 	*model.VirtualModel
-	Candidates []virtualModelCandidateInput `json:"candidates"`
-	Bindings   []int                        `json:"binding_token_ids"`
+	Candidates []virtualModelCandidateInput        `json:"candidates"`
+	Bindings   []int                               `json:"binding_token_ids"`
+	// GlobalFailureRules 是模型级全局兜底失败规则，候选未配置规则时运行时按其决策喵。
+	GlobalFailureRules []model.VirtualModelGlobalFailureRule `json:"global_failure_rules,omitempty"`
 }
 
 // buildVirtualModelResponse 读取关联数据并只输出允许公开的字段喵。
@@ -162,7 +164,12 @@ func buildVirtualModelResponse(virtualModel *model.VirtualModel) (*virtualModelR
 	for _, binding := range bindings {
 		bindingTokenIDs = append(bindingTokenIDs, binding.TokenID)
 	}
-	return &virtualModelResponse{VirtualModel: virtualModel, Candidates: candidateResponses, Bindings: bindingTokenIDs}, nil
+	// 读取模型级全局兜底规则，与候选级规则一起返回给控制面编辑喵。
+	var globalFailureRules []model.VirtualModelGlobalFailureRule
+	if err := model.DB.Where("virtual_model_id = ?", virtualModel.ID).Order("rule_order asc, id asc").Find(&globalFailureRules).Error; err != nil {
+		return nil, err
+	}
+	return &virtualModelResponse{VirtualModel: virtualModel, Candidates: candidateResponses, Bindings: bindingTokenIDs, GlobalFailureRules: globalFailureRules}, nil
 }
 
 // GetVirtualModels 返回当前登录用户拥有的全部虚拟模型喵。
@@ -707,6 +714,68 @@ func ReplaceVirtualModelCandidateFailureRules(c *gin.Context) {
 		}
 		if errors.Is(transactionError, gorm.ErrRecordNotFound) {
 			virtualModelNotFound(c)
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "code": "virtual_model_invalid_request", "message": transactionError.Error()})
+		return
+	}
+	virtualModel.Version = input.Version + 1
+	response, responseError := buildVirtualModelResponse(virtualModel)
+	if responseError != nil {
+		common.ApiError(c, responseError)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": response})
+}
+
+// ReplaceVirtualModelGlobalFailureRules 原子替换模型级全局兜底失败规则，并通过父模型版本避免并发覆盖喵。
+func ReplaceVirtualModelGlobalFailureRules(c *gin.Context) {
+	// 喵~防御：路径模型编号非法时统一返回资源不存在，避免越权枚举喵。
+	modelID, validModelID := parseVirtualModelID(c)
+	if !validModelID {
+		return
+	}
+	var input virtualModelFailureRulesReplaceInput
+	// 喵~防御：请求体格式错误或规则数量越界时拒绝写入，避免零值规则覆盖现有兜底策略喵。
+	if bindError := c.ShouldBindJSON(&input); bindError != nil || input.Version <= 0 || len(input.Rules) > 32 {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "code": "virtual_model_invalid_request", "message": "虚拟模型失败规则请求无效"})
+		return
+	}
+	virtualModel, foundModel := loadOwnedVirtualModel(c, modelID)
+	if !foundModel {
+		return
+	}
+	if input.Version != virtualModel.Version {
+		c.JSON(http.StatusConflict, gin.H{"success": false, "code": "virtual_model_version_conflict", "message": "虚拟模型已被其他请求修改"})
+		return
+	}
+	transactionError := model.DB.Transaction(func(transactionDatabase *gorm.DB) error {
+		// 喵~防御：先条件推进父模型版本，避免过期请求覆盖较新的全局兜底配置喵。
+		updateResult := transactionDatabase.Model(&model.VirtualModel{}).Where("id = ? AND owner_user_id = ? AND version = ?", modelID, c.GetInt("id"), input.Version).Updates(map[string]any{"version": input.Version + 1, "updated_time": common.GetTimestamp()})
+		if updateResult.Error != nil {
+			return updateResult.Error
+		}
+		if updateResult.RowsAffected != 1 {
+			return errors.New("virtual_model_version_conflict")
+		}
+		// 喵~防御：先硬删除旧全局规则再按请求顺序创建，避免中间排序唯一约束冲突或遗留失效规则喵。
+		if deleteError := transactionDatabase.Unscoped().Where("virtual_model_id = ?", modelID).Delete(&model.VirtualModelGlobalFailureRule{}).Error; deleteError != nil {
+			return deleteError
+		}
+		for ruleOrder, ruleInput := range input.Rules {
+			globalFailureRule := &model.VirtualModelGlobalFailureRule{VirtualModelID: modelID, RuleOrder: ruleOrder, HTTPStatus: ruleInput.HTTPStatus, ErrorClass: strings.TrimSpace(ruleInput.ErrorClass), BodyRegex: strings.TrimSpace(ruleInput.BodyRegex), Action: ruleInput.Action, FreezeSeconds: ruleInput.FreezeSeconds}
+			if validateError := virtualmodelservice.ValidateGlobalFailureRule(globalFailureRule); validateError != nil {
+				return validateError
+			}
+			if createError := transactionDatabase.Create(globalFailureRule).Error; createError != nil {
+				return createError
+			}
+		}
+		return transactionDatabase.Create(&model.VirtualModelAuditLog{VirtualModelID: modelID, OwnerUserID: c.GetInt("id"), OperatorID: c.GetInt("id"), Action: "global_failure_rule_replace", SummaryDigest: fmt.Sprintf("model:%d;rules:%d", modelID, len(input.Rules)), CreatedTime: common.GetTimestamp()}).Error
+	})
+	if transactionError != nil {
+		if transactionError.Error() == "virtual_model_version_conflict" {
+			c.JSON(http.StatusConflict, gin.H{"success": false, "code": "virtual_model_version_conflict", "message": "虚拟模型已被其他请求修改"})
 			return
 		}
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "code": "virtual_model_invalid_request", "message": transactionError.Error()})

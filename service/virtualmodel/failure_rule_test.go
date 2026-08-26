@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/model"
+	"github.com/stretchr/testify/require"
 )
 
 // TestDecideCandidateFailureAction 验证规则顺序、默认 next 与冻结时长边界喵。
@@ -53,6 +54,33 @@ func TestDecideCandidateFailureAction(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDecideVirtualModelFailureActionGlobalFallback 验证候选无规则时回退模型级全局兜底规则喵。
+func TestDecideVirtualModelFailureActionGlobalFallback(t *testing.T) {
+	// 构造同时含候选级规则与模型级全局规则的执行快照喵。
+	executionSnapshot := &model.VirtualModelExecutionSnapshot{
+		FailureRulesByCandidateID: map[int][]model.VirtualModelFailureRule{
+			11: {
+				{HTTPStatus: http.StatusTooManyRequests, Action: model.VirtualModelActionFreeze, FreezeSeconds: 30},
+			},
+		},
+		GlobalFailureRules: []model.VirtualModelFailureRule{
+			{HTTPStatus: http.StatusInternalServerError, Action: model.VirtualModelActionPassthrough},
+		},
+	}
+	// 场景一：候选配置了规则时优先按候选规则决策，不受全局规则影响喵。
+	action, _ := DecideVirtualModelFailureAction(executionSnapshot, 11, CandidateFailure{HTTPStatus: http.StatusTooManyRequests})
+	require.Equal(t, model.VirtualModelActionFreeze, action)
+	// 场景二：候选未配置规则时回退到模型级全局兜底规则喵。
+	action, _ = DecideVirtualModelFailureAction(executionSnapshot, 22, CandidateFailure{HTTPStatus: http.StatusInternalServerError})
+	require.Equal(t, model.VirtualModelActionPassthrough, action)
+	// 场景三：全局规则也未命中时保持默认切换下一候选喵。
+	action, _ = DecideVirtualModelFailureAction(executionSnapshot, 22, CandidateFailure{HTTPStatus: http.StatusBadGateway})
+	require.Equal(t, model.VirtualModelActionNext, action)
+	// 场景四：快照为空时保守回退默认切换下一候选喵。
+	action, _ = DecideVirtualModelFailureAction(nil, 1, CandidateFailure{HTTPStatus: http.StatusInternalServerError})
+	require.Equal(t, model.VirtualModelActionNext, action)
 }
 
 // TestNormalizeCandidateFailure 验证 HTTP、网络错误和 Retry-After 的稳定分类喵。

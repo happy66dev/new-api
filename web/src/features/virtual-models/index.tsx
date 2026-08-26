@@ -13,20 +13,14 @@ import { useTranslation } from 'react-i18next'
 import { SectionPageLayout } from '@/components/layout'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { getVirtualModelStatus, getVirtualModels } from '@/features/virtual-models/api'
-import { VirtualModelBindingsEditor } from '@/features/virtual-models/components/virtual-model-bindings-editor'
-import { VirtualModelCandidateFailureRulesEditor } from '@/features/virtual-models/components/virtual-model-candidate-failure-rules-editor'
-import { VirtualModelCandidatesEditor } from '@/features/virtual-models/components/virtual-model-candidates-editor'
-import {
-  VirtualModelDeleteDialog,
-  VirtualModelMutateDialog,
-} from '@/features/virtual-models/components/virtual-model-dialogs'
+import { VirtualModelDeleteDialog } from '@/features/virtual-models/components/virtual-model-dialogs'
+import { VirtualModelDrawer } from '@/features/virtual-models/components/virtual-model-drawer'
 
 export function VirtualModels() {
   const { t } = useTranslation()
   const [selectedModelId, setSelectedModelId] = useState<number | null>(null)
-  const [isMutateDialogOpen, setIsMutateDialogOpen] = useState(false)
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false)
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
   const [editingModelId, setEditingModelId] = useState<number | null>(null)
   const virtualModelsQuery = useQuery({
@@ -41,7 +35,7 @@ export function VirtualModels() {
     }
   }, [selectedModelId, virtualModels])
   const selectedModel = virtualModels.find((item) => item.id === selectedModelId) ?? virtualModels[0]
-  const editingModel = virtualModels.find((item) => item.id === editingModelId)
+  const editingModel = editingModelId !== null ? virtualModels.find((item) => item.id === editingModelId) ?? null : null
   const virtualModelStatusQuery = useQuery({
     queryKey: ['virtual-models', selectedModel?.id, 'status'],
     queryFn: () => getVirtualModelStatus(selectedModel!.id),
@@ -49,18 +43,21 @@ export function VirtualModels() {
   })
   const virtualModelStatus = virtualModelStatusQuery.data?.data
 
-  const openCreateDialog = () => {
+  const openCreateDrawer = () => {
+    // 创建模式不绑定任何已有模型喵。
     setEditingModelId(null)
-    setIsMutateDialogOpen(true)
+    setIsDrawerOpen(true)
   }
 
-  const openEditDialog = () => {
+  const openEditDrawer = () => {
+    // 没有选中模型时不打开编辑抽屉喵。
     if (!selectedModel) return
     setEditingModelId(selectedModel.id)
-    setIsMutateDialogOpen(true)
+    setIsDrawerOpen(true)
   }
 
   const handleDeletedModel = (deletedModelID: number) => {
+    // 删除后清空对应的选中与编辑状态，避免引用不存在的模型喵。
     setSelectedModelId((currentSelectedModelID) =>
       currentSelectedModelID === deletedModelID ? null : currentSelectedModelID
     )
@@ -73,7 +70,7 @@ export function VirtualModels() {
     <SectionPageLayout fixedContent>
       <SectionPageLayout.Title>{t('Virtual Models')}</SectionPageLayout.Title>
       <SectionPageLayout.Actions>
-        <Button size='sm' onClick={openCreateDialog}>{t('Create virtual model')}</Button>
+        <Button size='sm' onClick={openCreateDrawer}>{t('Create virtual model')}</Button>
       </SectionPageLayout.Actions>
       <SectionPageLayout.Content>
         <div className='flex h-full min-h-0 flex-col gap-4 lg:flex-row'>
@@ -91,95 +88,50 @@ export function VirtualModels() {
                 type='button'
               >
                 <span className='truncate'>{item.display_name || item.normalized_name}</span>
-                <Badge variant={item.enabled ? 'default' : 'secondary'}>{item.enabled ? t('Enabled') : t('Disabled')}</Badge>
+                <div className='flex shrink-0 items-center gap-2'>
+                  <Badge variant={item.enabled ? 'default' : 'secondary'}>{item.enabled ? t('Enabled') : t('Disabled')}</Badge>
+                  <Badge variant='outline'>{item.candidates?.length ?? 0}</Badge>
+                </div>
               </button>
             ))}
           </div>
           <div className='min-h-0 flex-1 overflow-auto'>
             {selectedModel ? (
-              <Tabs defaultValue='overview'>
-                <TabsList className='max-w-full flex-wrap justify-start'>
-                  <TabsTrigger value='overview'>{t('Overview')}</TabsTrigger>
-                  <TabsTrigger value='candidates'>{t('Candidate Chain')}</TabsTrigger>
-                  <TabsTrigger value='failure-rules'>{t('Failure Rules')}</TabsTrigger>
-                  <TabsTrigger value='bindings'>{t('API Key Authorization')}</TabsTrigger>
-                  <TabsTrigger value='status'>{t('Runtime Status')}</TabsTrigger>
-                </TabsList>
-                <TabsContent className='mt-4' value='overview'>
-                  <div className='space-y-2 rounded-md border p-4'>
-                    <div className='flex flex-wrap items-center justify-between gap-3'>
-                      <div>
-                        <h2 className='text-lg font-semibold'>{selectedModel.display_name}</h2>
-                        <p className='text-sm text-muted-foreground'>{`virtual/${selectedModel.normalized_name}`}</p>
-                      </div>
-                      <div className='flex gap-2'>
-                        <Button size='sm' variant='outline' onClick={openEditDialog}>{t('Edit')}</Button>
-                        <Button size='sm' variant='destructive' onClick={() => setIsDeleteDialogOpen(true)}>{t('Delete')}</Button>
-                      </div>
-                    </div>
-                    <p className='text-sm'>{t('Candidate count')}: {selectedModel.candidates?.length ?? 0}</p>
+              <div className='space-y-4'>
+                <div className='flex flex-wrap items-center justify-between gap-3 rounded-md border p-4'>
+                  <div>
+                    <h2 className='text-lg font-semibold'>{selectedModel.display_name}</h2>
+                    <p className='text-sm text-muted-foreground'>{`virtual/${selectedModel.normalized_name}`}</p>
                   </div>
-                </TabsContent>
-                <TabsContent className='mt-4' value='candidates'>
-                  <VirtualModelCandidatesEditor
-                    model={selectedModel}
-                    onSaved={() => {
-                      void virtualModelsQuery.refetch()
-                      void virtualModelStatusQuery.refetch()
-                    }}
-                  />
-                </TabsContent>
-                <TabsContent className='mt-4' value='failure-rules'>
-                  <div className='space-y-4'>
-                    {(selectedModel.candidates ?? []).map((candidate, candidateIndex) => (
-                      <VirtualModelCandidateFailureRulesEditor
-                        candidateID={candidate.id}
-                        candidateLabel={`${candidateIndex + 1}. ${candidate.real_model_name || t('Unnamed candidate')}`}
-                        key={candidate.id}
-                        model={selectedModel}
-                        rules={candidate.failure_rules ?? []}
-                        onSaved={() => {
-                          void virtualModelsQuery.refetch()
-                        }}
-                      />
-                    ))}
-                    {(selectedModel.candidates ?? []).length === 0 && (
-                      <p className='rounded-md border p-4 text-sm text-muted-foreground'>{t('Add a candidate before configuring failure rules')}</p>
-                    )}
+                  <div className='flex gap-2'>
+                    <Button size='sm' variant='outline' onClick={openEditDrawer}>{t('Edit')}</Button>
+                    <Button size='sm' variant='destructive' onClick={() => setIsDeleteDialogOpen(true)}>{t('Delete')}</Button>
                   </div>
-                </TabsContent>
-                <TabsContent className='mt-4' value='bindings'>
-                  <VirtualModelBindingsEditor
-                    model={selectedModel}
-                    onSaved={() => {
-                      void virtualModelsQuery.refetch()
-                    }}
-                  />
-                </TabsContent>
-                <TabsContent className='mt-4' value='status'>
-                  <div className='space-y-3 rounded-md border p-4 text-sm'>
-                    {virtualModelStatusQuery.isLoading && <p className='text-muted-foreground'>{t('Loading')}</p>}
-                    {virtualModelStatusQuery.isError && <p className='text-destructive'>{t('Unable to load virtual model status')}</p>}
-                    {virtualModelStatus && (
-                      <>
-                        <p>{t('Enabled')}: {virtualModelStatus.enabled ? t('Yes') : t('No')}</p>
-                        <p>{t('Candidate count')}: {virtualModelStatus.candidate_count}</p>
-                        <p>{t('Enabled candidates')}: {virtualModelStatus.enabled_candidates}</p>
-                      </>
-                    )}
-                    <Button size='sm' variant='outline' onClick={() => void virtualModelStatusQuery.refetch()}>{t('Refresh')}</Button>
-                  </div>
-                </TabsContent>
-              </Tabs>
+                </div>
+
+                <div className='space-y-3 rounded-md border p-4 text-sm'>
+                  <p className='font-medium'>{t('Runtime Status')}</p>
+                  {virtualModelStatusQuery.isLoading && <p className='text-muted-foreground'>{t('Loading')}</p>}
+                  {virtualModelStatusQuery.isError && <p className='text-destructive'>{t('Unable to load virtual model status')}</p>}
+                  {virtualModelStatus && (
+                    <>
+                      <p>{t('Enabled')}: {virtualModelStatus.enabled ? t('Yes') : t('No')}</p>
+                      <p>{t('Candidate count')}: {virtualModelStatus.candidate_count}</p>
+                      <p>{t('Enabled candidates')}: {virtualModelStatus.enabled_candidates}</p>
+                    </>
+                  )}
+                  <Button size='sm' variant='outline' onClick={() => void virtualModelStatusQuery.refetch()}>{t('Refresh')}</Button>
+                </div>
+              </div>
             ) : (
               <p className='p-4 text-sm text-muted-foreground'>{t('Select a virtual model')}</p>
             )}
           </div>
         </div>
-        <VirtualModelMutateDialog
+        <VirtualModelDrawer
           model={editingModel}
-          open={isMutateDialogOpen}
-          onOpenChange={setIsMutateDialogOpen}
+          open={isDrawerOpen}
+          onOpenChange={setIsDrawerOpen}
         />
         <VirtualModelDeleteDialog
           model={selectedModel}

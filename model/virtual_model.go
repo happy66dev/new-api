@@ -121,6 +121,20 @@ type VirtualModelFailureRule struct {
 	Version       int64                     `json:"version" gorm:"default:1"`
 }
 
+// VirtualModelGlobalFailureRule 保存模型级全局兜底失败规则喵。
+// 当候选没有配置自己的失效规则时，运行时回退到这组全局规则做失败决策喵。
+type VirtualModelGlobalFailureRule struct {
+	ID             int                       `json:"id" gorm:"primaryKey"`
+	VirtualModelID int                       `json:"virtual_model_id" gorm:"index;not null;uniqueIndex:idx_virtual_model_global_failure_rule_order,priority:1"`
+	RuleOrder      int                       `json:"rule_order" gorm:"not null;uniqueIndex:idx_virtual_model_global_failure_rule_order,priority:2"`
+	HTTPStatus     int                       `json:"http_status"`
+	ErrorClass     string                    `json:"error_class" gorm:"type:varchar(64)"`
+	BodyRegex      string                    `json:"body_regex" gorm:"type:text"`
+	Action         VirtualModelFailureAction `json:"action" gorm:"type:varchar(16);not null"`
+	FreezeSeconds  int                       `json:"freeze_seconds"`
+	Version        int64                     `json:"version" gorm:"default:1"`
+}
+
 // VirtualModelTokenBinding 保存模型和用户 API Key 的显式授权关系喵。
 type VirtualModelTokenBinding struct {
 	ID             int   `json:"id" gorm:"primaryKey"`
@@ -318,7 +332,9 @@ type VirtualModelInternalCandidateSnapshot = VirtualModelCandidateSnapshot
 // VirtualModelExecutionSnapshot 保存一次请求所需的候选链和失败规则不可变读取结果喵。
 type VirtualModelExecutionSnapshot struct {
 	Candidates                []VirtualModelCandidateSnapshot   // 已按稳定顺序排列的启用候选快照喵。
-	FailureRulesByCandidateID map[int][]VirtualModelFailureRule // 按候选编号归类且已排序的失败规则快照喵。
+	FailureRulesByCandidateID map[int][]VirtualModelFailureRule // 按候选编号归类且已排序的候选级失败规则快照喵。
+	// GlobalFailureRules 保存模型级全局兜底失败规则快照，候选未配置规则时由其兜底喵。
+	GlobalFailureRules []VirtualModelFailureRule
 }
 
 // GetVirtualModelExecutionSnapshot 在单个只读事务中构造候选和规则的不可变执行快照喵。
@@ -327,7 +343,7 @@ func GetVirtualModelExecutionSnapshot(virtualModelID int) (*VirtualModelExecutio
 	if virtualModelID <= 0 {
 		return nil, gorm.ErrRecordNotFound
 	}
-	executionSnapshot := &VirtualModelExecutionSnapshot{Candidates: make([]VirtualModelCandidateSnapshot, 0), FailureRulesByCandidateID: make(map[int][]VirtualModelFailureRule)}
+	executionSnapshot := &VirtualModelExecutionSnapshot{Candidates: make([]VirtualModelCandidateSnapshot, 0), FailureRulesByCandidateID: make(map[int][]VirtualModelFailureRule), GlobalFailureRules: make([]VirtualModelFailureRule, 0)}
 	transactionError := DB.Transaction(func(transactionDatabase *gorm.DB) error {
 		candidateSnapshots, candidateError := GetEnabledVirtualModelCandidateSnapshotsWithDB(transactionDatabase, virtualModelID)
 		if candidateError != nil {
@@ -341,8 +357,14 @@ func GetVirtualModelExecutionSnapshot(virtualModelID int) (*VirtualModelExecutio
 		if rulesError != nil {
 			return rulesError
 		}
+		// 候选级规则与模型级全局兜底规则在同一只读事务内读取，保证一次请求的快照一致性喵。
+		globalFailureRules, globalRulesError := GetVirtualModelGlobalFailureRulesWithDB(transactionDatabase, virtualModelID)
+		if globalRulesError != nil {
+			return globalRulesError
+		}
 		executionSnapshot.Candidates = candidateSnapshots
 		executionSnapshot.FailureRulesByCandidateID = failureRulesByCandidateID
+		executionSnapshot.GlobalFailureRules = globalFailureRules
 		return nil
 	})
 	if transactionError != nil {
@@ -406,6 +428,35 @@ func GetVirtualModelFailureRulesByCandidateIDsWithDB(database *gorm.DB, candidat
 // GetVirtualModelFailureRulesByCandidateIDs 按候选和规则顺序批量读取失败规则快照喵。
 func GetVirtualModelFailureRulesByCandidateIDs(candidateIDs []int) (map[int][]VirtualModelFailureRule, error) {
 	return GetVirtualModelFailureRulesByCandidateIDsWithDB(DB, candidateIDs)
+}
+
+// GetVirtualModelGlobalFailureRulesWithDB 使用给定数据库连接按规则顺序读取模型级全局兜底规则喵。
+// 返回时统一转换为候选规则结构，使规则决策函数无需区分两种来源喵。
+func GetVirtualModelGlobalFailureRulesWithDB(database *gorm.DB, virtualModelID int) ([]VirtualModelFailureRule, error) {
+	// 喵~防御：无效模型编号直接返回空列表，避免生成无界查询喵。
+	if virtualModelID <= 0 {
+		return []VirtualModelFailureRule{}, nil
+	}
+	// 喵~防御：数据库连接为空时拒绝查询，避免运行时空指针或绕过调用方事务边界喵。
+	if database == nil {
+		return nil, errors.New("virtual model database is unavailable")
+	}
+	storedGlobalRules := make([]VirtualModelGlobalFailureRule, 0)
+	queryError := database.Where("virtual_model_id = ?", virtualModelID).Order("rule_order ASC, id ASC").Find(&storedGlobalRules).Error
+	if queryError != nil {
+		return nil, queryError
+	}
+	// 将模型级规则字段复制到候选规则结构，字段语义与候选规则完全一致喵。
+	globalFailureRules := make([]VirtualModelFailureRule, 0, len(storedGlobalRules))
+	for _, storedRule := range storedGlobalRules {
+		globalFailureRules = append(globalFailureRules, VirtualModelFailureRule{ID: storedRule.ID, RuleOrder: storedRule.RuleOrder, HTTPStatus: storedRule.HTTPStatus, ErrorClass: storedRule.ErrorClass, BodyRegex: storedRule.BodyRegex, Action: storedRule.Action, FreezeSeconds: storedRule.FreezeSeconds})
+	}
+	return globalFailureRules, nil
+}
+
+// GetVirtualModelGlobalFailureRules 按规则顺序读取模型级全局兜底规则喵。
+func GetVirtualModelGlobalFailureRules(virtualModelID int) ([]VirtualModelFailureRule, error) {
+	return GetVirtualModelGlobalFailureRulesWithDB(DB, virtualModelID)
 }
 
 // GetActiveVirtualModelManualFreezeCandidateIDs 使用给定数据库连接读取当前仍处于手动冻结期的候选编号集合喵。
@@ -562,6 +613,10 @@ func DeleteVirtualModelByOwnerWithVersion(virtualModelID int, ownerUserID int, o
 			}
 		}
 		if err := tx.Unscoped().Where("virtual_model_id = ?", virtualModelID).Delete(&VirtualModelTokenBinding{}).Error; err != nil {
+			return err
+		}
+		// 模型级全局兜底规则随模型一并硬删除，避免残留无主规则喵。
+		if err := tx.Unscoped().Where("virtual_model_id = ?", virtualModelID).Delete(&VirtualModelGlobalFailureRule{}).Error; err != nil {
 			return err
 		}
 		if err := tx.Create(&VirtualModelAuditLog{VirtualModelID: virtualModelID, OwnerUserID: ownerUserID, OperatorID: operatorID, Action: "delete", SummaryDigest: fmt.Sprintf("model:%d", virtualModelID), CreatedTime: time.Now().Unix()}).Error; err != nil {
