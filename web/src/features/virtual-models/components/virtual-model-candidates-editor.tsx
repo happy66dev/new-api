@@ -13,14 +13,18 @@ import {
   Add01Icon,
 } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
-import { useEffect, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
+import { ModelGroupSelector } from '@/components/model-group-selector'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
+import { getUserGroups, getUserModels } from '@/features/playground/api'
+import { shouldClearModelForGroup } from '@/features/playground/lib/options/playground-option-utils'
 
 import type {
   VirtualModel,
@@ -79,6 +83,56 @@ function createCandidateDraft(sourceType: 'internal' | 'custom'): CandidateDraft
     sourceType,
     timeoutSeconds: DEFAULT_TIMEOUT_SECONDS,
   }
+}
+
+// InternalCandidateSelector 复用游乐场的模型/分组选择器，让内部候选直接选择当前用户可访问的分组与真实模型喵。
+function InternalCandidateSelector({
+  group,
+  model,
+  onGroupChange,
+  onModelChange,
+  disabled,
+}: {
+  group: string
+  model: string
+  onGroupChange: (group: string) => void
+  onModelChange: (model: string) => void
+  disabled?: boolean
+}) {
+  // 加载当前用户可访问的分组列表，数据源与游乐场选择器一致喵。
+  const groupsQuery = useQuery({
+    queryKey: ['virtual-model-groups'],
+    queryFn: getUserGroups,
+  })
+  // 按候选当前分组加载该分组可用的模型，避免展示无权访问的真实模型喵。
+  const modelsQuery = useQuery({
+    queryKey: ['virtual-model-models', group],
+    queryFn: () => getUserModels(group),
+    enabled: group !== '',
+  })
+  // 模型列表就绪后，若已选模型不在当前分组可用列表内则清空，与游乐场分组切换行为一致喵。
+  // 喵~防御：useRef 持有最新回调，避免内联回调导致 useEffect 每次渲染都触发清空。
+  const onModelChangeRef = useRef(onModelChange)
+  onModelChangeRef.current = onModelChange
+  const shouldClearModel =
+    !modelsQuery.isLoading && shouldClearModelForGroup(modelsQuery.data ?? [], model)
+  useEffect(() => {
+    if (shouldClearModel) {
+      onModelChangeRef.current('')
+    }
+  }, [shouldClearModel])
+
+  return (
+    <ModelGroupSelector
+      selectedGroup={group}
+      groups={groupsQuery.data ?? []}
+      onGroupChange={onGroupChange}
+      selectedModel={model}
+      models={modelsQuery.data ?? []}
+      onModelChange={onModelChange}
+      disabled={disabled}
+    />
+  )
 }
 
 // validateCandidateDraft 在提交前拦截空必填项、非法数值和未重新输入的自定义密钥喵。
@@ -286,16 +340,13 @@ export function VirtualModelCandidatesEditor({
           </div>
 
           {candidate.sourceType === 'internal' ? (
-            <div className='grid gap-3 sm:grid-cols-2'>
-              <label className='grid gap-1 text-sm font-medium'>
-                {t('Group')}
-                <Input value={candidate.groupName} disabled={isSaving} onChange={(event) => updateCandidate(index, { groupName: event.target.value })} />
-              </label>
-              <label className='grid gap-1 text-sm font-medium'>
-                {t('Real model name')}
-                <Input value={candidate.realModelName} disabled={isSaving} onChange={(event) => updateCandidate(index, { realModelName: event.target.value })} />
-              </label>
-            </div>
+            <InternalCandidateSelector
+              group={candidate.groupName}
+              model={candidate.realModelName}
+              onGroupChange={(groupName) => updateCandidate(index, { groupName })}
+              onModelChange={(realModelName) => updateCandidate(index, { realModelName })}
+              disabled={isSaving}
+            />
           ) : (
             <div className='grid gap-3 sm:grid-cols-2'>
               <label className='grid gap-1 text-sm font-medium'>

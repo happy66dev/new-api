@@ -6,7 +6,7 @@
  the Free Software Foundation, either version 3 of the License, or
  (at your option) any later version.
 */
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
