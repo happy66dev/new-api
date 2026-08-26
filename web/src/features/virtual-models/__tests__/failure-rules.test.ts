@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest'
 import type { VirtualModelFailureRule } from '../api'
 import {
   BODY_REGEX_PRESETS,
+  COMMON_HTTP_STATUS_RANGES,
   FREEZE_UNITS,
   MAXIMUM_FREEZE_SECONDS,
   MAXIMUM_HTTP_STATUS,
@@ -361,6 +362,15 @@ describe('FREEZE_UNITS', () => {
   it('offers the auto option for scanning natural language durations', () => {
     // auto 单位必须存在于下拉选项，用于全文扫描自然语言时间喵。
     expect(FREEZE_UNITS.some((unit) => unit.value === 'auto')).toBe(true)
+  })
+})
+
+// describe COMMON_HTTP_STATUS_RANGES：快速填入范围预设的完整性喵。
+describe('COMMON_HTTP_STATUS_RANGES', () => {
+  it('offers a 500~524 quick range preset that parses cleanly', () => {
+    // 范围预设必须能被状态码解析函数识别，点击填入后即可生效喵。
+    expect(COMMON_HTTP_STATUS_RANGES).toContain('500~524')
+    expect(parseHttpStatusText('500~524')).toEqual({ min: 500, max: 524 })
   })
 })
 

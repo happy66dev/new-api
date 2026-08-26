@@ -52,6 +52,8 @@ export const MAXIMUM_HTTP_STATUS = 599
 export const MAXIMUM_FREEZE_SECONDS = 24 * 60 * 60
 // COMMON_HTTP_STATUSES 提供常见失败状态码预设，点击即可填入喵。
 export const COMMON_HTTP_STATUSES = [429, 500, 502, 503, 504, 524]
+// COMMON_HTTP_STATUS_RANGES 提供常见状态码范围预设，文本与 parseHttpStatusText 兼容喵。
+export const COMMON_HTTP_STATUS_RANGES = ['500~524']
 // ERROR_CLASS_OPTIONS 列出后端可稳定分类的错误分类选项，供下拉选择喵。
 export const ERROR_CLASS_OPTIONS = [
   'rate_limited',

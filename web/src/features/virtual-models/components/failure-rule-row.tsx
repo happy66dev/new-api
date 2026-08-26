@@ -17,6 +17,7 @@ import { cn } from '@/lib/utils'
 
 import {
   BODY_REGEX_PRESETS,
+  COMMON_HTTP_STATUS_RANGES,
   COMMON_HTTP_STATUSES,
   FREEZE_UNITS,
   type BodyRegexMode,
@@ -82,6 +83,24 @@ export function FailureRuleEditorRow({
                   onClick={() => onChange({ httpStatus: active ? '0' : String(status) })}
                 >
                   {status}
+                </button>
+              )
+            })}
+            {/* 常用状态码范围预设：点击填入范围文本，再次点击清除喵。 */}
+            {COMMON_HTTP_STATUS_RANGES.map((rangeText) => {
+              const active = rule.httpStatus.trim() === rangeText
+              return (
+                <button
+                  type='button'
+                  key={rangeText}
+                  disabled={isSaving}
+                  className={cn(
+                    'rounded-full border px-2 py-0.5 text-xs transition-colors',
+                    active ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
+                  )}
+                  onClick={() => onChange({ httpStatus: active ? '0' : rangeText })}
+                >
+                  {rangeText}
                 </button>
               )
             })}
