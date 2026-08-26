@@ -18,8 +18,10 @@ import { cn } from '@/lib/utils'
 import {
   BODY_REGEX_PRESETS,
   COMMON_HTTP_STATUSES,
+  FREEZE_UNITS,
   type BodyRegexMode,
   type FailureRuleDraft,
+  type FreezeUnit,
 } from '../lib/failure-rules'
 
 // FailureRuleEditorRow 渲染单条失败规则的完整编辑表单喵。
@@ -96,10 +98,30 @@ export function FailureRuleEditorRow({
         </label>
         {/* 冻结秒数只在冻结动作时展示，避免其它动作暴露无意义的冻结配置喵。 */}
         {rule.action === 'freeze' && (
-          <label className='grid gap-1 text-sm font-medium'>
-            {t('Freeze seconds')}
-            <Input inputMode='numeric' value={rule.freezeSeconds} disabled={isSaving} placeholder={t('0 = auto from Retry-After')} onChange={(event) => onChange({ freezeSeconds: event.target.value })} />
-          </label>
+          <>
+            <label className='grid gap-1 text-sm font-medium'>
+              {t('Freeze seconds')}
+              <Input inputMode='numeric' value={rule.freezeSeconds} disabled={isSaving} placeholder={t('0 = auto from Retry-After')} onChange={(event) => onChange({ freezeSeconds: event.target.value })} />
+            </label>
+            {/* 高级冻结：从响应体指定字段解析冻结时间，适配上游不返回 Retry-After 头的情况喵。 */}
+            <div className='grid gap-3 rounded-md border border-dashed p-3 sm:col-span-3'>
+              <p className='text-sm font-medium'>{t('Advanced freeze from response body')}</p>
+              <div className='grid gap-3 sm:grid-cols-2'>
+                <label className='grid gap-1 text-sm font-medium'>
+                  {t('Response body field')}
+                  <Input value={rule.freezeField} disabled={isSaving} placeholder={t('Field name holding the freeze time, e.g. retry_after')} onChange={(event) => onChange({ freezeField: event.target.value })} />
+                </label>
+                <label className='grid gap-1 text-sm font-medium'>
+                  {t('Freeze unit')}
+                  <select className='border-input bg-background h-9 rounded-md border px-3 text-sm' value={rule.freezeUnit} disabled={isSaving} onChange={(event) => onChange({ freezeUnit: event.target.value as FreezeUnit })}>
+                    {FREEZE_UNITS.map((unit) => (
+                      <option key={unit.value} value={unit.value}>{t(unit.labelKey)}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            </div>
+          </>
         )}
 
         {/* 响应体正则区域：预设、简易文本与自定义正则三种模式喵。 */}

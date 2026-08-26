@@ -34,6 +34,8 @@ function makeDraft(overrides: Partial<FailureRuleDraft> = {}): FailureRuleDraft 
     bodyRegexSimple: '',
     errorClass: '',
     freezeSeconds: '0',
+    freezeField: '',
+    freezeUnit: 'seconds',
     httpStatus: '0',
     action: 'next',
     ...overrides,
@@ -60,6 +62,8 @@ describe('toFailureRuleDraft', () => {
       bodyRegexSimple: '',
       errorClass: 'rate_limited',
       freezeSeconds: '30',
+      freezeField: '',
+      freezeUnit: 'seconds',
       httpStatus: '429',
       id: 7,
       action: 'freeze',
@@ -90,6 +94,8 @@ describe('toFailureRuleDraft', () => {
       bodyRegexSimple: '',
       errorClass: '',
       freezeSeconds: '0',
+      freezeField: '',
+      freezeUnit: 'seconds',
       httpStatus: '0',
       id: undefined,
       action: 'next',
@@ -109,6 +115,8 @@ describe('createFailureRuleDraft', () => {
       bodyRegexSimple: '',
       errorClass: '',
       freezeSeconds: '0',
+      freezeField: '',
+      freezeUnit: 'seconds',
       httpStatus: '0',
       action: 'next',
     })
@@ -205,6 +213,8 @@ describe('validateFailureRuleDraft', () => {
       body_regex: 'overloaded',
       action: 'retry',
       freeze_seconds: 5,
+      freeze_field: '',
+      freeze_unit: 'seconds',
     })
   })
 
@@ -298,5 +308,38 @@ describe('validateFailureRuleDraft', () => {
     // 错误消息应携带规则序号，方便用户定位第三条规则的输入问题喵。
     const t = (key: string, options?: Record<string, unknown>): string => `${key}#${String(options?.index)}`
     expect(() => validateFailureRuleDraft(makeDraft({ httpStatus: '999' }), 2, t)).toThrow('3')
+  })
+
+  it('writes response-body freeze field and unit into the payload', () => {
+    // 高级冻结配置应原样写入后端字段，字段名去空白喵。
+    const payload = validateFailureRuleDraft(
+      makeDraft({ freezeField: ' retry_after ', freezeUnit: 'mixed', action: 'freeze' }),
+      0,
+      identityTranslator
+    )
+    expect(payload.freeze_field).toBe('retry_after')
+    expect(payload.freeze_unit).toBe('mixed')
+  })
+
+  it('rejects an overlong response-body freeze field', () => {
+    // 喵~防御：字段名超过数据库列宽会截断产生歧义，必须拒绝喵。
+    expect(() => validateFailureRuleDraft(makeDraft({ freezeField: 'x'.repeat(65) }), 0, identityTranslator)).toThrow()
+  })
+
+  it('round-trips an advanced freeze rule through toFailureRuleDraft', () => {
+    // 已有高级冻结配置的服务端规则应还原为编辑草稿，供用户继续调整喵。
+    const rule: VirtualModelFailureRule = {
+      id: 9,
+      http_status: 429,
+      error_class: '',
+      body_regex: '',
+      action: 'freeze',
+      freeze_seconds: 0,
+      freeze_field: 'retry_after',
+      freeze_unit: 'minutes',
+    }
+    const draft = toFailureRuleDraft(rule)
+    expect(draft.freezeField).toBe('retry_after')
+    expect(draft.freezeUnit).toBe('minutes')
   })
 })

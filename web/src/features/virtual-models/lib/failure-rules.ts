@@ -12,6 +12,17 @@ import type { VirtualModelFailureRule } from '../api'
 // none 不匹配响应体；preset 使用内置预设；simple 用普通文本做包含匹配；custom 直接写正则喵。
 export type BodyRegexMode = 'none' | 'preset' | 'simple' | 'custom'
 
+// FreezeUnit 描述响应体冻结时间字段值的单位喵。
+// seconds 直接按秒；minutes 按分钟乘以 60；mixed 支持 "1m30s" 复合格式喵。
+export type FreezeUnit = 'seconds' | 'minutes' | 'mixed'
+
+// FREEZE_UNITS 提供响应体冻结单位下拉选项，labelKey 供 i18n 翻译喵。
+export const FREEZE_UNITS: { value: FreezeUnit; labelKey: string }[] = [
+  { value: 'seconds', labelKey: 'Freeze unit: seconds' },
+  { value: 'minutes', labelKey: 'Freeze unit: minutes' },
+  { value: 'mixed', labelKey: 'Freeze unit: mixed (e.g. 1m30s)' },
+]
+
 // FailureRuleDraft 保存单条失败规则的受控编辑状态，字符串字段避免输入中间态被过早截断喵。
 export type FailureRuleDraft = {
   bodyRegex: string
@@ -23,6 +34,10 @@ export type FailureRuleDraft = {
   bodyRegexSimple: string
   errorClass: string
   freezeSeconds: string
+  // freezeField 是响应体中的冻结时间字段名，非空时启用从响应体解析冻结时间喵。
+  freezeField: string
+  // freezeUnit 标记响应体字段冻结时间的单位，仅在 freezeField 非空时生效喵。
+  freezeUnit: FreezeUnit
   httpStatus: string
   id?: number
   action: VirtualModelFailureRule['action']
@@ -86,6 +101,8 @@ export function toFailureRuleDraft(rule: VirtualModelFailureRule): FailureRuleDr
     bodyRegexSimple: '',
     errorClass: rule.error_class ?? '',
     freezeSeconds: String(rule.freeze_seconds ?? 0),
+    freezeField: rule.freeze_field ?? '',
+    freezeUnit: rule.freeze_unit ?? 'seconds',
     httpStatus: httpStatusText,
     id: rule.id,
     action: rule.action ?? 'next',
@@ -101,6 +118,8 @@ export function createFailureRuleDraft(): FailureRuleDraft {
     bodyRegexSimple: '',
     errorClass: '',
     freezeSeconds: '0',
+    freezeField: '',
+    freezeUnit: 'seconds',
     httpStatus: '0',
     action: 'next',
   }
@@ -175,6 +194,12 @@ export function validateFailureRuleDraft(
   if (!Number.isInteger(freezeSeconds) || freezeSeconds < 0 || freezeSeconds > MAXIMUM_FREEZE_SECONDS) {
     throw new Error(t('Failure rule {{index}} freeze duration must be between 0 and 86400 seconds', { index: index + 1 }))
   }
+  // 响应体冻结字段名去空白，空值表示不启用从响应体解析冻结时间喵。
+  const freezeField = rule.freezeField.trim()
+  // 喵~防御：响应体字段名过长会超过数据库列宽，必须拒绝保存喵。
+  if (freezeField.length > 64) {
+    throw new Error(t('Failure rule {{index}} freeze field is too long', { index: index + 1 }))
+  }
   // 根据编辑模式生成最终响应体正则，简易与自定义输入均在此收敛喵。
   const bodyRegex = resolveBodyRegex(rule)
   // 返回后端期待的下划线字段，空条件表示该维度不限制匹配喵。
@@ -186,5 +211,7 @@ export function validateFailureRuleDraft(
     body_regex: bodyRegex,
     action: rule.action,
     freeze_seconds: freezeSeconds,
+    freeze_field: freezeField,
+    freeze_unit: rule.freezeUnit,
   }
 }
