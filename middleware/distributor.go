@@ -319,6 +319,11 @@ func handleVirtualModelRequest(c *gin.Context, modelRequest *ModelRequest) bool 
 		skippedCandidateIDs:             make(map[int]bool),
 	}
 	common.SetContextKey(c, constant.ContextKeyVirtualModelExecutionState, executionState)
+	// 虚拟模型请求日志统一归入「虚拟模型」类型（internal 候选走消费日志时覆盖 type 为 9）喵。
+	common.SetContextKey(c, constant.ContextKeyVirtualLogType, model.LogTypeVirtualModel)
+	// 初始化候选尝试记录切片，供请求生命周期内各候选追加，最终随日志落库喵。
+	candidateAttempts := make([]model.VirtualModelCandidateAttemptRecord, 0, len(executionSnapshot.Candidates))
+	common.SetContextKey(c, constant.ContextKeyVirtualCandidateAttempts, &candidateAttempts)
 	if activateNextVirtualModelCandidate(c, executionState) {
 		return true
 	}
@@ -366,6 +371,18 @@ func AdvanceVirtualModelAfterNativeFailure(c *gin.Context, nativeError *types.Ne
 	}
 	// 规范化为失败规则可匹配的受限结果，候选未配置规则时自动回退模型级全局兜底规则喵。
 	nativeFailure := virtualmodelservice.NormalizeCandidateFailure(nativeError.StatusCode, nil, nil, nil)
+	// 记录该 internal 候选的失败尝试摘要，供最终日志展示候选链故障转移过程喵。
+	appendVirtualModelCandidateAttempt(c, model.VirtualModelCandidateAttemptRecord{
+		Seq:          currentVirtualModelCandidateSeq(c),
+		CandidateID:  currentCandidate.CandidateID,
+		Source:       "internal",
+		Label:        buildVirtualModelAttemptLabel(&currentCandidate, currentCandidate.RealModelName),
+		Success:      false,
+		StatusCode:   nativeFailure.HTTPStatus,
+		ErrorClass:   nativeFailure.ErrorClass,
+		ErrorMessage: nativeFailure.ErrorClass,
+		RetryCount:   executionState.ruleRetryCounts[currentCandidate.CandidateID],
+	})
 	action, freezeSeconds := virtualmodelservice.DecideVirtualModelFailureAction(executionState.executionSnapshot, currentCandidate.CandidateID, nativeFailure)
 	if action == model.VirtualModelActionPassthrough {
 		return decision
@@ -533,6 +550,9 @@ func activateNextVirtualModelCandidate(c *gin.Context, executionState *virtualMo
 		}
 		executionState.candidateAttemptSequence = candidateAttemptSequence
 		executionState.currentCandidateAttemptID = candidateAttemptID
+		// 候选序号 = 链上位置（1 起），供日志渠道字段展示「候选n」喵。
+		candidateSeq := candidateIndex + 1
+		common.SetContextKey(c, constant.ContextKeyVirtualCandidateSeq, candidateSeq)
 		if candidateSnapshot.SourceType == model.VirtualModelSourceInternal {
 			if restoreVirtualModelOriginalRequest(c, executionState.originalRequestBody) && applyInternalVirtualModelCandidate(c, executionState.modelRequest, executionState.virtualModelName, candidateSnapshot) {
 				return true
@@ -563,6 +583,67 @@ func restoreVirtualModelOriginalRequest(c *gin.Context, originalRequestBody []by
 		return false
 	}
 	return common.ReplaceRequestBody(c, originalRequestBody) == nil
+}
+
+// appendVirtualModelCandidateAttempt 把一次候选尝试的可审计摘要追加到请求级候选尝试切片喵。
+func appendVirtualModelCandidateAttempt(c *gin.Context, attempt model.VirtualModelCandidateAttemptRecord) {
+	// 喵~防御：空上下文时直接返回，避免空指针喵。
+	if c == nil {
+		return
+	}
+	attempts, found := common.GetContextKeyType[*[]model.VirtualModelCandidateAttemptRecord](c, constant.ContextKeyVirtualCandidateAttempts)
+	// 喵~防御：切片未初始化时静默跳过，候选尝试记录是日志增强，不阻塞请求主流程喵。
+	if !found || attempts == nil || *attempts == nil {
+		return
+	}
+	*attempts = append(*attempts, attempt)
+}
+
+// buildVirtualModelAttemptLabel 构造候选尝试的可辨识标识（internal: 真实模型名；custom: 模型名）喵。
+func buildVirtualModelAttemptLabel(candidate *model.VirtualModelInternalCandidateSnapshot, fallbackModelName string) string {
+	// 喵~防御：空候选回退到模型名，避免空标识喵。
+	if candidate == nil {
+		return fallbackModelName
+	}
+	return candidate.RealModelName
+}
+
+// currentVirtualModelCandidateSeq 返回当前激活候选在链上的序号（1 起），未激活时返回 0 喵。
+func currentVirtualModelCandidateSeq(c *gin.Context) int {
+	executionState, foundState := getVirtualModelExecutionState(c)
+	// 喵~防御：无执行状态或候选未激活时返回 0，避免越界访问喵。
+	if !foundState || executionState.currentCandidateIndex < 0 {
+		return 0
+	}
+	return executionState.currentCandidateIndex + 1
+}
+
+// recordVirtualModelCustomSuccess 纯直填 custom 候选成功时写虚拟模型日志喵。
+func recordVirtualModelCustomSuccess(c *gin.Context, useTimeSeconds int) {
+	// 喵~防御：缺少上下文时跳过日志，避免空指针喵。
+	if c == nil {
+		return
+	}
+	executionState, foundState := getVirtualModelExecutionState(c)
+	// 喵~防御：缺少执行状态或模型名时跳过日志，避免脏数据喵。
+	if !foundState || executionState == nil || executionState.virtualModelName == "" {
+		return
+	}
+	group := ""
+	if executionState.modelRequest != nil {
+		group = executionState.modelRequest.Group
+	}
+	// 纯直填 custom 候选无 usage 解析，token 计 0；候选尝试序列由日志 Other 承载喵。
+	model.RecordVirtualModelLog(c, c.GetInt("id"), model.RecordVirtualModelLogParams{
+		ModelName:      executionState.virtualModelName,
+		UseTimeSeconds: useTimeSeconds,
+		IsStream:       isUpstreamModelRequestStreaming(c),
+		Group:          group,
+		Other: map[string]interface{}{
+			"virtual_model": executionState.virtualModelName,
+			"final_success": true,
+		},
+	})
 }
 
 // executeCustomVirtualModelCandidate 在当前 middleware 生命周期内安全完成单次自定义候选透传喵。
@@ -666,14 +747,28 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 		}
 		// 成功响应已由透传器直接写出，此时仅清除请求开始前已观察到的历史冻结并中止后续 controller relay 喵。
 		if executionError == nil {
-			// 引用上游模型成功时结算独立 RMB 计费并写自定上游日志喵。
+			// 引用上游模型成功时结算独立 RMB 计费并写虚拟模型日志（上下文已把类型覆盖为 9）喵。
 			if hasUpstreamReference && referencedUpstreamModel != nil {
 				requestGroup := ""
 				if executionState, foundState := getVirtualModelExecutionState(c); foundState && executionState.modelRequest != nil {
 					requestGroup = executionState.modelRequest.Group
 				}
 				settleUserUpstreamModelCharge(c, referencedUpstreamModel.OwnerUserID, referencedUpstreamModel, executionUsage, requestGroup, isUpstreamModelRequestStreaming(c), int(time.Since(startTime).Seconds()), false)
+			} else {
+				// 纯直填 custom 候选成功：写虚拟模型日志（无 usage 解析，token 计 0）喵。
+				recordVirtualModelCustomSuccess(c, int(time.Since(startTime).Seconds()))
 			}
+			// 记录该 custom 候选成功尝试摘要，供最终日志展示候选链结果喵。
+			appendVirtualModelCandidateAttempt(c, model.VirtualModelCandidateAttemptRecord{
+				Seq:         currentVirtualModelCandidateSeq(c),
+				CandidateID: candidate.CandidateID,
+				Source:      "custom",
+				Label:       buildVirtualModelAttemptLabel(candidate, candidateRealModelName),
+				Success:     true,
+				StatusCode:  http.StatusOK,
+				ElapsedMs:   time.Since(startTime).Milliseconds(),
+				RetryCount:  retryIndex,
+			})
 			identityDigest := virtualmodelservice.CustomCandidateIdentityDigest(*candidate)
 			// 喵~防御：只清除请求开始时观察到的历史冻结，避免并发失败请求写入的新冻结被成功响应误删喵。
 			expectedUpdatedTime := int64(0)
@@ -701,6 +796,19 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 		}
 		// 候选失败后按规则决策动作；候选未配置规则时回退模型级全局兜底规则喵。
 		action, freezeSeconds := virtualmodelservice.DecideVirtualModelFailureAction(executionSnapshot, candidate.CandidateID, customFailure.Failure)
+		// 记录该 custom 候选的失败尝试摘要，供最终日志展示候选链故障转移过程喵。
+		appendVirtualModelCandidateAttempt(c, model.VirtualModelCandidateAttemptRecord{
+			Seq:          currentVirtualModelCandidateSeq(c),
+			CandidateID:  candidate.CandidateID,
+			Source:       "custom",
+			Label:        buildVirtualModelAttemptLabel(candidate, candidateRealModelName),
+			Success:      false,
+			StatusCode:   customFailure.Failure.HTTPStatus,
+			ErrorClass:   customFailure.Failure.ErrorClass,
+			ErrorMessage: customFailure.Failure.ErrorClass,
+			ElapsedMs:    time.Since(startTime).Milliseconds(),
+			RetryCount:   retryIndex,
+		})
 		if action == model.VirtualModelActionRetry && retryIndex < maximumRetries {
 			retryDelay := time.Duration(virtualmodelservice.RetryBackoffSeconds(retryIndex)) * time.Second
 			// 喵~防御：退避等待必须响应客户端取消和总 deadline，避免断开请求仍占用 goroutine 和连接喵。

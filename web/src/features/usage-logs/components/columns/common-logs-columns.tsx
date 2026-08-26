@@ -338,14 +338,20 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
           const useChannel = Array.isArray(rawUseChannel)
             ? rawUseChannel.map(String).filter(Boolean)
             : []
-          const hasRetryChain = useChannel.length > 1
+          // 虚拟模型日志（type=9）的渠道字段存候选链序号，展示「候选n」而非渠道 id 喵。
+          const isVirtualModelLog = log.type === 9
+          const hasRetryChain = !isVirtualModelLog && useChannel.length > 1
           const channelChain = hasRetryChain
             ? useChannel.join(' → ')
             : undefined
-          const channelDisplay = log.channel_name
-            ? `${log.channel_name} #${log.channel}`
+          const channelDisplay = isVirtualModelLog
+            ? t('Candidate {{n}}', { n: log.channel })
+            : log.channel_name
+              ? `${log.channel_name} #${log.channel}`
+              : `#${log.channel}`
+          const channelIdDisplay = isVirtualModelLog
+            ? t('Candidate {{n}}', { n: log.channel })
             : `#${log.channel}`
-          const channelIdDisplay = `#${log.channel}`
           const channelName = sensitiveVisible ? log.channel_name : '••••'
           const multiKeyIndex = other?.admin_info?.multi_key_index
           const showMultiKeyIndex =

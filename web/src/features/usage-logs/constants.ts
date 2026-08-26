@@ -100,6 +100,8 @@ export const LOG_TYPES = [
   { value: 7, label: 'Login', color: 'teal' },
   // 用户上游模型（自用与共享）的独立计费日志类型喵。
   { value: 8, label: 'Custom Upstream', color: 'indigo' },
+  // 所有虚拟模型请求（internal 与 custom 候选）的使用日志类型喵。
+  { value: 9, label: 'Virtual Model', color: 'violet' },
 ] as const
 
 /**
@@ -348,9 +350,9 @@ export const LOG_CATEGORY_LABELS: Record<LogCategory, string> = {
 /**
  * Log types that are displayable (have detailed info)
  */
-export const DISPLAYABLE_LOG_TYPES = [0, 2, 5, 6, 8] as const
+export const DISPLAYABLE_LOG_TYPES = [0, 2, 5, 6, 8, 9] as const
 
 /**
  * Log types that show timing info
  */
-export const TIMING_LOG_TYPES = [2, 5, 8] as const
+export const TIMING_LOG_TYPES = [2, 5, 8, 9] as const

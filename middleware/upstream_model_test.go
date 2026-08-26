@@ -94,7 +94,7 @@ func TestHandleUserUpstreamModelRequestQuota(t *testing.T) {
 	defer func() { model.DB = oldDB }()
 
 	// 余额为 0 的模型被硬检查拦截，返回额度不足喵。
-	require.NoError(t, testDB.Create(&model.UserUpstreamModel{OwnerUserID: 7, NormalizedName: "empty-balance", Enabled: true, BalanceCents: 0}).Error)
+	require.NoError(t, testDB.Create(&model.UserUpstreamModel{OwnerUserID: 7, NormalizedName: "empty-balance", Enabled: true, BalanceCents: 0, AvailableCents: 100}).Error)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/empty-balance"}`))
@@ -103,18 +103,18 @@ func TestHandleUserUpstreamModelRequestQuota(t *testing.T) {
 	require.False(t, handled)
 	require.Equal(t, http.StatusConflict, recorder.Code)
 
-	// 自用上限已耗尽的模型被拦截喵。
-	require.NoError(t, testDB.Create(&model.UserUpstreamModel{OwnerUserID: 7, NormalizedName: "limit-reached", Enabled: true, BalanceCents: 500, SpendLimitCents: 300, TotalSpentCents: 300}).Error)
+	// 可用额度为 0 的模型被硬检查拦截喵。
+	require.NoError(t, testDB.Create(&model.UserUpstreamModel{OwnerUserID: 7, NormalizedName: "available-empty", Enabled: true, BalanceCents: 500, AvailableCents: 0}).Error)
 	recorder = httptest.NewRecorder()
 	ctx, _ = gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/limit-reached"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/available-empty"}`))
 	ctx.Set("id", 7)
-	handled = handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "user/limit-reached"})
+	handled = handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "user/available-empty"})
 	require.False(t, handled)
 	require.Equal(t, http.StatusConflict, recorder.Code)
 
-	// 余额充足且上限未耗尽：硬检查放行，走到凭据解密阶段，密文无效返回 503 而非 409 喵。
-	require.NoError(t, testDB.Create(&model.UserUpstreamModel{OwnerUserID: 7, NormalizedName: "quota-ok", Enabled: true, BalanceCents: 500, SpendLimitCents: 300, TotalSpentCents: 100, EncryptedBaseURL: "bad-enc", EncryptedAPIKey: "bad-enc", CredentialVersion: 1, RealModelName: "gpt-4o"}).Error)
+	// 余额与可用额度均充足：硬检查放行，走到凭据解密阶段，密文无效返回 503 而非 409 喵。
+	require.NoError(t, testDB.Create(&model.UserUpstreamModel{OwnerUserID: 7, NormalizedName: "quota-ok", Enabled: true, BalanceCents: 500, AvailableCents: 300, EncryptedBaseURL: "bad-enc", EncryptedAPIKey: "bad-enc", CredentialVersion: 1, RealModelName: "gpt-4o"}).Error)
 	recorder = httptest.NewRecorder()
 	ctx, _ = gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/quota-ok"}`))
@@ -133,8 +133,8 @@ func TestHandleUserUpstreamModelRequestShared(t *testing.T) {
 	model.DB = testDB
 	defer func() { model.DB = oldDB }()
 
-	// 用户 7 拥有一个共享中的模型，余额 100 分、共享额度 1000 分喵。
-	require.NoError(t, testDB.Create(&model.UserUpstreamModel{OwnerUserID: 7, NormalizedName: "shared", Enabled: true, ShareEnabled: true, ShareLimitCents: 1000, ShareSpentCents: 0, BalanceCents: 100, EncryptedBaseURL: "bad-enc", EncryptedAPIKey: "bad-enc", CredentialVersion: 1, RealModelName: "gpt-4o"}).Error)
+	// 用户 7 拥有一个共享中的模型，余额 100 分、可用 200 分、共享额度 1000 分喵。
+	require.NoError(t, testDB.Create(&model.UserUpstreamModel{OwnerUserID: 7, NormalizedName: "shared", Enabled: true, ShareEnabled: true, ShareLimitCents: 1000, BalanceCents: 100, AvailableCents: 200, EncryptedBaseURL: "bad-enc", EncryptedAPIKey: "bad-enc", CredentialVersion: 1, RealModelName: "gpt-4o"}).Error)
 
 	// 用户 8 调用共享模型：授权回退到共享路径并放行，密文无效返回 503 而非 404 喵。
 	recorder := httptest.NewRecorder()
@@ -145,8 +145,8 @@ func TestHandleUserUpstreamModelRequestShared(t *testing.T) {
 	require.False(t, handled)
 	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
 
-	// 共享额度耗尽后，用户 8 再调用返回 404（共享停止）喵。
-	require.NoError(t, testDB.Model(&model.UserUpstreamModel{}).Where("normalized_name = ?", "shared").Update("share_spent_cents", 1000).Error)
+	// 共享额度耗尽（递减到 0）后，用户 8 再调用返回 404（共享停止）喵。
+	require.NoError(t, testDB.Model(&model.UserUpstreamModel{}).Where("normalized_name = ?", "shared").Update("share_limit_cents", 0).Error)
 	recorder = httptest.NewRecorder()
 	ctx, _ = gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/shared"}`))

@@ -22,6 +22,21 @@ const (
 	VirtualModelSourceCustom VirtualModelSourceType = "custom"
 )
 
+// VirtualModelCandidateAttemptRecord 描述虚拟模型一次候选尝试的可审计摘要喵。
+// 只保存受控信息，绝不携带上游凭据、完整 URL 或请求正文喵。
+type VirtualModelCandidateAttemptRecord struct {
+	Seq          int    `json:"seq"`           // 候选链序号（1 起）喵。
+	CandidateID  int    `json:"candidate_id"`  // 候选编号喵。
+	Source       string `json:"source"`        // 候选来源：internal / custom 喵。
+	Label        string `json:"label"`         // 候选标识（internal: 真实模型名；custom: 模型名/显示名）喵。
+	Success      bool   `json:"success"`       // 本次尝试是否成功喵。
+	StatusCode   int    `json:"status_code"`   // 上游 HTTP 状态码，网络错误时为零喵。
+	ErrorClass   string `json:"error_class"`   // 稳定错误分类，供失败规则匹配喵。
+	ErrorMessage string `json:"error_message"` // 受控错误信息（受限于安全词表，不含密钥/URL/正文）喵。
+	ElapsedMs    int64  `json:"elapsed_ms"`    // 本次尝试耗时，单位：毫秒喵。
+	RetryCount   int    `json:"retry_count"`   // 失败规则对该候选的重试次数喵。
+}
+
 // VirtualModelFailureAction 描述候选失败后的编排动作喵。
 type VirtualModelFailureAction string
 

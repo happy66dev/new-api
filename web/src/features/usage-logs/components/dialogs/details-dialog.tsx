@@ -659,7 +659,9 @@ export function DetailsDialog(props: DetailsDialogProps) {
               label={t('Channel')}
               value={
                 <span>
-                  {props.log.channel}
+                  {props.log.type === 9
+                    ? t('Candidate {{n}}', { n: props.log.channel })
+                    : props.log.channel}
                   {props.log.channel_name && (
                     <span className='text-muted-foreground'>
                       {' '}
@@ -1224,6 +1226,73 @@ export function DetailsDialog(props: DetailsDialogProps) {
             })}
           </DetailSection>
         )}
+
+        {/* 虚拟模型候选尝试序列（type=9，类 autoapi attempts） */}
+        {props.log.type === 9 &&
+          Array.isArray(other?.candidates) &&
+          other.candidates.length > 0 && (
+            <DetailSection
+              icon={<Route className='size-3.5' aria-hidden='true' />}
+              iconTone='info'
+              label={t('Candidate Attempts')}
+            >
+              {other.candidates.map((candidate, index) => (
+                <div
+                  key={`${candidate.seq}-${index}`}
+                  className='bg-background/60 flex min-w-0 flex-col gap-1.5 rounded border p-2 sm:flex-row sm:items-start sm:gap-2'
+                >
+                  <StatusBadge
+                    label={`${t('Candidate')} ${candidate.seq}`}
+                    variant={candidate.success ? 'green' : 'red'}
+                    size='sm'
+                    copyable={false}
+                    className='shrink-0'
+                  />
+                  <div className='min-w-0 flex-1 space-y-0.5 text-xs'>
+                    <div className='flex flex-wrap items-center gap-2'>
+                      <span className='min-w-0 font-medium break-all'>
+                        {candidate.label || '—'}
+                      </span>
+                      {candidate.source && (
+                        <StatusBadge
+                          label={candidate.source}
+                          variant='neutral'
+                          size='sm'
+                          copyable={false}
+                        />
+                      )}
+                      {candidate.status_code != null &&
+                        candidate.status_code > 0 && (
+                          <span className='text-muted-foreground font-mono'>
+                            {candidate.status_code}
+                          </span>
+                        )}
+                      {candidate.elapsed_ms != null &&
+                        candidate.elapsed_ms > 0 && (
+                          <span className='text-muted-foreground'>
+                            {formatUseTime(candidate.elapsed_ms / 1000)}
+                          </span>
+                        )}
+                    </div>
+                    {!candidate.success &&
+                      (candidate.error_class || candidate.error_message) && (
+                        <p className='text-red-600 dark:text-red-400'>
+                          {candidate.error_message || candidate.error_class}
+                        </p>
+                      )}
+                    {candidate.retry_count != null &&
+                      candidate.retry_count > 0 && (
+                        <p className='text-muted-foreground'>
+                          {t('Retried {{count}} times', {
+                            count: candidate.retry_count,
+                          })}
+                        </p>
+                      )}
+                  </div>
+                </div>
+              ))}
+            </DetailSection>
+          )}
 
         {/* Content */}
         {details && (

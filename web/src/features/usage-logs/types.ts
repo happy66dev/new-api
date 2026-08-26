@@ -224,6 +224,21 @@ export interface LogOtherData {
     end_error?: string
     errors?: string[]
   }
+  // 虚拟模型日志（type=9）专用字段：虚拟模型名、最终成功与否与全部候选尝试序列喵。
+  virtual_model?: string
+  final_success?: boolean
+  candidates?: Array<{
+    seq: number
+    candidate_id?: number
+    source?: 'internal' | 'custom' | string
+    label?: string
+    success: boolean
+    status_code?: number
+    error_class?: string
+    error_message?: string
+    elapsed_ms?: number
+    retry_count?: number
+  }>
   // Violation fee fields
   violation_fee?: boolean
   violation_fee_code?: string

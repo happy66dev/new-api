@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/types"
 
@@ -91,6 +92,7 @@ const (
 	LogTypeRefund          = 6
 	LogTypeLogin           = 7
 	LogTypeCustomUpstream  = 8 // 自定上游：用户上游模型的使用日志（自用与共享都归入此类型）喵。
+	LogTypeVirtualModel    = 9 // 虚拟模型：所有虚拟模型请求（internal 与 custom 候选）都归入此类型喵。
 )
 
 func ensureLogRequestId(log *Log) {
@@ -341,11 +343,63 @@ type RecordConsumeLogParams struct {
 	Other            map[string]interface{} `json:"other"`
 }
 
+// InjectVirtualModelAttempts 若请求处于虚拟模型上下文，把候选尝试摘要写入 other 的 candidates 字段喵。
+// 供各日志记录函数统一附加候选链故障转移过程，普通请求上下文无副作用喵。
+func InjectVirtualModelAttempts(c *gin.Context, other map[string]interface{}) {
+	// 喵~防御：空上下文或空 other 直接返回喵。
+	if c == nil || other == nil {
+		return
+	}
+	attempts, found := common.GetContextKeyType[*[]VirtualModelCandidateAttemptRecord](c, constant.ContextKeyVirtualCandidateAttempts)
+	// 喵~防御：尝试切片未初始化时不写入，避免引入空数组噪声喵。
+	if !found || attempts == nil || *attempts == nil {
+		return
+	}
+	other["candidates"] = *attempts
+}
+
+// appendVirtualModelSuccessAttempt 在 internal 候选成功结算时把成功尝试追加到候选尝试切片喵。
+func appendVirtualModelSuccessAttempt(c *gin.Context, candidateModelName string) {
+	// 喵~防御：空上下文时直接返回喵。
+	if c == nil {
+		return
+	}
+	attempts, found := common.GetContextKeyType[*[]VirtualModelCandidateAttemptRecord](c, constant.ContextKeyVirtualCandidateAttempts)
+	// 喵~防御：尝试切片未初始化时静默跳过，成功记录是日志增强不阻塞主流程喵。
+	if !found || attempts == nil || *attempts == nil {
+		return
+	}
+	*attempts = append(*attempts, VirtualModelCandidateAttemptRecord{
+		Seq:        common.GetContextKeyInt(c, constant.ContextKeyVirtualCandidateSeq),
+		Source:     "internal",
+		Label:      candidateModelName,
+		Success:    true,
+		StatusCode: 200,
+	})
+}
+
+// RecordConsumeLog 记录普通消费日志；虚拟模型 internal 候选请求写 type=虚拟模型 并附加候选尝试序列喵。
 func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams) {
+	// 喵~防御：空上下文不记录日志，避免空指针喵。
+	if c == nil {
+		return
+	}
 	if !common.LogConsumeEnabled {
 		return
 	}
 	logger.LogInfo(c, fmt.Sprintf("record consume log: userId=%d, params=%s", userId, common.GetJsonString(params)))
+	// 虚拟模型请求写 type=9 日志，并用候选链序号作为渠道字段展示「候选n」喵。
+	logType := LogTypeConsume
+	if virtualLogType := common.GetContextKeyInt(c, constant.ContextKeyVirtualLogType); virtualLogType > 0 {
+		logType = virtualLogType
+		// 虚拟模型 internal 候选成功：先追加成功尝试，再注入全部候选尝试序列到 Other 喵。
+		appendVirtualModelSuccessAttempt(c, params.ModelName)
+		InjectVirtualModelAttempts(c, params.Other)
+	}
+	channelId := params.ChannelId
+	if virtualCandidateSeq := common.GetContextKeyInt(c, constant.ContextKeyVirtualCandidateSeq); virtualCandidateSeq > 0 {
+		channelId = virtualCandidateSeq
+	}
 	username := c.GetString("username")
 	requestId := c.GetString(common.RequestIdKey)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
@@ -362,14 +416,14 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 		UserId:           userId,
 		Username:         username,
 		CreatedAt:        createdAt,
-		Type:             LogTypeConsume,
+		Type:             logType,
 		Content:          params.Content,
 		PromptTokens:     params.PromptTokens,
 		CompletionTokens: params.CompletionTokens,
 		TokenName:        params.TokenName,
 		ModelName:        params.ModelName,
 		Quota:            params.Quota,
-		ChannelId:        params.ChannelId,
+		ChannelId:        channelId,
 		TokenId:          params.TokenId,
 		UseTime:          params.UseTimeSeconds,
 		IsStream:         params.IsStream,
@@ -420,10 +474,17 @@ type RecordUserUpstreamModelLogParams struct {
 
 // RecordUserUpstreamModelLog 记录用户上游模型的独立计费日志（type=自定上游）喵。
 // 共享调用与自用调用都归入该类型，通过 Group 字段区分（共享=user-shared）喵。
+// 虚拟模型 custom 候选引用上游模型时，上下文标记虚拟模型日志类型则写 type=虚拟模型喵。
 func RecordUserUpstreamModelLog(c *gin.Context, userId int, params RecordUserUpstreamModelLogParams) {
 	// 喵~防御：空上下文或空模型名不写日志，避免脏数据喵。
 	if c == nil || params.ModelName == "" {
 		return
+	}
+	logType := LogTypeCustomUpstream
+	if virtualLogType := common.GetContextKeyInt(c, constant.ContextKeyVirtualLogType); virtualLogType > 0 {
+		logType = virtualLogType
+		// 虚拟模型 custom 候选引用上游模型时附加候选尝试序列喵。
+		InjectVirtualModelAttempts(c, params.Other)
 	}
 	username := c.GetString("username")
 	requestId := c.GetString(common.RequestIdKey)
@@ -433,7 +494,7 @@ func RecordUserUpstreamModelLog(c *gin.Context, userId int, params RecordUserUps
 		UserId:           userId,
 		Username:         username,
 		CreatedAt:        createdAt,
-		Type:             LogTypeCustomUpstream,
+		Type:             logType,
 		Content:          params.Content,
 		PromptTokens:     params.PromptTokens,
 		CompletionTokens: params.CompletionTokens,
@@ -450,6 +511,57 @@ func RecordUserUpstreamModelLog(c *gin.Context, userId int, params RecordUserUps
 	}
 	if err := createLog(log); err != nil {
 		logger.LogError(c, "failed to record user upstream model log: "+err.Error())
+	}
+}
+
+// RecordVirtualModelLogParams 描述虚拟模型日志的可写字段喵。
+type RecordVirtualModelLogParams struct {
+	PromptTokens     int                    `json:"prompt_tokens"`
+	CompletionTokens int                    `json:"completion_tokens"`
+	ModelName        string                 `json:"model_name"`
+	TokenName        string                 `json:"token_name"`
+	TokenId          int                    `json:"token_id"`
+	Content          string                 `json:"content"`
+	UseTimeSeconds   int                    `json:"use_time_seconds"`
+	IsStream         bool                   `json:"is_stream"`
+	Group            string                 `json:"group"`
+	Quota            int                    `json:"quota"`
+	Other            map[string]interface{} `json:"other"`
+}
+
+// RecordVirtualModelLog 记录虚拟模型请求日志（type=虚拟模型）喵。
+// internal 候选走原生消费日志（type 覆盖为 9），此函数服务于 custom 候选（引用上游或纯直填）喵。
+func RecordVirtualModelLog(c *gin.Context, userId int, params RecordVirtualModelLogParams) {
+	// 喵~防御：空上下文或空模型名不写日志，避免脏数据喵。
+	if c == nil || params.ModelName == "" {
+		return
+	}
+	// 附加候选尝试序列，供日志详情展示候选链故障转移过程喵。
+	InjectVirtualModelAttempts(c, params.Other)
+	username := c.GetString("username")
+	requestId := c.GetString(common.RequestIdKey)
+	createdAt := common.GetTimestamp()
+	otherStr := common.MapToJsonStr(params.Other)
+	log := &Log{
+		UserId:           userId,
+		Username:         username,
+		CreatedAt:        createdAt,
+		Type:             LogTypeVirtualModel,
+		Content:          params.Content,
+		PromptTokens:     params.PromptTokens,
+		CompletionTokens: params.CompletionTokens,
+		TokenName:        params.TokenName,
+		ModelName:        params.ModelName,
+		Quota:            params.Quota,
+		TokenId:          params.TokenId,
+		UseTime:          params.UseTimeSeconds,
+		IsStream:         params.IsStream,
+		Group:            params.Group,
+		RequestId:        requestId,
+		Other:            otherStr,
+	}
+	if err := createLog(log); err != nil {
+		logger.LogError(c, "failed to record virtual model log: "+err.Error())
 	}
 }
 

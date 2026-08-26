@@ -16,6 +16,12 @@ const (
 	ContextKeyVirtualModelName            ContextKey = "virtual_model_name"
 	ContextKeyVirtualModelExecutionState  ContextKey = "virtual_model_execution_state"
 	ContextKeyInternalCandidateApplied    ContextKey = "virtual_model_internal_candidate_applied"
+	// ContextKeyVirtualLogType 标记虚拟模型请求应写入的日志类型（=LogTypeVirtualModel）喵。
+	ContextKeyVirtualLogType ContextKey = "virtual_model_log_type"
+	// ContextKeyVirtualCandidateSeq 记录当前命中的候选链序号（1 起），供日志渠道字段展示「候选n」喵。
+	ContextKeyVirtualCandidateSeq ContextKey = "virtual_model_candidate_seq"
+	// ContextKeyVirtualCandidateAttempts 保存本次请求全部候选尝试的可审计摘要，供最终日志落库喵。
+	ContextKeyVirtualCandidateAttempts ContextKey = "virtual_model_candidate_attempts"
 
 	/* token related keys */
 	ContextKeyTokenUnlimited         ContextKey = "token_unlimited_quota"
