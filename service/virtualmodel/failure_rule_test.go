@@ -143,6 +143,33 @@ func TestNormalizeCandidateFailure(t *testing.T) {
 	}
 }
 
+// TestParseRetryAfterSeconds 验证 Retry-After 响应头的解析边界喵。
+func TestParseRetryAfterSeconds(t *testing.T) {
+	// 定义响应头文本、空头与预期秒数的表格测试喵。
+	testCases := []struct {
+		name            string
+		responseHeaders http.Header
+		expectedSeconds int
+	}{
+		{name: "nil headers fall back to zero", responseHeaders: nil, expectedSeconds: 0},
+		{name: "empty header text falls back to zero", responseHeaders: func() http.Header { headers := make(http.Header); headers.Set("Retry-After", ""); return headers }(), expectedSeconds: 0},
+		{name: "valid seconds header", responseHeaders: func() http.Header { headers := make(http.Header); headers.Set("Retry-After", "75"); return headers }(), expectedSeconds: 75},
+		{name: "non numeric text falls back to zero", responseHeaders: func() http.Header { headers := make(http.Header); headers.Set("Retry-After", "later"); return headers }(), expectedSeconds: 0},
+		{name: "zero value falls back to zero", responseHeaders: func() http.Header { headers := make(http.Header); headers.Set("Retry-After", "0"); return headers }(), expectedSeconds: 0},
+		{name: "negative value falls back to zero", responseHeaders: func() http.Header { headers := make(http.Header); headers.Set("Retry-After", "-30"); return headers }(), expectedSeconds: 0},
+		{name: "caps above one day", responseHeaders: func() http.Header { headers := make(http.Header); headers.Set("Retry-After", "90000"); return headers }(), expectedSeconds: 24 * 60 * 60},
+		{name: "keeps exact one day bound", responseHeaders: func() http.Header { headers := make(http.Header); headers.Set("Retry-After", "86400"); return headers }(), expectedSeconds: 24 * 60 * 60},
+	}
+	// 逐项断言响应头不会泄漏负数、无界时长或解析错误喵。
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if actualSeconds := ParseRetryAfterSeconds(testCase.responseHeaders); actualSeconds != testCase.expectedSeconds {
+				t.Fatalf("ParseRetryAfterSeconds() = %d, want %d", actualSeconds, testCase.expectedSeconds)
+			}
+		})
+	}
+}
+
 // TestRetryBackoffSeconds 验证指数退避、负值处理与最大等待上限喵。
 func TestRetryBackoffSeconds(t *testing.T) {
 	// 定义首次、后续、负数和过大重试序号的预期退避时间喵。
