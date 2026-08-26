@@ -377,4 +377,16 @@ describe('validateFailureRuleDraft with auto unit', () => {
     const rule: VirtualModelFailureRule = { id: 11, http_status: 429, error_class: '', body_regex: '', action: 'freeze', freeze_seconds: 0, freeze_unit: 'auto' }
     expect(toFailureRuleDraft(rule).freezeUnit).toBe('auto')
   })
+
+  it('clears a leftover freeze field when auto is selected', () => {
+    // 从字段模式切换到 auto 后，残留的字段名不应写入载荷喵。
+    const payload = validateFailureRuleDraft(makeDraft({ freezeUnit: 'auto', freezeField: 'retry_after', action: 'freeze' }), 0, identityTranslator)
+    expect(payload.freeze_field).toBe('')
+  })
+
+  it('skips the field length check when auto is selected', () => {
+    // auto 模式字段名无意义，即使残留超长文本也不应拦截保存喵。
+    const payload = validateFailureRuleDraft(makeDraft({ freezeUnit: 'auto', freezeField: 'x'.repeat(70), action: 'freeze' }), 0, identityTranslator)
+    expect(payload.freeze_unit).toBe('auto')
+  })
 })

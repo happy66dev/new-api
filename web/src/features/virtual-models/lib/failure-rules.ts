@@ -195,10 +195,10 @@ export function validateFailureRuleDraft(
   if (!Number.isInteger(freezeSeconds) || freezeSeconds < 0 || freezeSeconds > MAXIMUM_FREEZE_SECONDS) {
     throw new Error(t('Failure rule {{index}} freeze duration must be between 0 and 86400 seconds', { index: index + 1 }))
   }
-  // 响应体冻结字段名去空白，空值表示不启用从响应体解析冻结时间喵。
-  const freezeField = rule.freezeField.trim()
-  // 喵~防御：响应体字段名过长会超过数据库列宽，必须拒绝保存喵。
-  if (freezeField.length > 64) {
+  // auto 单位自动扫描响应体全文，字段名无意义，强制置空避免残留旧配置喵。
+  const freezeField = rule.freezeUnit === 'auto' ? '' : rule.freezeField.trim()
+  // 喵~防御：非 auto 模式下响应体字段名过长会超过数据库列宽，必须拒绝保存喵。
+  if (rule.freezeUnit !== 'auto' && freezeField.length > 64) {
     throw new Error(t('Failure rule {{index}} freeze field is too long', { index: index + 1 }))
   }
   // 根据编辑模式生成最终响应体正则，简易与自定义输入均在此收敛喵。
