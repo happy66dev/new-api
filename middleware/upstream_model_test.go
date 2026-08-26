@@ -83,3 +83,43 @@ func TestHandleUserUpstreamModelRequestAuth(t *testing.T) {
 	require.False(t, handled)
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
 }
+
+// TestHandleUserUpstreamModelRequestQuota 验证请求前硬检查拦截余额不足与上限耗尽的模型喵。
+func TestHandleUserUpstreamModelRequestQuota(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	// 构造独立测试库，替换全局 DB 并在结束后恢复喵。
+	testDB := newUpstreamModelTestDB(t)
+	oldDB := model.DB
+	model.DB = testDB
+	defer func() { model.DB = oldDB }()
+
+	// 余额为 0 的模型被硬检查拦截，返回额度不足喵。
+	require.NoError(t, testDB.Create(&model.UserUpstreamModel{OwnerUserID: 7, NormalizedName: "empty-balance", Enabled: true, BalanceCents: 0}).Error)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"upstream/empty-balance"}`))
+	ctx.Set("id", 7)
+	handled := handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "upstream/empty-balance"})
+	require.False(t, handled)
+	require.Equal(t, http.StatusConflict, recorder.Code)
+
+	// 自用上限已耗尽的模型被拦截喵。
+	require.NoError(t, testDB.Create(&model.UserUpstreamModel{OwnerUserID: 7, NormalizedName: "limit-reached", Enabled: true, BalanceCents: 500, SpendLimitCents: 300, TotalSpentCents: 300}).Error)
+	recorder = httptest.NewRecorder()
+	ctx, _ = gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"upstream/limit-reached"}`))
+	ctx.Set("id", 7)
+	handled = handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "upstream/limit-reached"})
+	require.False(t, handled)
+	require.Equal(t, http.StatusConflict, recorder.Code)
+
+	// 余额充足且上限未耗尽：硬检查放行，走到凭据解密阶段，密文无效返回 503 而非 409 喵。
+	require.NoError(t, testDB.Create(&model.UserUpstreamModel{OwnerUserID: 7, NormalizedName: "quota-ok", Enabled: true, BalanceCents: 500, SpendLimitCents: 300, TotalSpentCents: 100, EncryptedBaseURL: "bad-enc", EncryptedAPIKey: "bad-enc", CredentialVersion: 1, RealModelName: "gpt-4o"}).Error)
+	recorder = httptest.NewRecorder()
+	ctx, _ = gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"upstream/quota-ok"}`))
+	ctx.Set("id", 7)
+	handled = handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "upstream/quota-ok"})
+	require.False(t, handled)
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+}

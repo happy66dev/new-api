@@ -97,3 +97,66 @@ func TestUserUpstreamModelCRUD(t *testing.T) {
 	err = DeleteUserUpstreamModelByOwnerWithVersion(created.ID, 7, 2)
 	require.Error(t, err)
 }
+
+// TestDeductUserUpstreamModelCharge 验证独立计费扣减的余额钳制与累计语义喵。
+func TestDeductUserUpstreamModelCharge(t *testing.T) {
+	truncateTables(t)
+	require.NoError(t, DB.AutoMigrate(&UserUpstreamModel{}))
+	require.NoError(t, DB.Exec("DELETE FROM user_upstream_models").Error)
+
+	// 创建余额 1000 分、自用上限 800 分、共享上限 600 分的模型喵。
+	created := &UserUpstreamModel{
+		OwnerUserID:     7,
+		NormalizedName:  "billing",
+		Enabled:         true,
+		BalanceCents:    1000,
+		SpendLimitCents: 800,
+		TotalSpentCents: 0,
+		ShareLimitCents: 600,
+		ShareSpentCents: 0,
+		Version:         1,
+		CreatedTime:     100,
+		UpdatedTime:     100,
+	}
+	require.NoError(t, DB.Create(created).Error)
+
+	// 正常自用扣费：余额减少、自用累计增加喵。
+	require.NoError(t, DeductUserUpstreamModelCharge(created.ID, 7, 300, false))
+	fetched, err := GetUserUpstreamModelByOwnerID(created.ID, 7)
+	require.NoError(t, err)
+	assert.Equal(t, int64(700), fetched.BalanceCents)
+	assert.Equal(t, int64(300), fetched.TotalSpentCents)
+
+	// 余额不足以覆盖扣费时钳制到 0，绝不产生负余额喵。
+	require.NoError(t, DeductUserUpstreamModelCharge(created.ID, 7, 800, false))
+	fetched, err = GetUserUpstreamModelByOwnerID(created.ID, 7)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), fetched.BalanceCents)
+	assert.Equal(t, int64(1100), fetched.TotalSpentCents)
+
+	// 负数费用直接拒绝，不产生任何写入喵。
+	beforeBalance := fetched.BalanceCents
+	beforeSpent := fetched.TotalSpentCents
+	err = DeductUserUpstreamModelCharge(created.ID, 7, -10, false)
+	require.Error(t, err)
+	fetched, _ = GetUserUpstreamModelByOwnerID(created.ID, 7)
+	assert.Equal(t, beforeBalance, fetched.BalanceCents)
+	assert.Equal(t, beforeSpent, fetched.TotalSpentCents)
+
+	// 零费用不写库，余额与累计保持不变喵。
+	require.NoError(t, DeductUserUpstreamModelCharge(created.ID, 7, 0, false))
+	fetched, _ = GetUserUpstreamModelByOwnerID(created.ID, 7)
+	assert.Equal(t, int64(0), fetched.BalanceCents)
+	assert.Equal(t, int64(1100), fetched.TotalSpentCents)
+
+	// 共享调用免费：只累计共享消耗，余额与自用累计不变喵。
+	require.NoError(t, DeductUserUpstreamModelCharge(created.ID, 7, 250, true))
+	fetched, _ = GetUserUpstreamModelByOwnerID(created.ID, 7)
+	assert.Equal(t, int64(0), fetched.BalanceCents)
+	assert.Equal(t, int64(1100), fetched.TotalSpentCents)
+	assert.Equal(t, int64(250), fetched.ShareSpentCents)
+
+	// 无效属主或 ID 返回记录不存在，避免跨用户扣费喵。
+	require.Error(t, DeductUserUpstreamModelCharge(created.ID, 8, 10, false))
+	require.Error(t, DeductUserUpstreamModelCharge(0, 7, 10, false))
+}

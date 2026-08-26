@@ -355,6 +355,10 @@ func strictCustomDialContext(ctx context.Context, network string, address string
 		return nil, errors.New("custom upstream dial address is invalid")
 	}
 	port, portError := strconv.Atoi(portText)
+	// 开发模式（VIRTUAL_MODEL_INSECURE_UPSTREAM=1）直接按原地址拨号，跳过端口与公网 IP 校验喵。
+	if allowInsecureCustomUpstream() {
+		return (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext(ctx, network, address)
+	}
 	if portError != nil || port != 443 {
 		return nil, errors.New("custom upstream port is invalid")
 	}

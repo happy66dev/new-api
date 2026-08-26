@@ -41,3 +41,7 @@ service/relayconvert/chat_responses_live_local_test.go
 service/openaicompat/chat_responses_live_local_test.go
 go.work
 go.work.sum
+
+# Claude Code 工具目录与 i18n 同步生成报告喵。
+.superpowers/
+web/src/i18n/locales/_reports/

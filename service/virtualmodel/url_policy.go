@@ -4,8 +4,21 @@ import (
 	"errors"
 	"net"
 	"net/url"
+	"os"
 	"strings"
 )
+
+// allowInsecureCustomUpstream 是否允许不安全自定义上游（http/IP/非 443）喵。
+// 仅当显式设置 VIRTUAL_MODEL_INSECURE_UPSTREAM=1 时开启，供本地开发与冒烟测试使用喵。
+// 主人注意：生产环境务必保持关闭，否则明文 API Key 会在公网传输喵。
+func allowInsecureCustomUpstream() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("VIRTUAL_MODEL_INSECURE_UPSTREAM"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
 
 // ValidateCustomBaseURL 严格校验用户自定义上游的公开 HTTPS 地址喵。
 func ValidateCustomBaseURL(rawBaseURL string) (*url.URL, error) {
@@ -18,21 +31,22 @@ func ValidateCustomBaseURL(rawBaseURL string) (*url.URL, error) {
 	if parseError != nil || parsedURL == nil {
 		return nil, errors.New("custom upstream URL is invalid")
 	}
-	// 喵~防御：自定义上游仅允许 HTTPS，禁止明文传输 API Key 或请求内容喵。
-	if strings.ToLower(parsedURL.Scheme) != "https" {
-		return nil, errors.New("custom upstream URL must use HTTPS")
-	}
-	// 喵~防御：禁止 userinfo 和 fragment，避免认证混淆、秘密落入 URL 或不可预期的目标语义喵。
+	// 喵~防御：userinfo、fragment 与空 host 在任何模式都拒绝，避免认证混淆或不可预期目标语义喵。
 	if parsedURL.User != nil || parsedURL.Fragment != "" || parsedURL.Hostname() == "" {
 		return nil, errors.New("custom upstream URL contains unsupported components")
 	}
-	// 喵~防御：仅允许默认 HTTPS 443 端口，避免访问内部管理服务和危险非标准端口喵。
-	if parsedURL.Port() != "" && parsedURL.Port() != "443" {
-		return nil, errors.New("custom upstream URL must use port 443")
-	}
-	// 喵~防御：直接填写 IP 会绕过执行期 DNS 固定拨号策略，因此仅允许可验证域名喵。
-	if net.ParseIP(parsedURL.Hostname()) != nil {
-		return nil, errors.New("custom upstream URL must use a public hostname")
+	// 喵~防御：自定义上游默认仅允许 HTTPS 443 与可验证公网域名，禁止访问内部服务喵。
+	// 开发模式（VIRTUAL_MODEL_INSECURE_UPSTREAM=1）显式放宽 scheme/端口/IP 限制，仅限本地测试喵。
+	if !allowInsecureCustomUpstream() {
+		if strings.ToLower(parsedURL.Scheme) != "https" {
+			return nil, errors.New("custom upstream URL must use HTTPS")
+		}
+		if parsedURL.Port() != "" && parsedURL.Port() != "443" {
+			return nil, errors.New("custom upstream URL must use port 443")
+		}
+		if net.ParseIP(parsedURL.Hostname()) != nil {
+			return nil, errors.New("custom upstream URL must use a public hostname")
+		}
 	}
 	return parsedURL, nil
 }

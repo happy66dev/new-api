@@ -4,6 +4,7 @@ import (
 	"errors"
 	"regexp"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -135,4 +136,45 @@ func DeleteUserUpstreamModelByOwnerWithVersion(upstreamModelID int64, ownerUserI
 		return gorm.ErrRecordNotFound
 	}
 	return nil
+}
+
+// DeductUserUpstreamModelCharge 请求后按实际费用扣减余额与累计消耗，事务加行锁防止并发超扣喵。
+// isShared 为 true 时只累加共享消耗（共享调用免费，不扣所有者余额）喵。
+func DeductUserUpstreamModelCharge(upstreamModelID int64, ownerUserID int, costCents int64, isShared bool) error {
+	// 喵~防御：费用必须非负，负数费用是计费缺陷，直接拒绝避免余额被错误增加喵。
+	if costCents < 0 {
+		return errors.New("upstream model charge must not be negative")
+	}
+	// 喵~防御：无效参数直接返回记录不存在，避免空值进入事务喵。
+	if upstreamModelID <= 0 || ownerUserID <= 0 {
+		return gorm.ErrRecordNotFound
+	}
+	// 事务内加行锁读取最新余额，防止并发请求对同一模型重复扣费喵。
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var upstreamModel UserUpstreamModel
+		// lockForUpdate 在 MySQL/PostgreSQL 加 FOR UPDATE 行锁，SQLite 跳过锁语法喵。
+		if err := lockForUpdate(tx).Where("id = ? AND owner_user_id = ?", upstreamModelID, ownerUserID).First(&upstreamModel).Error; err != nil {
+			return err
+		}
+		// 费用为零时不产生任何数据库写入，避免空事务喵。
+		if costCents == 0 {
+			return nil
+		}
+		if isShared {
+			// 共享调用只累计共享消耗，达到共享额度后由请求前硬检查拦截喵。
+			upstreamModel.ShareSpentCents += costCents
+		} else {
+			// 自用调用扣减余额，余额不足时置 0（下次请求被请求前硬检查拦截），绝不产生负余额喵。
+			if upstreamModel.BalanceCents <= costCents {
+				upstreamModel.BalanceCents = 0
+			} else {
+				upstreamModel.BalanceCents -= costCents
+			}
+			// 自用累计消耗单调递增，供使用上限判断喵。
+			upstreamModel.TotalSpentCents += costCents
+		}
+		upstreamModel.UpdatedTime = time.Now().Unix()
+		// 只更新金额相关字段，避免覆盖控制面并发修改的其他配置喵。
+		return tx.Model(&upstreamModel).Select("balance_cents", "total_spent_cents", "share_spent_cents", "updated_time").Updates(upstreamModel).Error
+	})
 }

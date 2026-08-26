@@ -2,30 +2,45 @@ package middleware
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	upstreammodelservice "github.com/QuantumNous/new-api/service/upstreammodel"
 	virtualmodelservice "github.com/QuantumNous/new-api/service/virtualmodel"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 // userUpstreamModelDefaultTimeoutSeconds 独立上游调用的默认超时，单位：秒喵。
 const userUpstreamModelDefaultTimeoutSeconds = 60
+
+// defaultUserUpstreamGroupName 自用日志的兜底分组，保证日志可按分组筛选喵。
+const defaultUserUpstreamGroupName = "default"
 
 // isUserUpstreamModelRequest 判断请求模型是否进入用户上游模型独立命名空间喵。
 func isUserUpstreamModelRequest(modelName string) bool {
 	return strings.HasPrefix(strings.TrimSpace(modelName), "upstream/")
 }
 
-// handleUserUpstreamModelRequest 验证用户上游模型授权并执行透传，处理完成即终止后续 relay 链喵。
+// abortUpstreamModelQuotaExhausted 统一返回额度不足的受控错误喵。
+func abortUpstreamModelQuotaExhausted(c *gin.Context) {
+	abortWithOpenAiMessage(c, http.StatusConflict, "user upstream model quota exhausted", types.ErrorCode("upstream_model_quota_exhausted"))
+}
+
+// handleUserUpstreamModelRequest 验证用户上游模型授权、执行透传并完成独立 RMB 计费喵。
 // 返回 false 表示请求已经被完全处理（成功或失败），调用方应停止继续分发喵。
 func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) bool {
 	// 喵~防御：空上下文或空请求对象直接终止，避免空指针喵。
 	if c == nil || modelRequest == nil {
 		return false
 	}
+	startTime := time.Now()
 	normalizedName, normalizeError := model.NormalizeUserUpstreamModelName(modelRequest.Model)
 	// 喵~防御：无效名称不触发数据库查询，避免异常输入扩大资源占用或泄露校验细节喵。
 	if normalizeError != nil {
@@ -39,7 +54,15 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 		abortWithOpenAiMessage(c, http.StatusNotFound, "user upstream model not found", types.ErrorCode("upstream_model_not_found"))
 		return false
 	}
-	// 这里在 P2 补充余额与使用上限硬检查喵。
+	// 请求前硬检查：余额必须大于 0，使用上限未耗尽（P4 再补充共享额度检查）喵。
+	if upstreamModel.BalanceCents <= 0 {
+		abortUpstreamModelQuotaExhausted(c)
+		return false
+	}
+	if upstreamModel.SpendLimitCents > 0 && upstreamModel.TotalSpentCents >= upstreamModel.SpendLimitCents {
+		abortUpstreamModelQuotaExhausted(c)
+		return false
+	}
 	baseURL, decryptBaseURLError := virtualmodelservice.DecryptCredential(upstreamModel.EncryptedBaseURL, upstreamModel.CredentialVersion)
 	apiKey, decryptAPIKeyError := virtualmodelservice.DecryptCredential(upstreamModel.EncryptedAPIKey, upstreamModel.CredentialVersion)
 	// 喵~防御：凭据密文篡改、主密钥缺失或解密失败均只返回受控不可用错误，不泄露秘密或密文状态喵。
@@ -47,17 +70,18 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 		abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "user upstream model is not available", types.ErrorCode("upstream_model_unavailable"))
 		return false
 	}
-	executionError := virtualmodelservice.ExecuteCustomCandidate(c, virtualmodelservice.CustomCandidateExecutionInput{
+	executionResult := virtualmodelservice.ExecuteUserUpstreamModel(c, virtualmodelservice.CustomCandidateExecutionInput{
 		BaseURL:        baseURL,
 		APIKey:         apiKey,
 		RealModelName:  upstreamModel.RealModelName,
 		AuthStyle:      model.VirtualModelAuthStyle(upstreamModel.AuthStyle),
 		TimeoutSeconds: userUpstreamModelDefaultTimeoutSeconds,
 	})
-	if executionError != nil {
+	// 透传失败：不计费、不写日志，返回受控错误或透传上游错误喵。
+	if executionResult.Err != nil {
 		customFailure := &virtualmodelservice.CustomCandidateExecutionFailure{}
 		// 喵~防御：非结构化异常不能透传；若响应已提交则只中止，避免重复错误响应喵。
-		if !errors.As(executionError, &customFailure) {
+		if !errors.As(executionResult.Err, &customFailure) {
 			if c.Writer != nil && c.Writer.Written() {
 				c.Abort()
 				return false
@@ -74,7 +98,99 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 		abortWithOpenAiMessage(c, http.StatusBadGateway, "user upstream model is unavailable", types.ErrorCode("upstream_model_unavailable"))
 		return false
 	}
-	// 成功响应已由透传器直接写出，中止后续 controller relay 喵。
+	// 成功透传后按独立 RMB 计费系统扣费与写日志喵。
+	settleUserUpstreamModelCharge(c, ownerUserID, upstreamModel, executionResult.Usage, modelRequest.Group, isUpstreamModelRequestStreaming(c), int(time.Since(startTime).Seconds()))
 	c.Abort()
 	return false
+}
+
+// settleUserUpstreamModelCharge 计算费用、扣减余额与累计消耗，并写入自定上游日志喵。
+func settleUserUpstreamModelCharge(c *gin.Context, ownerUserID int, upstreamModel *model.UserUpstreamModel, usage *dto.Usage, group string, isStream bool, useTimeSeconds int) {
+	// 喵~防御：空上下文或空模型对象直接返回，避免空指针喵。
+	if c == nil || upstreamModel == nil {
+		return
+	}
+	// 费用计算：无 usage 时费用为零（不计费但照常写日志）喵。
+	costCents, costError := upstreammodelservice.CalculateUpstreamModelCostCents(upstreamModel, usage)
+	// 喵~防御：计费计算异常按零费用兜底，绝不因此吞掉用户请求结果喵。
+	if costError != nil {
+		common.SysError("user upstream model cost calculation failed: " + costError.Error())
+		costCents = 0
+	}
+	// 扣减余额与累计消耗，扣费错误只记日志不打断响应喵。
+	if deductError := model.DeductUserUpstreamModelCharge(upstreamModel.ID, ownerUserID, costCents, false); deductError != nil {
+		common.SysError("user upstream model charge deduction failed: " + deductError.Error())
+	}
+	// 分组兜底为空时使用默认分组，保证日志可按分组筛选喵。
+	effectiveGroup := strings.TrimSpace(group)
+	if effectiveGroup == "" {
+		effectiveGroup = defaultUserUpstreamGroupName
+	}
+	promptTokens, completionTokens, cachedTokens, cacheCreationTokens, imageTokens, audioTokens, cacheCreation5mTokens, cacheCreation1hTokens := splitUpstreamModelUsage(usage)
+	// Other 记录独立 RMB 计费明细，供日志详情与筛选展示喵。
+	other := map[string]interface{}{
+		"custom_cost_rmb":          fmt.Sprintf("%.4f", float64(costCents)/100.0),
+		"model_ratio":              upstreamModel.ModelRatio,
+		"completion_ratio":         upstreamModel.CompletionRatio,
+		"cache_ratio":              upstreamModel.CacheRatio,
+		"cache_creation_ratio":     upstreamModel.CacheCreationRatio,
+		"cache_creation_5m_ratio":  upstreamModel.CacheCreation5mRatio,
+		"cache_creation_1h_ratio":  upstreamModel.CacheCreation1hRatio,
+		"image_ratio":              upstreamModel.ImageRatio,
+		"audio_ratio":              upstreamModel.AudioRatio,
+		"audio_completion_ratio":   upstreamModel.AudioCompletionRatio,
+		"prompt_tokens":            promptTokens,
+		"completion_tokens":        completionTokens,
+		"cached_tokens":            cachedTokens,
+		"cache_creation_tokens":    cacheCreationTokens,
+		"cache_creation_5m_tokens": cacheCreation5mTokens,
+		"cache_creation_1h_tokens": cacheCreation1hTokens,
+		"image_tokens":             imageTokens,
+		"audio_tokens":             audioTokens,
+		"usage_available":          usage != nil,
+	}
+	model.RecordUserUpstreamModelLog(c, ownerUserID, model.RecordUserUpstreamModelLogParams{
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		ModelName:        upstreamModel.UserUpstreamModelName(),
+		Group:            effectiveGroup,
+		UseTimeSeconds:   useTimeSeconds,
+		IsStream:         isStream,
+		Other:            other,
+	})
+}
+
+// splitUpstreamModelUsage 从 usage 提取各 token 分类数，空 usage 全部回退为零喵。
+func splitUpstreamModelUsage(usage *dto.Usage) (promptTokens int, completionTokens int, cachedTokens int, cacheCreationTokens int, imageTokens int, audioTokens int, cacheCreation5mTokens int, cacheCreation1hTokens int) {
+	// 喵~防御：无 usage 时返回全零，避免空指针喵。
+	if usage == nil {
+		return 0, 0, 0, 0, 0, 0, 0, 0
+	}
+	promptTokens = usage.PromptTokens
+	completionTokens = usage.CompletionTokens
+	cachedTokens = usage.PromptTokensDetails.CachedTokens
+	cacheCreationTokens = usage.PromptTokensDetails.CacheCreationTokensTotal()
+	imageTokens = usage.PromptTokensDetails.ImageTokens
+	audioTokens = usage.PromptTokensDetails.AudioTokens
+	cacheCreation5mTokens = usage.ClaudeCacheCreation5mTokens
+	cacheCreation1hTokens = usage.ClaudeCacheCreation1hTokens
+	return promptTokens, completionTokens, cachedTokens, cacheCreationTokens, imageTokens, audioTokens, cacheCreation5mTokens, cacheCreation1hTokens
+}
+
+// isUpstreamModelRequestStreaming 从可复用 JSON 请求确认客户端是否请求 SSE 流式输出喵。
+func isUpstreamModelRequestStreaming(c *gin.Context) bool {
+	// 喵~防御：缺少 Gin 上下文或请求时按非流式处理，避免空指针喵。
+	if c == nil || c.Request == nil {
+		return false
+	}
+	bodyStorage, storageError := common.GetBodyStorage(c)
+	if storageError != nil {
+		return false
+	}
+	requestBody, bodyError := bodyStorage.Bytes()
+	// 喵~防御：非法 JSON 或缺失 stream 字段按非流式处理喵。
+	if bodyError != nil || !gjson.ValidBytes(requestBody) {
+		return false
+	}
+	return gjson.GetBytes(requestBody, "stream").Type == gjson.True
 }

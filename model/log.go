@@ -82,14 +82,15 @@ type Log struct {
 
 // don't use iota, avoid change log type value
 const (
-	LogTypeUnknown = 0
-	LogTypeTopup   = 1
-	LogTypeConsume = 2
-	LogTypeManage  = 3
-	LogTypeSystem  = 4
-	LogTypeError   = 5
-	LogTypeRefund  = 6
-	LogTypeLogin   = 7
+	LogTypeUnknown         = 0
+	LogTypeTopup           = 1
+	LogTypeConsume         = 2
+	LogTypeManage          = 3
+	LogTypeSystem          = 4
+	LogTypeError           = 5
+	LogTypeRefund          = 6
+	LogTypeLogin           = 7
+	LogTypeCustomUpstream  = 8 // 自定上游：用户上游模型的使用日志（自用与共享都归入此类型）喵。
 )
 
 func ensureLogRequestId(log *Log) {
@@ -400,6 +401,55 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 			ChannelID: params.ChannelId,
 			NodeName:  common.NodeName,
 		})
+	}
+}
+
+// RecordUserUpstreamModelLogParams 描述自定上游日志的可写字段喵。
+type RecordUserUpstreamModelLogParams struct {
+	PromptTokens     int                    `json:"prompt_tokens"`
+	CompletionTokens int                    `json:"completion_tokens"`
+	ModelName        string                 `json:"model_name"`
+	TokenName        string                 `json:"token_name"`
+	TokenId          int                    `json:"token_id"`
+	Content          string                 `json:"content"`
+	UseTimeSeconds   int                    `json:"use_time_seconds"`
+	IsStream         bool                   `json:"is_stream"`
+	Group            string                 `json:"group"`
+	Other            map[string]interface{} `json:"other"`
+}
+
+// RecordUserUpstreamModelLog 记录用户上游模型的独立计费日志（type=自定上游）喵。
+// 共享调用与自用调用都归入该类型，通过 Group 字段区分（共享=user-shared）喵。
+func RecordUserUpstreamModelLog(c *gin.Context, userId int, params RecordUserUpstreamModelLogParams) {
+	// 喵~防御：空上下文或空模型名不写日志，避免脏数据喵。
+	if c == nil || params.ModelName == "" {
+		return
+	}
+	username := c.GetString("username")
+	requestId := c.GetString(common.RequestIdKey)
+	createdAt := common.GetTimestamp()
+	otherStr := common.MapToJsonStr(params.Other)
+	log := &Log{
+		UserId:           userId,
+		Username:         username,
+		CreatedAt:        createdAt,
+		Type:             LogTypeCustomUpstream,
+		Content:          params.Content,
+		PromptTokens:     params.PromptTokens,
+		CompletionTokens: params.CompletionTokens,
+		TokenName:        params.TokenName,
+		ModelName:        params.ModelName,
+		// 独立 RMB 计费系统不走 new-api quota，Quota 固定为 0 喵。
+		Quota:     0,
+		TokenId:   params.TokenId,
+		UseTime:   params.UseTimeSeconds,
+		IsStream:  params.IsStream,
+		Group:     params.Group,
+		RequestId: requestId,
+		Other:     otherStr,
+	}
+	if err := createLog(log); err != nil {
+		logger.LogError(c, "failed to record user upstream model log: "+err.Error())
 	}
 }
 
