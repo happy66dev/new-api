@@ -157,10 +157,14 @@ export async function deleteVirtualModel(
   return response.data
 }
 
+// getVirtualModelStatus 读取运行状态；失败时由页面内联展示而非全局 toast，
+// 避免模型删除后 in-flight 状态请求返回 404 触发"虚拟模型不存在"弹窗喵。
 export async function getVirtualModelStatus(
   id: number
 ): Promise<VirtualModelApiResponse<VirtualModelStatus>> {
-  const response = await api.get(`/api/virtual-models/${id}/status`)
+  const response = await api.get(`/api/virtual-models/${id}/status`, {
+    skipErrorHandler: true,
+  })
   return response.data
 }
 
