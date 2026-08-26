@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -76,6 +77,12 @@ func logQuotaDataCache(quotaData *QuotaData) {
 }
 
 func LogQuotaData(params QuotaDataLogParams) {
+	// 数据看板/排行榜只统计 new-api 内部模型；
+	// 用户自带/共享上游（user/）与虚拟模型自定义上游（virtual/）一律不计入，
+	// 虚拟模型 internal 候选日志模型名为真实模型名（无前缀）仍正常计入喵。
+	if strings.HasPrefix(params.ModelName, "user/") || strings.HasPrefix(params.ModelName, "virtual/") {
+		return
+	}
 	// 只精确到小时
 	createdAt := params.CreatedAt - (params.CreatedAt % 3600)
 	quotaData := &QuotaData{
