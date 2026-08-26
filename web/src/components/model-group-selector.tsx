@@ -76,19 +76,34 @@ function displayGroupLabel(
   return groupValue === 'user-shared' ? t('User Shared') : fallbackLabel
 }
 
-interface ModelOption {
+export interface ModelOption {
   label: string
   value: string
   category?: string
   description?: string
 }
 
-interface GroupOption {
+export interface GroupOption {
   label: string
   value: string
   ratio?: number
   desc?: string
   description?: string
+}
+
+// 虚拟模型分组的 value，仅游乐场在分组下拉追加此分类，其余位置一律不显示喵。
+export const VIRTUAL_GROUP_VALUE = 'virtual'
+
+// appendVirtualGroupIfEnabled 仅当 showVirtualModels 为 true 时在分组列表末尾追加「虚拟模型」分类喵。
+export function appendVirtualGroupIfEnabled(
+  groups: GroupOption[],
+  showVirtualModels: boolean,
+  virtualLabel: string
+): GroupOption[] {
+  // 喵~防御：默认 false 时原样返回，保证渠道测试、模型测试等页面不出现虚拟模型分类喵。
+  if (!showVirtualModels) return groups
+  // 追加的分类项 value 固定为 'virtual'，选中后由外部（游乐场）切换模型列表为虚拟模型喵。
+  return [...groups, { value: VIRTUAL_GROUP_VALUE, label: virtualLabel }]
 }
 
 interface ModelSelectorProps {
@@ -577,6 +592,8 @@ export interface ModelGroupSelectorProps {
   // Common props
   className?: string
   disabled?: boolean
+  // showVirtualModels 为 true 时在分组下拉追加「虚拟模型」分类，仅游乐场使用喵。
+  showVirtualModels?: boolean
 }
 
 /**
@@ -592,6 +609,7 @@ export const ModelGroupSelector: React.FC<ModelGroupSelectorProps> = ({
   onGroupChange,
   className,
   disabled = false,
+  showVirtualModels = false,
 }) => {
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
@@ -601,13 +619,19 @@ export const ModelGroupSelector: React.FC<ModelGroupSelectorProps> = ({
   const selectedGroupOptionRef = useRef<HTMLButtonElement | null>(null)
   const selectedModelOptionRef = useRef<HTMLDivElement | null>(null)
 
+  // 仅游乐场生效：分组列表末尾追加「虚拟模型」分类，选中后由外部切换模型列表为虚拟模型喵。
+  const effectiveGroups = useMemo(
+    () => appendVirtualGroupIfEnabled(groups, showVirtualModels, t('Virtual Models')),
+    [groups, showVirtualModels, t]
+  )
+
   const currentModel = useMemo(
     () => models.find((model) => model.value === selectedModel),
     [models, selectedModel]
   )
   const currentGroup = useMemo(
-    () => groups.find((group) => group.value === selectedGroup),
-    [groups, selectedGroup]
+    () => effectiveGroups.find((group) => group.value === selectedGroup),
+    [effectiveGroups, selectedGroup]
   )
   const filteredModels = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
@@ -709,7 +733,7 @@ export const ModelGroupSelector: React.FC<ModelGroupSelectorProps> = ({
         )}
         ref={groupScrollContainerRef}
       >
-        {groups.map((group) => {
+        {effectiveGroups.map((group) => {
           const isSelected = selectedGroup === group.value
 
           return (

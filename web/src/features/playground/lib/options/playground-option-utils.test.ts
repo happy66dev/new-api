@@ -4,7 +4,7 @@ import { describe, expect, test } from 'vitest'
 import {
   filterChatGroups,
   getGroupFallback,
-  mergeVirtualModelOptions,
+  buildVirtualModelOptions,
 } from './playground-option-utils'
 
 describe('chat group filtering', () => {
@@ -31,9 +31,7 @@ describe('chat group filtering', () => {
   })
 })
 
-describe('mergeVirtualModelOptions', () => {
-  // 组装带普通模型的基线数据，各用例在此基础上追加虚拟模型喵。
-  const baseModels = [{ label: 'gpt-4o', value: 'gpt-4o' }]
+describe('buildVirtualModelOptions', () => {
   // 构造一个启用、一个停用的虚拟模型，用于验证过滤与转换喵。
   const virtualModels = [
     {
@@ -48,45 +46,40 @@ describe('mergeVirtualModelOptions', () => {
     },
   ]
 
-  test('appends enabled virtual models with the virtual/ prefix', () => {
-    // 合并后普通模型保留在原位，启用虚拟模型追加到末尾且 value 带前缀喵。
-    const merged = mergeVirtualModelOptions(baseModels, virtualModels)
+  test('builds only enabled virtual models with the virtual/ prefix', () => {
+    // 「虚拟」分组下只输出启用虚拟模型，value 带 virtual/ 前缀，普通模型不参与喵。
+    const options = buildVirtualModelOptions(virtualModels)
 
-    expect(merged).toEqual([
-      { label: 'gpt-4o', value: 'gpt-4o' },
-      { label: '我的网关', value: 'virtual/my-gateway' },
-    ])
+    expect(options).toEqual([{ label: '我的网关', value: 'virtual/my-gateway' }])
   })
 
   test('falls back the label to the normalized name when display name is empty', () => {
     // display_name 为空时，label 应回退为 virtual/规范名保证可辨识喵。
-    const merged = mergeVirtualModelOptions(baseModels, [
+    const options = buildVirtualModelOptions([
       { normalized_name: 'anon', display_name: '', enabled: true },
     ])
 
-    expect(merged[1]).toEqual({
+    expect(options[0]).toEqual({
       label: 'virtual/anon',
       value: 'virtual/anon',
     })
   })
 
   test('sorts virtual model options by display name', () => {
-    // 合并结果中的虚拟模型应按显示名自然排序，不受普通模型顺序影响喵。
-    const merged = mergeVirtualModelOptions([], [
+    // 虚拟模型按显示名自然排序，让下拉顺序稳定可预测喵。
+    const options = buildVirtualModelOptions([
       { normalized_name: 'b', display_name: 'Beta', enabled: true },
       { normalized_name: 'a', display_name: 'Alpha', enabled: true },
     ])
 
-    expect(merged.map((model) => model.value)).toEqual([
+    expect(options.map((model) => model.value)).toEqual([
       'virtual/a',
       'virtual/b',
     ])
   })
 
-  test('returns only plain models when virtual model data is absent', () => {
-    // 虚拟模型接口未加载时，合并结果应与普通模型列表一致喵。
-    const merged = mergeVirtualModelOptions(baseModels, undefined)
-
-    expect(merged).toEqual([{ label: 'gpt-4o', value: 'gpt-4o' }])
+  test('returns an empty list when virtual model data is absent', () => {
+    // 虚拟模型接口未加载时，「虚拟」分组下模型列表应为空而非报错喵。
+    expect(buildVirtualModelOptions(undefined)).toEqual([])
   })
 })

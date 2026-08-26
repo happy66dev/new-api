@@ -70,9 +70,8 @@ export function getOptionLoadErrorMessage(
   return error instanceof Error ? error.message : fallbackMessage
 }
 
-// mergeVirtualModelOptions 把启用状态的虚拟模型转成下拉选项，追加到普通模型列表之后喵。
-export function mergeVirtualModelOptions(
-  models: ModelOption[],
+// buildVirtualModelOptions 把启用状态的虚拟模型转成「虚拟」分组下的下拉选项喵。
+export function buildVirtualModelOptions(
   // 只依赖虚拟模型的三个展示字段，避免与完整控制面类型强耦合喵。
   virtualModels: Pick<
     VirtualModel,
@@ -80,7 +79,7 @@ export function mergeVirtualModelOptions(
   >[] | undefined
 ): ModelOption[] {
   // 喵~防御：虚拟模型接口未返回数据时回退为空数组，避免展开 undefined 报错喵。
-  const virtualOptions = (virtualModels ?? [])
+  return (virtualModels ?? [])
     // 只把启用状态的虚拟模型暴露给游乐场，停用的模型不可选喵。
     .filter((virtualModel) => virtualModel.enabled)
     .map((virtualModel) => {
@@ -102,6 +101,4 @@ export function mergeVirtualModelOptions(
         sensitivity: 'base',
       })
     )
-
-  return [...models, ...virtualOptions]
 }
