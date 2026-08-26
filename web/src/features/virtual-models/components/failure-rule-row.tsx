@@ -107,10 +107,15 @@ export function FailureRuleEditorRow({
             <div className='grid gap-3 rounded-md border border-dashed p-3 sm:col-span-3'>
               <p className='text-sm font-medium'>{t('Advanced freeze from response body')}</p>
               <div className='grid gap-3 sm:grid-cols-2'>
-                <label className='grid gap-1 text-sm font-medium'>
-                  {t('Response body field')}
-                  <Input value={rule.freezeField} disabled={isSaving} placeholder={t('Field name holding the freeze time, e.g. retry_after')} onChange={(event) => onChange({ freezeField: event.target.value })} />
-                </label>
+                {rule.freezeUnit === 'auto' ? (
+                  // auto 模式自动扫描响应体中的自然语言时间，无需用户指定字段名喵。
+                  <p className='text-sm text-muted-foreground'>{t('Auto-detects a duration like "in 22 minutes" or "after 5 seconds" anywhere in the response body')}</p>
+                ) : (
+                  <label className='grid gap-1 text-sm font-medium'>
+                    {t('Response body field')}
+                    <Input value={rule.freezeField} disabled={isSaving} placeholder={t('Field name holding the freeze time, e.g. retry_after')} onChange={(event) => onChange({ freezeField: event.target.value })} />
+                  </label>
+                )}
                 <label className='grid gap-1 text-sm font-medium'>
                   {t('Freeze unit')}
                   <select className='border-input bg-background h-9 rounded-md border px-3 text-sm' value={rule.freezeUnit} disabled={isSaving} onChange={(event) => onChange({ freezeUnit: event.target.value as FreezeUnit })}>

@@ -13,11 +13,12 @@ import type { VirtualModelFailureRule } from '../api'
 export type BodyRegexMode = 'none' | 'preset' | 'simple' | 'custom'
 
 // FreezeUnit 描述响应体冻结时间字段值的单位喵。
-// seconds 直接按秒；minutes 按分钟乘以 60；mixed 支持 "1m30s" 复合格式喵。
-export type FreezeUnit = 'seconds' | 'minutes' | 'mixed'
+// seconds 直接按秒；minutes 按分钟乘以 60；mixed 支持 "1m30s" 复合格式；auto 自动扫描自然语言时间喵。
+export type FreezeUnit = 'seconds' | 'minutes' | 'mixed' | 'auto'
 
 // FREEZE_UNITS 提供响应体冻结单位下拉选项，labelKey 供 i18n 翻译喵。
 export const FREEZE_UNITS: { value: FreezeUnit; labelKey: string }[] = [
+  { value: 'auto', labelKey: 'Freeze unit: auto' },
   { value: 'seconds', labelKey: 'Freeze unit: seconds' },
   { value: 'minutes', labelKey: 'Freeze unit: minutes' },
   { value: 'mixed', labelKey: 'Freeze unit: mixed (e.g. 1m30s)' },

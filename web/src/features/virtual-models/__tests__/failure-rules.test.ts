@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest'
 import type { VirtualModelFailureRule } from '../api'
 import {
   BODY_REGEX_PRESETS,
+  FREEZE_UNITS,
   MAXIMUM_FREEZE_SECONDS,
   MAXIMUM_HTTP_STATUS,
   createFailureRuleDraft,
@@ -352,5 +353,28 @@ describe('BODY_REGEX_PRESETS', () => {
       expect(preset.descriptionKey).not.toBe('')
       expect(preset.pattern).not.toBe('')
     }
+  })
+})
+
+// describe FREEZE_UNITS：冻结单位选项的完整性喵。
+describe('FREEZE_UNITS', () => {
+  it('offers the auto option for scanning natural language durations', () => {
+    // auto 单位必须存在于下拉选项，用于全文扫描自然语言时间喵。
+    expect(FREEZE_UNITS.some((unit) => unit.value === 'auto')).toBe(true)
+  })
+})
+
+// describe validateFailureRuleDraft：auto 单位的透传喵。
+describe('validateFailureRuleDraft with auto unit', () => {
+  it('passes the auto unit through to the payload', () => {
+    // auto 单位应在载荷中原样透传，供后端全文扫描自然语言时间喵。
+    const payload = validateFailureRuleDraft(makeDraft({ freezeUnit: 'auto', action: 'freeze' }), 0, identityTranslator)
+    expect(payload.freeze_unit).toBe('auto')
+  })
+
+  it('round-trips an auto unit rule back into the draft', () => {
+    // 服务端返回 auto 单位时应还原为编辑草稿，供用户继续调整喵。
+    const rule: VirtualModelFailureRule = { id: 11, http_status: 429, error_class: '', body_regex: '', action: 'freeze', freeze_seconds: 0, freeze_unit: 'auto' }
+    expect(toFailureRuleDraft(rule).freezeUnit).toBe('auto')
   })
 })

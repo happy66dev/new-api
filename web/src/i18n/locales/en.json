@@ -5992,6 +5992,8 @@
     "Freeze unit: seconds": "Seconds",
     "Freeze unit: minutes": "Minutes",
     "Freeze unit: mixed (e.g. 1m30s)": "Minutes + seconds (e.g. 1m30s)",
+    "Freeze unit: auto": "Auto detect (scan response body)",
+    "Auto-detects a duration like \"in 22 minutes\" or \"after 5 seconds\" anywhere in the response body": "Auto-detects a duration like \"in 22 minutes\" or \"after 5 seconds\" anywhere in the response body",
     "Failure rule {{index}} freeze field is too long": "Failure rule {{index}} freeze field is too long",
     "No failure rules configured. Unmatched failures use the next candidate.": "No failure rules configured. Unmatched failures use the next candidate.",
     "Save failure rules": "Save failure rules",

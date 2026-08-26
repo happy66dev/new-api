@@ -5992,6 +5992,8 @@
     "Freeze unit: seconds": "秒",
     "Freeze unit: minutes": "分钟",
     "Freeze unit: mixed (e.g. 1m30s)": "分钟+秒（例如 1m30s）",
+    "Freeze unit: auto": "自动识别（扫描响应体）",
+    "Auto-detects a duration like \"in 22 minutes\" or \"after 5 seconds\" anywhere in the response body": "自动在响应体任意位置识别时长，例如 \"in 22 minutes\" 或 \"after 5 seconds\"",
     "Failure rule {{index}} freeze field is too long": "第 {{index}} 条失败规则的冻结字段名过长",
     "No failure rules configured. Unmatched failures use the next candidate.": "尚未配置失败规则，未匹配的失败会使用下一个候选。",
     "Save failure rules": "保存失败规则",
