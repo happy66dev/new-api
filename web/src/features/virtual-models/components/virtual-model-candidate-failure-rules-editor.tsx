@@ -6,15 +6,13 @@
  the Free Software Foundation, either version 3 of the License, or
  (at your option) any later version.
 */
-import { Add01Icon, ArrowDown01Icon, ArrowUp01Icon, Cancel01Icon } from '@hugeicons/core-free-icons'
+import { Add01Icon } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 
 import type { VirtualModel, VirtualModelFailureRule } from '../api'
 import { replaceVirtualModelCandidateFailureRules } from '../api'
@@ -25,6 +23,7 @@ import {
   validateFailureRuleDraft,
   type FailureRuleDraft,
 } from '../lib/failure-rules'
+import { FailureRuleEditorRow } from './failure-rule-row'
 
 // VirtualModelCandidateFailureRulesEditor 管理单个候选按从上到下首条命中的失败规则喵。
 // 候选配置了自己的规则后，运行时优先使用这组规则；未命中或未配置时回退模型级全局兜底规则喵。
@@ -136,50 +135,16 @@ export function VirtualModelCandidateFailureRulesEditor({
       </div>
 
       {draftRules.map((rule, index) => (
-        <div className='space-y-3 rounded-md border p-3' key={rule.id ?? `new-rule-${index}`}>
-          <div className='flex flex-wrap items-center justify-between gap-2'>
-            <Badge variant='secondary'>{index + 1}</Badge>
-            <div className='flex gap-1'>
-              <Button type='button' size='icon-sm' variant='ghost' disabled={isSaving || index === 0} onClick={() => moveRule(index, 'up')} aria-label={t('Move failure rule up')}>
-                <HugeiconsIcon icon={ArrowUp01Icon} strokeWidth={2} aria-hidden='true' />
-              </Button>
-              <Button type='button' size='icon-sm' variant='ghost' disabled={isSaving || index === draftRules.length - 1} onClick={() => moveRule(index, 'down')} aria-label={t('Move failure rule down')}>
-                <HugeiconsIcon icon={ArrowDown01Icon} strokeWidth={2} aria-hidden='true' />
-              </Button>
-              <Button type='button' size='icon-sm' variant='ghost' disabled={isSaving} onClick={() => removeRule(index)} aria-label={t('Remove failure rule')}>
-                <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} aria-hidden='true' />
-              </Button>
-            </div>
-          </div>
-
-          <div className='grid gap-3 sm:grid-cols-2 lg:grid-cols-3'>
-            <label className='grid gap-1 text-sm font-medium'>
-              {t('HTTP status')}
-              <Input inputMode='numeric' value={rule.httpStatus} disabled={isSaving} placeholder={t('0 means any status')} onChange={(event) => updateRule(index, { httpStatus: event.target.value })} />
-            </label>
-            <label className='grid gap-1 text-sm font-medium'>
-              {t('Error class')}
-              <Input value={rule.errorClass} disabled={isSaving} placeholder={t('Leave blank to match any error class')} onChange={(event) => updateRule(index, { errorClass: event.target.value })} />
-            </label>
-            <label className='grid gap-1 text-sm font-medium'>
-              {t('Action')}
-              <select className='border-input bg-background h-9 rounded-md border px-3 text-sm' value={rule.action} disabled={isSaving} onChange={(event) => updateRule(index, { action: event.target.value as VirtualModelFailureRule['action'] })}>
-                <option value='retry'>{t('Retry current candidate')}</option>
-                <option value='next'>{t('Use next candidate')}</option>
-                <option value='freeze'>{t('Freeze candidate')}</option>
-                <option value='passthrough'>{t('Return upstream error')}</option>
-              </select>
-            </label>
-            <label className='grid gap-1 text-sm font-medium sm:col-span-2'>
-              {t('Response body regex')}
-              <Input value={rule.bodyRegex} disabled={isSaving} placeholder={t('Leave blank to match any response body')} onChange={(event) => updateRule(index, { bodyRegex: event.target.value })} />
-            </label>
-            <label className='grid gap-1 text-sm font-medium'>
-              {t('Freeze seconds')}
-              <Input inputMode='numeric' value={rule.freezeSeconds} disabled={isSaving} placeholder='0' onChange={(event) => updateRule(index, { freezeSeconds: event.target.value })} />
-            </label>
-          </div>
-        </div>
+        <FailureRuleEditorRow
+          key={rule.id ?? `new-rule-${index}`}
+          index={index}
+          total={draftRules.length}
+          rule={rule}
+          isSaving={isSaving}
+          onChange={(patch) => updateRule(index, patch)}
+          onMove={(direction) => moveRule(index, direction)}
+          onRemove={() => removeRule(index)}
+        />
       ))}
 
       {draftRules.length === 0 && <p className='text-muted-foreground text-sm'>{t('No failure rules configured. This candidate falls back to the global fallback rules.')}</p>}

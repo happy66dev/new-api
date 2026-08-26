@@ -10,20 +10,39 @@ import { describe, expect, it } from 'vitest'
 
 import type { VirtualModelFailureRule } from '../api'
 import {
+  BODY_REGEX_PRESETS,
   MAXIMUM_FREEZE_SECONDS,
   MAXIMUM_HTTP_STATUS,
   createFailureRuleDraft,
+  escapeRegex,
+  resolveBodyRegex,
   toFailureRuleDraft,
   validateFailureRuleDraft,
+  type FailureRuleDraft,
 } from '../lib/failure-rules'
 
 // identityTranslator 返回 key 本身，让校验函数只关心输入而不依赖真实 i18n 实例喵。
 const identityTranslator = (key: string): string => key
 
+// makeDraft 构造包含完整响应体正则编辑状态的草稿，减少重复字段喵。
+function makeDraft(overrides: Partial<FailureRuleDraft> = {}): FailureRuleDraft {
+  return {
+    bodyRegex: '',
+    bodyRegexMode: 'none',
+    bodyRegexPreset: '',
+    bodyRegexSimple: '',
+    errorClass: '',
+    freezeSeconds: '0',
+    httpStatus: '0',
+    action: 'next',
+    ...overrides,
+  }
+}
+
 // describe toFailureRuleDraft：服务端响应到可编辑草稿的映射喵。
 describe('toFailureRuleDraft', () => {
-  it('maps a complete rule keeping the stable id and action', () => {
-    // 构造包含所有字段的完整失败规则喵。
+  it('maps a complete custom-regex rule keeping the stable id and action', () => {
+    // 非预设正则按自定义模式还原，保证已有配置不被丢失喵。
     const rule: VirtualModelFailureRule = {
       id: 7,
       http_status: 429,
@@ -35,6 +54,9 @@ describe('toFailureRuleDraft', () => {
     const draft = toFailureRuleDraft(rule)
     expect(draft).toEqual({
       bodyRegex: 'capacity',
+      bodyRegexMode: 'custom',
+      bodyRegexPreset: '',
+      bodyRegexSimple: '',
       errorClass: 'rate_limited',
       freezeSeconds: '30',
       httpStatus: '429',
@@ -43,11 +65,22 @@ describe('toFailureRuleDraft', () => {
     })
   })
 
+  it('recognizes a preset pattern as preset mode', () => {
+    // 命中内置预设值的正则应还原为预设模式，方便用户继续调整喵。
+    const presetPattern = BODY_REGEX_PRESETS.rate_limited.pattern
+    const draft = toFailureRuleDraft({ http_status: 0, error_class: '', body_regex: presetPattern, action: 'next', freeze_seconds: 0 })
+    expect(draft.bodyRegexMode).toBe('preset')
+    expect(draft.bodyRegexPreset).toBe('rate_limited')
+  })
+
   it('provides safe defaults for missing optional fields', () => {
     // 缺失的可选字段必须以零/空/next 兜底，避免编辑表单出现 undefined 喵。
     const draft = toFailureRuleDraft({ http_status: 0, error_class: '', body_regex: '', action: 'next', freeze_seconds: 0 })
     expect(draft).toEqual({
       bodyRegex: '',
+      bodyRegexMode: 'none',
+      bodyRegexPreset: '',
+      bodyRegexSimple: '',
       errorClass: '',
       freezeSeconds: '0',
       httpStatus: '0',
@@ -64,6 +97,9 @@ describe('createFailureRuleDraft', () => {
     const draft = createFailureRuleDraft()
     expect(draft).toEqual({
       bodyRegex: '',
+      bodyRegexMode: 'none',
+      bodyRegexPreset: '',
+      bodyRegexSimple: '',
       errorClass: '',
       freezeSeconds: '0',
       httpStatus: '0',
@@ -72,12 +108,58 @@ describe('createFailureRuleDraft', () => {
   })
 })
 
+// describe escapeRegex：简易文本到字面正则的转义喵。
+describe('escapeRegex', () => {
+  it('escapes regex metacharacters so text matches literally', () => {
+    // 括号与点号等元字符必须转义，避免简易文本被当作正则语法喵。
+    expect(escapeRegex('capacity(1).extra')).toBe('capacity\\(1\\)\\.extra')
+  })
+
+  it('leaves plain text and empty input untouched', () => {
+    // 无元字符文本保持原样，空输入返回空串喵。
+    expect(escapeRegex('rate limit')).toBe('rate limit')
+    expect(escapeRegex('')).toBe('')
+  })
+})
+
+// describe resolveBodyRegex：按编辑模式生成最终响应体正则喵。
+describe('resolveBodyRegex', () => {
+  it('uses preset pattern when preset mode is selected', () => {
+    // 预设模式直接采用内置正则，不依赖用户手写喵。
+    expect(resolveBodyRegex(makeDraft({ bodyRegexMode: 'preset', bodyRegexPreset: 'overloaded' }))).toBe(BODY_REGEX_PRESETS.overloaded.pattern)
+  })
+
+  it('escapes plain text in simple mode and trims surrounding whitespace', () => {
+    // 简易模式把普通文本转义为包含匹配，并清理首尾空白喵。
+    expect(resolveBodyRegex(makeDraft({ bodyRegexMode: 'simple', bodyRegexSimple: '  capacity(1)  ' }))).toBe('capacity\\(1\\)')
+  })
+
+  it('keeps custom regex verbatim after trimming', () => {
+    // 自定义模式直接使用用户正则，仅清理首尾空白喵。
+    expect(resolveBodyRegex(makeDraft({ bodyRegexMode: 'custom', bodyRegex: '  rate.{0,5}limit  ' }))).toBe('rate.{0,5}limit')
+  })
+
+  it('falls back to empty for none mode or unknown preset', () => {
+    // 不匹配响应体或预设键无效时回退为空串喵。
+    expect(resolveBodyRegex(makeDraft({ bodyRegexMode: 'none' }))).toBe('')
+    expect(resolveBodyRegex(makeDraft({ bodyRegexMode: 'preset', bodyRegexPreset: 'missing' }))).toBe('')
+  })
+})
+
 // describe validateFailureRuleDraft：用户输入到 API 载荷的转换与防御喵。
 describe('validateFailureRuleDraft', () => {
   it('converts valid draft to API structure trimming text fields', () => {
-    // 合法输入应保留 id、去空白并转为数值状态码与冻结秒数喵。
+    // 合法输入应保留 id、去空白并转为数值状态码与冻结秒数，响应体正则按自定义模式生成喵。
     const payload = validateFailureRuleDraft(
-      { httpStatus: '503', errorClass: ' upstream_server_error ', bodyRegex: ' overloaded ', action: 'retry', freezeSeconds: '5', id: 3 },
+      makeDraft({
+        httpStatus: '503',
+        errorClass: ' upstream_server_error ',
+        bodyRegexMode: 'custom',
+        bodyRegex: ' overloaded ',
+        action: 'retry',
+        freezeSeconds: '5',
+        id: 3,
+      }),
       0,
       identityTranslator
     )
@@ -91,10 +173,32 @@ describe('validateFailureRuleDraft', () => {
     })
   })
 
+  it('resolves simple-text body matching into an escaped regex', () => {
+    // 简易模式保存时写入的是转义后的字面包含正则喵。
+    const payload = validateFailureRuleDraft(
+      makeDraft({ bodyRegexMode: 'simple', bodyRegexSimple: 'insufficient quota', httpStatus: '400' }),
+      0,
+      identityTranslator
+    )
+    expect(payload.body_regex).toBe('insufficient quota')
+  })
+
+  it('writes preset pattern and empty regex for none mode', () => {
+    // 预设模式写入固定正则，none 模式写入空串喵。
+    const presetPayload = validateFailureRuleDraft(
+      makeDraft({ bodyRegexMode: 'preset', bodyRegexPreset: 'context_length' }),
+      0,
+      identityTranslator
+    )
+    expect(presetPayload.body_regex).toBe(BODY_REGEX_PRESETS.context_length.pattern)
+    const nonePayload = validateFailureRuleDraft(makeDraft({ bodyRegexMode: 'none' }), 0, identityTranslator)
+    expect(nonePayload.body_regex).toBe('')
+  })
+
   it('accepts boundary values zero and maximum', () => {
     // 零状态码表示不限制，599 与一天冻结秒数均为合法上界喵。
     const payload = validateFailureRuleDraft(
-      { httpStatus: String(MAXIMUM_HTTP_STATUS), errorClass: '', bodyRegex: '', action: 'passthrough', freezeSeconds: String(MAXIMUM_FREEZE_SECONDS) },
+      makeDraft({ httpStatus: String(MAXIMUM_HTTP_STATUS), action: 'passthrough', freezeSeconds: String(MAXIMUM_FREEZE_SECONDS) }),
       0,
       identityTranslator
     )
@@ -104,68 +208,32 @@ describe('validateFailureRuleDraft', () => {
 
   it('rejects negative http status', () => {
     // 喵~防御：负数状态码是畸形输入，必须抛错而不是写进后端喵。
-    expect(() =>
-      validateFailureRuleDraft(
-        { httpStatus: '-1', errorClass: '', bodyRegex: '', action: 'next', freezeSeconds: '0' },
-        0,
-        identityTranslator
-      )
-    ).toThrow()
+    expect(() => validateFailureRuleDraft(makeDraft({ httpStatus: '-1' }), 0, identityTranslator)).toThrow()
   })
 
   it('rejects http status above 599', () => {
     // 喵~防御：超出合法状态码上限的输入必须拒绝喵。
-    expect(() =>
-      validateFailureRuleDraft(
-        { httpStatus: '600', errorClass: '', bodyRegex: '', action: 'next', freezeSeconds: '0' },
-        0,
-        identityTranslator
-      )
-    ).toThrow()
+    expect(() => validateFailureRuleDraft(makeDraft({ httpStatus: '600' }), 0, identityTranslator)).toThrow()
   })
 
   it('rejects non-integer http status', () => {
     // 喵~防御：小数状态码不是合法 HTTP 状态，必须拒绝喵。
-    expect(() =>
-      validateFailureRuleDraft(
-        { httpStatus: '429.5', errorClass: '', bodyRegex: '', action: 'next', freezeSeconds: '0' },
-        0,
-        identityTranslator
-      )
-    ).toThrow()
+    expect(() => validateFailureRuleDraft(makeDraft({ httpStatus: '429.5' }), 0, identityTranslator)).toThrow()
   })
 
   it('rejects negative freeze seconds', () => {
     // 喵~防御：负冻结时长无意义，必须拒绝喵。
-    expect(() =>
-      validateFailureRuleDraft(
-        { httpStatus: '0', errorClass: '', bodyRegex: '', action: 'next', freezeSeconds: '-3' },
-        0,
-        identityTranslator
-      )
-    ).toThrow()
+    expect(() => validateFailureRuleDraft(makeDraft({ freezeSeconds: '-3' }), 0, identityTranslator)).toThrow()
   })
 
   it('rejects freeze seconds beyond one day', () => {
     // 喵~防御：超过一天冻结时长会长期阻断候选，必须拒绝喵。
-    expect(() =>
-      validateFailureRuleDraft(
-        { httpStatus: '0', errorClass: '', bodyRegex: '', action: 'next', freezeSeconds: String(MAXIMUM_FREEZE_SECONDS + 1) },
-        0,
-        identityTranslator
-      )
-    ).toThrow()
+    expect(() => validateFailureRuleDraft(makeDraft({ freezeSeconds: String(MAXIMUM_FREEZE_SECONDS + 1) }), 0, identityTranslator)).toThrow()
   })
 
   it('reports the one-based rule index in the error message', () => {
     // 错误消息应携带规则序号，方便用户定位第三条规则的输入问题喵。
     const t = (key: string, options?: Record<string, unknown>): string => `${key}#${String(options?.index)}`
-    expect(() =>
-      validateFailureRuleDraft(
-        { httpStatus: '999', errorClass: '', bodyRegex: '', action: 'next', freezeSeconds: '0' },
-        2,
-        t
-      )
-    ).toThrow('3')
+    expect(() => validateFailureRuleDraft(makeDraft({ httpStatus: '999' }), 2, t)).toThrow('3')
   })
 })
