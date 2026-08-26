@@ -292,6 +292,16 @@ func SetApiRouter(router *gin.Engine) {
 			virtualModelRoute.GET("/:id/audit-log", controller.GetVirtualModelAuditLog)
 		}
 
+		upstreamModelRoute := apiRouter.Group("/upstream-models")
+		upstreamModelRoute.Use(middleware.UserAuth())
+		{
+			upstreamModelRoute.GET("", controller.GetUserUpstreamModels)
+			upstreamModelRoute.POST("", controller.CreateUserUpstreamModel)
+			upstreamModelRoute.GET("/:id", controller.GetUserUpstreamModel)
+			upstreamModelRoute.PUT("/:id", controller.UpdateUserUpstreamModel)
+			upstreamModelRoute.DELETE("/:id", controller.DeleteUserUpstreamModel)
+		}
+
 		tokenRoute := apiRouter.Group("/token")
 		tokenRoute.Use(middleware.UserAuth())
 		{

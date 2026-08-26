@@ -46,6 +46,12 @@ func Distribute() func(c *gin.Context) {
 				return
 			}
 		}
+		// 用户上游模型直接调用：透传后终止，不进入普通 channel 选择喵。
+		if shouldSelectChannel && isUserUpstreamModelRequest(modelRequest.Model) {
+			if !handleUserUpstreamModelRequest(c, modelRequest) {
+				return
+			}
+		}
 		if ok {
 			id, err := strconv.Atoi(channelId.(string))
 			if err != nil {

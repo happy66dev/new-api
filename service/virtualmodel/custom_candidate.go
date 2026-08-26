@@ -122,7 +122,8 @@ func probeCustomStreamingResponse(responseReader *bufio.Reader) ([]byte, error) 
 // ExecuteCustomCandidate 尝试当前自定义候选并仅在成功响应写入时向客户端提交内容喵。
 func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput) error {
 	// 喵~防御：Gin 上下文、请求和候选必要字段缺失时拒绝执行，避免产生未认证外发请求喵。
-	if c == nil || c.Request == nil || input.CandidateID <= 0 || strings.TrimSpace(input.BaseURL) == "" || strings.TrimSpace(input.APIKey) == "" || strings.TrimSpace(input.RealModelName) == "" {
+	// CandidateID 为 0 时表示用户上游模型独立直接调用（无候选链身份），同样允许执行喵。
+	if c == nil || c.Request == nil || strings.TrimSpace(input.BaseURL) == "" || strings.TrimSpace(input.APIKey) == "" || strings.TrimSpace(input.RealModelName) == "" {
 		return customCandidatePrecommitFailure(errors.New("custom candidate execution input is invalid"))
 	}
 	parsedBaseURL, validateURLError := ValidateCustomBaseURL(input.BaseURL)

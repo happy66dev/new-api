@@ -307,6 +307,7 @@ func migrateDB() error {
 		&VirtualModelCustomFreezeState{},
 		&VirtualModelInternalFreezeState{},
 		&VirtualModelAuditLog{},
+		&UserUpstreamModel{},
 	)
 	if err != nil {
 		return err

@@ -24,6 +24,7 @@ import {
   Cpu,
   FileText,
   FlaskConical,
+  Globe,
   Key,
   LayoutDashboard,
   ListTodo,
@@ -132,6 +133,11 @@ export function useSidebarData(): SidebarData {
               title: t('Virtual Models'),
               url: '/virtual-models',
               icon: Radio,
+            },
+            {
+              title: t('Upstream Models'),
+              url: '/upstream-models',
+              icon: Globe,
             },
             {
               title: t('Usage Logs'),
