@@ -179,26 +179,28 @@ costCents = QuotaFromDecimalChecked(weightedTokens × ratio / 1e6)   // 每百�
 
 ## 10. 分期实施计划（一期一交付）
 
-### P1：用户上游模型基础 CRUD + 直接调用透传
+> 状态：P1~P5 全部实现并完成冒烟验证（2026-08-27）喵~
+
+### P1：用户上游模型基础 CRUD + 直接调用透传 ✅ 已实现
 - 表 `user_upstream_models`、AutoMigrate、controller/router、owner 隔离、凭据加密存储（复用 credential_vault）喵。
 - 前端菜单 + 列表 + 创建/编辑抽屉喵。
 - 分发层 `upstream/` 识别 + 透传（**暂不计费**）喵。
 - 测试：CRUD 边界、加密、透传、owner 隔离、前缀识别喵。
 
-### P2：独立 RMB 计费系统
+### P2：独立 RMB 计费系统 ✅ 已实现
 - usage 解析（非流式 + 流式）、费用计算（decimal→分）、余额扣减/上限累计（悲观锁）、请求前硬检查拦截喵。
 - 消费日志 `Other` 计费明细喵。
 - 测试：四类 token 计费、余额不足钳制、上限拦截、无 usage 防御、并发扣费喵。
 
-### P3：额度嗅探 + 一键同步
+### P3：额度嗅探 + 一键同步 ✅ 已实现
 - 默认 OpenAI billing 路径 + 自定义路径、USD→RMB 汇率、嗅探结果写 `UpstreamRemainingCents`、前端"同步为余额"按钮喵。
 - 测试：嗅探成功/失败/自定义路径、同步幂等喵。
 
-### P4：共享功能
+### P4：共享功能 ✅ 已实现
 - `user-shared` 分组、共享开关与额度、`/api/user/models` 与 `/api/pricing` 共享条目、共享调用免费 + `ShareSpent` 累计 + 共享耗尽停止、自定上游类型日志（group=user-shared 区分共享）、模型广场额度展示（所有者/其他用户）喵。
 - 测试：共享可见性、免费不扣费、共享日志、耗尽停止后自用不受影响喵。
 
-### P5：候选链集成
+### P5：候选链集成 ✅ 已实现
 - `VirtualModelCustomCandidate.UpstreamModelID`、激活改用条目凭据、计费归属、候选链编辑器下拉选择喵。
 - 测试：引用激活、凭据联动、计费归属、旧直填候选兼容喵。
 
@@ -207,6 +209,13 @@ costCents = QuotaFromDecimalChecked(weightedTokens × ratio / 1e6)   // 每百�
 - 每期：后端相关包 `go test`、前端 `bunx vitest run`、`bun run typecheck` 与 `bun run build` 喵。
 - 冒烟：启动 exe，创建用户上游模型 → 直接调用 `upstream/<name>` → 日志出现 type=自定上游 的计费明细；设共享 → 其他用户 `user-shared` 分组可见并免费调用 → 共享调用日志归入"自定上游"类型且 group=user-shared；余额耗尽 → 请求返回额度不足喵。
 - 回归：普通模型与虚拟模型 internal 候选计费不受影响（`go test ./...` 除已知 Windows flaky 外通过）喵。
+
+### 冒烟验证实录（2026-08-27，mock 上游 127.0.0.1:19090 + SQLite smoke.db）
+
+- **P3 嗅探**：`POST /api/upstream-models/1/balance-check` → `upstream_remaining_cents=65700`（(120-30)USD × 7.3 汇率 × 100）喵；`balance/sync` → `balance_cents=65700` 喵。
+- **P4 共享**：user2 在 `GET /api/user/models?group=user-shared` 看到 `upstream/smoke` 喵；共享调用成功且免费（owner balance 不变、total_spent 不变、share_spent +150）喵；日志 type=8、group=`user-shared`、quota=0、`is_shared_call=true` 喵；`share_spent` 达 `share_limit` 后共享调用返回 404（模型停止共享），owner 自用仍 200 且照常扣费喵。
+- **P5 候选链**：虚拟模型 custom 候选设 `upstream_model_id=1` 后持久化成功喵；绑定 token 后调用 `virtual/smoke-vm` 返回 200，费用归属用户上游模型（balance 扣款、total_spent 累计）喵；日志 type=8、group=`default` 喵。
+- 清理：冒烟结束后停止 mock/exe 后台进程并删除 `smoke.db` 喵。
 
 ## 12. 待确认的次要细节（已给推荐值，实现前如主人有异议再改）
 
