@@ -176,18 +176,18 @@ export function VirtualModels() {
             )}
           </div>
         </div>
+        <VirtualModelMutateDialog
+          model={editingModel}
+          open={isMutateDialogOpen}
+          onOpenChange={setIsMutateDialogOpen}
+        />
+        <VirtualModelDeleteDialog
+          model={selectedModel}
+          open={isDeleteDialogOpen}
+          onOpenChange={setIsDeleteDialogOpen}
+          onDeleted={handleDeletedModel}
+        />
       </SectionPageLayout.Content>
-      <VirtualModelMutateDialog
-        model={editingModel}
-        open={isMutateDialogOpen}
-        onOpenChange={setIsMutateDialogOpen}
-      />
-      <VirtualModelDeleteDialog
-        model={selectedModel}
-        open={isDeleteDialogOpen}
-        onOpenChange={setIsDeleteDialogOpen}
-        onDeleted={handleDeletedModel}
-      />
     </SectionPageLayout>
   )
 }
