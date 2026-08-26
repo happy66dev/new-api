@@ -34,15 +34,15 @@ type upstreamModelInput struct {
 	AudioRatio           string `json:"audio_ratio"`
 	AudioCompletionRatio string `json:"audio_completion_ratio"`
 	// 以下金额字段单位都是"分"（RMB）喵。
-	BalanceCents           int64  `json:"balance_cents"`
-	SpendLimitCents        int64  `json:"spend_limit_cents"`
-	UpstreamRemainingCents int64  `json:"upstream_remaining_cents"`
-	BalanceCheckEnabled    bool   `json:"balance_check_enabled"`
-	BalanceCheckPath       string `json:"balance_check_path"`
-	ShareEnabled           bool   `json:"share_enabled"`
-	ShareLimitCents        int64  `json:"share_limit_cents"`
-	ShowBalanceEnabled     bool   `json:"show_balance_enabled"`
-	Version                int    `json:"version"`
+	// 余额 = 理论上还能用那么多（手动预存）；可用额度 = 用户能接受用那么多喵。
+	BalanceCents        int64  `json:"balance_cents"`
+	AvailableCents      int64  `json:"available_cents"`
+	BalanceCheckEnabled bool   `json:"balance_check_enabled"`
+	BalanceCheckPath    string `json:"balance_check_path"`
+	ShareEnabled        bool   `json:"share_enabled"`
+	ShareLimitCents     int64  `json:"share_limit_cents"`
+	ShowBalanceEnabled  bool   `json:"show_balance_enabled"`
+	Version             int    `json:"version"`
 }
 
 // upstreamModelResponse 是控制面读取时可安全展示的脱敏响应喵。
@@ -213,8 +213,7 @@ func saveUpstreamModelFields(input upstreamModelInput, ownerUserID int, existing
 	existing.AudioCompletionRatio = input.AudioCompletionRatio
 	applyUpstreamModelCredentialDefaults(existing)
 	existing.BalanceCents = input.BalanceCents
-	existing.SpendLimitCents = input.SpendLimitCents
-	existing.UpstreamRemainingCents = input.UpstreamRemainingCents
+	existing.AvailableCents = input.AvailableCents
 	existing.BalanceCheckEnabled = input.BalanceCheckEnabled
 	existing.BalanceCheckPath = input.BalanceCheckPath
 	existing.ShareEnabled = input.ShareEnabled
@@ -350,7 +349,7 @@ func UpdateUserUpstreamModel(c *gin.Context) {
 		}
 	}
 	// 更新条件绑定旧版本号，保证并发写只有一个请求成功，其余命中零行更新喵。
-	updateResult := model.DB.Model(upstreamModel).Where("id = ? AND owner_user_id = ? AND version = ?", upstreamModelID, c.GetInt("id"), existingVersion).Select("normalized_name", "display_name", "enabled", "encrypted_base_url", "encrypted_api_key", "base_url_fingerprint", "api_key_fingerprint", "credential_version", "real_model_name", "auth_style", "model_ratio", "completion_ratio", "cache_ratio", "cache_creation_ratio", "cache_creation_5m_ratio", "cache_creation_1h_ratio", "image_ratio", "audio_ratio", "audio_completion_ratio", "balance_cents", "spend_limit_cents", "total_spent_cents", "upstream_remaining_cents", "upstream_remaining_at", "balance_check_enabled", "balance_check_path", "share_enabled", "share_limit_cents", "share_spent_cents", "show_balance_enabled", "version", "updated_time").Updates(upstreamModel)
+	updateResult := model.DB.Model(upstreamModel).Where("id = ? AND owner_user_id = ? AND version = ?", upstreamModelID, c.GetInt("id"), existingVersion).Select("normalized_name", "display_name", "enabled", "encrypted_base_url", "encrypted_api_key", "base_url_fingerprint", "api_key_fingerprint", "credential_version", "real_model_name", "auth_style", "model_ratio", "completion_ratio", "cache_ratio", "cache_creation_ratio", "cache_creation_5m_ratio", "cache_creation_1h_ratio", "image_ratio", "audio_ratio", "audio_completion_ratio", "balance_cents", "available_cents", "balance_check_enabled", "balance_check_path", "share_enabled", "share_limit_cents", "show_balance_enabled", "version", "updated_time").Updates(upstreamModel)
 	if updateResult.Error != nil {
 		common.ApiError(c, updateResult.Error)
 		return
@@ -430,7 +429,7 @@ func CheckUserUpstreamModelBalance(c *gin.Context) {
 	})
 }
 
-// SyncUserUpstreamModelBalance 一键把嗅探结果同步为可用余额喵。
+// SyncUserUpstreamModelBalance 一键把嗅探结果同步为余额喵。
 func SyncUserUpstreamModelBalance(c *gin.Context) {
 	upstreamModelID, ok := parseUpstreamModelID(c)
 	if !ok {
@@ -456,6 +455,37 @@ func SyncUserUpstreamModelBalance(c *gin.Context) {
 	}
 	common.ApiSuccess(c, gin.H{
 		"balance_cents":            remainingCents,
+		"upstream_remaining_cents": remainingCents,
+	})
+}
+
+// SyncUserUpstreamModelAvailable 一键把嗅探结果同步为可用额度喵。
+// 可用额度表示用户能接受用那么多，嗅探到的上游剩余是合理参考值喵。
+func SyncUserUpstreamModelAvailable(c *gin.Context) {
+	upstreamModelID, ok := parseUpstreamModelID(c)
+	if !ok {
+		return
+	}
+	upstreamModel, ok := loadOwnedUpstreamModel(c, upstreamModelID)
+	if !ok {
+		return
+	}
+	remainingCents, checkError := upstreammodelservice.CheckUserUpstreamModelBalanceCents(upstreamModel)
+	if checkError != nil {
+		common.ApiError(c, checkError)
+		return
+	}
+	// 先持久化嗅探结果，再同步可用额度，保证两个字段一致喵。
+	if err := model.UpdateUserUpstreamModelBalanceResult(upstreamModelID, c.GetInt("id"), remainingCents); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if err := model.SyncUserUpstreamModelAvailable(upstreamModelID, c.GetInt("id")); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{
+		"available_cents":          remainingCents,
 		"upstream_remaining_cents": remainingCents,
 	})
 }

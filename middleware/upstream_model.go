@@ -61,13 +61,13 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 		}
 		isShared = true
 	}
-	// 请求前硬检查：自用调用检查余额与使用上限，共享调用由查询条件保证共享额度未耗尽喵。
+	// 请求前硬检查：自用调用需余额与可用额度都大于 0；共享调用由查询条件保证三账户未耗尽喵。
 	if !isShared {
 		if upstreamModel.BalanceCents <= 0 {
 			abortUpstreamModelQuotaExhausted(c)
 			return false
 		}
-		if upstreamModel.SpendLimitCents > 0 && upstreamModel.TotalSpentCents >= upstreamModel.SpendLimitCents {
+		if upstreamModel.AvailableCents <= 0 {
 			abortUpstreamModelQuotaExhausted(c)
 			return false
 		}

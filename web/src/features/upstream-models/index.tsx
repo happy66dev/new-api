@@ -7,7 +7,7 @@
  (at your option) any later version.
 */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Pencil, Plus, RefreshCw, Settings2, Trash2, Wallet } from 'lucide-react'
+import { Pencil, Plus, RefreshCw, Settings2, Target, Trash2, Wallet } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -42,6 +42,7 @@ import {
   createUserUpstreamModel,
   deleteUserUpstreamModel,
   getUserUpstreamModels,
+  syncUserUpstreamModelAvailable,
   syncUserUpstreamModelBalance,
   updateUserUpstreamModel,
 } from './api'
@@ -87,8 +88,7 @@ function UpstreamModelDrawer({
   const [audioRatio, setAudioRatio] = useState('1')
   const [audioCompletionRatio, setAudioCompletionRatio] = useState('1')
   const [balanceYuan, setBalanceYuan] = useState('0')
-  const [spendLimitYuan, setSpendLimitYuan] = useState('0')
-  const [upstreamRemainingYuan, setUpstreamRemainingYuan] = useState('0')
+  const [availableYuan, setAvailableYuan] = useState('0')
   const [shareEnabled, setShareEnabled] = useState(false)
   const [shareLimitYuan, setShareLimitYuan] = useState('0')
   const [showBalanceEnabled, setShowBalanceEnabled] = useState(false)
@@ -116,8 +116,7 @@ function UpstreamModelDrawer({
     setAudioRatio(model?.audio_ratio ?? '1')
     setAudioCompletionRatio(model?.audio_completion_ratio ?? '1')
     setBalanceYuan(centsToYuan(model?.balance_cents ?? 0))
-    setSpendLimitYuan(centsToYuan(model?.spend_limit_cents ?? 0))
-    setUpstreamRemainingYuan(centsToYuan(model?.upstream_remaining_cents ?? 0))
+    setAvailableYuan(centsToYuan(model?.available_cents ?? model?.spend_limit_cents ?? 0))
     setShareEnabled(model?.share_enabled ?? false)
     setShareLimitYuan(centsToYuan(model?.share_limit_cents ?? 0))
     setShowBalanceEnabled(model?.show_balance_enabled ?? false)
@@ -161,8 +160,7 @@ function UpstreamModelDrawer({
       audio_ratio: audioRatio,
       audio_completion_ratio: audioCompletionRatio,
       balance_cents: yuanToCents(balanceYuan),
-      spend_limit_cents: yuanToCents(spendLimitYuan),
-      upstream_remaining_cents: yuanToCents(upstreamRemainingYuan),
+      available_cents: yuanToCents(availableYuan),
       share_enabled: shareEnabled,
       share_limit_cents: yuanToCents(shareLimitYuan),
       show_balance_enabled: showBalanceEnabled,
@@ -336,14 +334,18 @@ function UpstreamModelDrawer({
                 <Input inputMode='decimal' value={balanceYuan} onChange={(event) => setBalanceYuan(event.target.value)} disabled={isSaving} />
               </label>
               <label className='grid gap-1 text-sm font-medium'>
-                {t('Spend limit (yuan)')}
-                <Input inputMode='decimal' value={spendLimitYuan} onChange={(event) => setSpendLimitYuan(event.target.value)} disabled={isSaving} />
-              </label>
-              <label className='grid gap-1 text-sm font-medium'>
-                {t('Upstream remaining (yuan)')}
-                <Input inputMode='decimal' value={upstreamRemainingYuan} onChange={(event) => setUpstreamRemainingYuan(event.target.value)} disabled={isSaving} />
+                {t('Available (yuan)')}
+                <Input inputMode='decimal' value={availableYuan} onChange={(event) => setAvailableYuan(event.target.value)} disabled={isSaving} />
               </label>
             </div>
+            <p className='text-muted-foreground text-xs'>
+              {t('Balance is how much this model can theoretically still be used; available is how much you accept to spend.')}
+            </p>
+            {model && model.upstream_remaining_cents > 0 && (
+              <p className='text-muted-foreground text-xs'>
+                {t('Upstream remaining')}: {centsToYuan(model.upstream_remaining_cents)} ¥
+              </p>
+            )}
             <label className='flex items-center justify-between gap-3 text-sm'>
               <span>{t('Show balance on model square')}</span>
               <Switch checked={showBalanceEnabled} onCheckedChange={setShowBalanceEnabled} disabled={isSaving} />
@@ -426,7 +428,7 @@ export function UpstreamModels() {
     }
   }
 
-  // handleSyncBalance 把嗅探结果一键同步为可用余额并刷新列表喵。
+  // handleSyncBalance 把嗅探结果一键同步为余额并刷新列表喵。
   const handleSyncBalance = async (item: UserUpstreamModel) => {
     // 喵~防御：同一时间只允许一个同步操作喵。
     if (balanceActionId !== null) return
@@ -441,6 +443,26 @@ export function UpstreamModels() {
       void queryClient.invalidateQueries({ queryKey: ['upstream-models'] })
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('Unable to sync upstream model balance'))
+    } finally {
+      setBalanceActionId(null)
+    }
+  }
+
+  // handleSyncAvailable 把嗅探结果一键同步为可用额度并刷新列表喵。
+  const handleSyncAvailable = async (item: UserUpstreamModel) => {
+    // 喵~防御：同一时间只允许一个同步操作喵。
+    if (balanceActionId !== null) return
+    setBalanceActionId(item.id)
+    try {
+      const response = await syncUserUpstreamModelAvailable(item.id)
+      // 喵~防御：业务失败必须展示后端消息喵。
+      if (!response.success) {
+        throw new Error(response.message || t('Unable to sync upstream model available'))
+      }
+      toast.success(t('Upstream available synced'))
+      void queryClient.invalidateQueries({ queryKey: ['upstream-models'] })
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('Unable to sync upstream model available'))
     } finally {
       setBalanceActionId(null)
     }
@@ -502,8 +524,8 @@ export function UpstreamModels() {
                   {item.base_url ? ` · ${item.base_url}` : ''}
                 </div>
                 <div className='text-muted-foreground mt-1 text-xs'>
-                  {t('Balance')}: {centsToYuan(item.balance_cents)} ¥ · {t('Limit')}: {centsToYuan(item.spend_limit_cents)} ¥ ·{' '}
-                  {t('Remaining')}: {centsToYuan(item.upstream_remaining_cents)} ¥
+                  {t('Balance')}: {centsToYuan(item.balance_cents)} ¥ · {t('Available')}: {centsToYuan(item.available_cents)} ¥ ·{' '}
+                  {t('Share')}: {centsToYuan(item.share_limit_cents)} ¥
                 </div>
               </div>
               <div className='flex shrink-0 items-center gap-2'>
@@ -522,10 +544,20 @@ export function UpstreamModels() {
                   variant='outline'
                   disabled={balanceActionId !== null}
                   onClick={() => void handleSyncBalance(item)}
-                  title={t('Sync checked remaining quota into available balance')}
+                  title={t('Sync checked remaining quota into balance')}
                 >
                   <Wallet className='size-3.5' />
                   {t('Sync to balance')}
+                </Button>
+                <Button
+                  size='sm'
+                  variant='outline'
+                  disabled={balanceActionId !== null}
+                  onClick={() => void handleSyncAvailable(item)}
+                  title={t('Sync checked remaining quota into available')}
+                >
+                  <Target className='size-3.5' />
+                  {t('Sync to available')}
                 </Button>
                 <Button
                   size='sm'

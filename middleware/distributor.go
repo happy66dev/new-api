@@ -590,12 +590,12 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 			return false
 		}
 		referencedUpstreamModel = loadedModel
-		// 请求前硬检查：引用上游模型同样受余额与使用上限约束喵。
+		// 请求前硬检查：引用上游模型同样受余额与可用额度约束喵。
 		if referencedUpstreamModel.BalanceCents <= 0 {
 			abortUpstreamModelQuotaExhausted(c)
 			return false
 		}
-		if referencedUpstreamModel.SpendLimitCents > 0 && referencedUpstreamModel.TotalSpentCents >= referencedUpstreamModel.SpendLimitCents {
+		if referencedUpstreamModel.AvailableCents <= 0 {
 			abortUpstreamModelQuotaExhausted(c)
 			return false
 		}

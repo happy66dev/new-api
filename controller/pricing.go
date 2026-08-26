@@ -132,28 +132,26 @@ func buildSharedUpstreamPricing(view model.SharedUserUpstreamModelView, viewerUs
 		EnableGroup:      []string{constant.GroupUserShared},
 		ShareOwnerUserID: view.OwnerUserID,
 	}
-	// 有共享上限时展示共享剩余额度；无上限时展示累计消耗作为参考喵。
+	// 共享额度是递减账户，剩余额度即当前共享额度本身；耗尽后模型不再出现在共享列表喵。
 	if view.ShareLimitCents > 0 {
 		shareLimit := view.ShareLimitCents
-		remaining := view.ShareLimitCents - view.ShareSpentCents
+		item.ShareLimitCents = &shareLimit
+		remaining := view.ShareLimitCents
 		// 喵~防御：剩余额度钳制非负，避免负值展示喵。
 		if remaining < 0 {
 			remaining = 0
 		}
-		item.ShareLimitCents = &shareLimit
 		item.ShareRemainingCents = &remaining
 	} else {
-		spent := view.ShareSpentCents
-		item.ShareRemainingCents = &spent
+		// 共享额度未设置时不展示剩余额度喵。
+		item.ShareRemainingCents = nil
 	}
-	// 所有者且开启展示开关时附加余额与上限字段喵。
+	// 所有者且开启展示开关时附加余额与可用额度字段喵。
 	if viewerUserID == view.OwnerUserID && view.ShowBalanceEnabled {
 		balance := view.BalanceCents
-		spendLimit := view.SpendLimitCents
-		upstreamRemaining := view.UpstreamRemainingCents
+		available := view.AvailableCents
 		item.BalanceCents = &balance
-		item.SpendLimitCents = &spendLimit
-		item.UpstreamRemaining = &upstreamRemaining
+		item.AvailableCents = &available
 	}
 	return item
 }

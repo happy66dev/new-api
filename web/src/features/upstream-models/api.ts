@@ -26,6 +26,9 @@ export type UserUpstreamModel = {
   audio_completion_ratio: string
   // 以下金额字段单位都是"分"（RMB）喵。
   balance_cents: number
+  // 可用额度 = 用户能接受用那么多（递减账户）喵。
+  available_cents: number
+  // 以下字段为旧版余额体系遗留，仅作展示兼容不再参与扣费喵。
   spend_limit_cents: number
   total_spent_cents: number
   upstream_remaining_cents: number
@@ -62,8 +65,7 @@ export type UserUpstreamModelInput = {
   audio_ratio: string
   audio_completion_ratio: string
   balance_cents: number
-  spend_limit_cents: number
-  upstream_remaining_cents: number
+  available_cents: number
   // 嗅探配置在 P3 实现，P1 前端暂不提供编辑入口，字段保持可选喵。
   balance_check_enabled?: boolean
   balance_check_path?: string
@@ -122,10 +124,18 @@ export async function checkUserUpstreamModelBalance(
   return response.data
 }
 
-// 一键同步：把嗅探结果写入可用余额喵。
+// 一键设为余额：把嗅探结果写入「余额」账户喵。
 export async function syncUserUpstreamModelBalance(
   id: number
 ): Promise<UserUpstreamModelApiResponse<{ balance_cents: number; upstream_remaining_cents: number }>> {
   const response = await api.post(`/api/upstream-models/${id}/balance/sync`)
+  return response.data
+}
+
+// 一键设为可用：把嗅探结果写入「可用额度」账户喵。
+export async function syncUserUpstreamModelAvailable(
+  id: number
+): Promise<UserUpstreamModelApiResponse<{ available_cents: number; upstream_remaining_cents: number }>> {
+  const response = await api.post(`/api/upstream-models/${id}/balance/sync-available`)
   return response.data
 }

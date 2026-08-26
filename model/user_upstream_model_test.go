@@ -103,95 +103,107 @@ func TestUserUpstreamModelCRUD(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestDeductUserUpstreamModelCharge 验证独立计费扣减的余额钳制与累计语义喵。
+// TestDeductUserUpstreamModelCharge 验证独立计费三账户递减扣减与钳制语义喵。
 func TestDeductUserUpstreamModelCharge(t *testing.T) {
 	truncateTables(t)
 	require.NoError(t, DB.AutoMigrate(&UserUpstreamModel{}))
 	require.NoError(t, DB.Exec("DELETE FROM user_upstream_models").Error)
 
-	// 创建余额 1000 分、自用上限 800 分、共享上限 600 分的模型喵。
+	// 创建余额 1000 分、可用额度 800 分、共享额度 600 分的模型喵。
 	created := &UserUpstreamModel{
 		OwnerUserID:     7,
 		NormalizedName:  "billing",
 		Enabled:         true,
 		BalanceCents:    1000,
-		SpendLimitCents: 800,
-		TotalSpentCents: 0,
+		AvailableCents:  800,
 		ShareLimitCents: 600,
-		ShareSpentCents: 0,
 		Version:         1,
 		CreatedTime:     100,
 		UpdatedTime:     100,
 	}
 	require.NoError(t, DB.Create(created).Error)
 
-	// 正常自用扣费：余额减少、自用累计增加喵。
+	// 正常自用扣费：余额与可用额度同时减少，共享额度不受影响喵。
 	require.NoError(t, DeductUserUpstreamModelCharge(created.ID, 7, 300, false))
 	fetched, err := GetUserUpstreamModelByOwnerID(created.ID, 7)
 	require.NoError(t, err)
 	assert.Equal(t, int64(700), fetched.BalanceCents)
-	assert.Equal(t, int64(300), fetched.TotalSpentCents)
+	assert.Equal(t, int64(500), fetched.AvailableCents)
+	assert.Equal(t, int64(600), fetched.ShareLimitCents)
 
-	// 余额不足以覆盖扣费时钳制到 0，绝不产生负余额喵。
+	// 可用额度不足以覆盖扣费时钳制到 0，绝不产生负值喵。
 	require.NoError(t, DeductUserUpstreamModelCharge(created.ID, 7, 800, false))
 	fetched, err = GetUserUpstreamModelByOwnerID(created.ID, 7)
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), fetched.BalanceCents)
-	assert.Equal(t, int64(1100), fetched.TotalSpentCents)
+	assert.Equal(t, int64(0), fetched.AvailableCents)
+	assert.Equal(t, int64(600), fetched.ShareLimitCents)
 
 	// 负数费用直接拒绝，不产生任何写入喵。
 	beforeBalance := fetched.BalanceCents
-	beforeSpent := fetched.TotalSpentCents
+	beforeAvailable := fetched.AvailableCents
 	err = DeductUserUpstreamModelCharge(created.ID, 7, -10, false)
 	require.Error(t, err)
 	fetched, _ = GetUserUpstreamModelByOwnerID(created.ID, 7)
 	assert.Equal(t, beforeBalance, fetched.BalanceCents)
-	assert.Equal(t, beforeSpent, fetched.TotalSpentCents)
+	assert.Equal(t, beforeAvailable, fetched.AvailableCents)
 
-	// 零费用不写库，余额与累计保持不变喵。
+	// 零费用不写库，各账户保持不变喵。
 	require.NoError(t, DeductUserUpstreamModelCharge(created.ID, 7, 0, false))
 	fetched, _ = GetUserUpstreamModelByOwnerID(created.ID, 7)
 	assert.Equal(t, int64(0), fetched.BalanceCents)
-	assert.Equal(t, int64(1100), fetched.TotalSpentCents)
+	assert.Equal(t, int64(0), fetched.AvailableCents)
+	assert.Equal(t, int64(600), fetched.ShareLimitCents)
 
-	// 共享调用免费：只累计共享消耗，余额与自用累计不变喵。
+	// 共享调用扣「余额+可用+共享」三个账户：余额/可用已为 0 保持钳 0，共享 600-250=350 喵。
 	require.NoError(t, DeductUserUpstreamModelCharge(created.ID, 7, 250, true))
 	fetched, _ = GetUserUpstreamModelByOwnerID(created.ID, 7)
 	assert.Equal(t, int64(0), fetched.BalanceCents)
-	assert.Equal(t, int64(1100), fetched.TotalSpentCents)
-	assert.Equal(t, int64(250), fetched.ShareSpentCents)
+	assert.Equal(t, int64(0), fetched.AvailableCents)
+	assert.Equal(t, int64(350), fetched.ShareLimitCents)
+
+	// 共享费用超过共享余额时钳制到 0，绝不产生负共享额度喵。
+	require.NoError(t, DeductUserUpstreamModelCharge(created.ID, 7, 400, true))
+	fetched, _ = GetUserUpstreamModelByOwnerID(created.ID, 7)
+	assert.Equal(t, int64(0), fetched.ShareLimitCents)
 
 	// 无效属主或 ID 返回记录不存在，避免跨用户扣费喵。
 	require.Error(t, DeductUserUpstreamModelCharge(created.ID, 8, 10, false))
 	require.Error(t, DeductUserUpstreamModelCharge(0, 7, 10, false))
 }
 
-// TestSharedUserUpstreamModels 验证共享模型可见性、额度耗尽停止与跨用户调用授权喵。
+// TestSharedUserUpstreamModels 验证共享模型可见性、账户耗尽停止与跨用户调用授权喵。
 func TestSharedUserUpstreamModels(t *testing.T) {
 	truncateTables(t)
 	require.NoError(t, DB.AutoMigrate(&UserUpstreamModel{}))
 	require.NoError(t, DB.Exec("DELETE FROM user_upstream_models").Error)
 
-	// 创建共享中（有额度）、无共享上限、共享额度耗尽与未开启共享的四种模型喵。
-	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "shared-ok", Enabled: true, ShareEnabled: true, ShareLimitCents: 1000, ShareSpentCents: 100}).Error)
-	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "shared-unlimited", Enabled: true, ShareEnabled: true, ShareLimitCents: 0}).Error)
-	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "shared-exhausted", Enabled: true, ShareEnabled: true, ShareLimitCents: 500, ShareSpentCents: 500}).Error)
-	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "not-shared", Enabled: true, ShareEnabled: false}).Error)
+	// 创建共享中（三账户都有余额）、余额耗尽、可用耗尽、共享额度耗尽与未开启共享的模型喵。
+	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "shared-ok", Enabled: true, ShareEnabled: true, BalanceCents: 100, AvailableCents: 100, ShareLimitCents: 1000}).Error)
+	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "shared-balance-empty", Enabled: true, ShareEnabled: true, BalanceCents: 0, AvailableCents: 100, ShareLimitCents: 1000}).Error)
+	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "shared-available-empty", Enabled: true, ShareEnabled: true, BalanceCents: 100, AvailableCents: 0, ShareLimitCents: 1000}).Error)
+	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "shared-exhausted", Enabled: true, ShareEnabled: true, BalanceCents: 100, AvailableCents: 100, ShareLimitCents: 0}).Error)
+	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "not-shared", Enabled: true, ShareEnabled: false, BalanceCents: 100, AvailableCents: 100, ShareLimitCents: 1000}).Error)
 
-	// 共享中的模型名只包含未耗尽的共享模型喵。
+	// 共享中的模型名只包含三账户都未耗尽的共享模型喵。
 	names := GetSharedUserUpstreamModelNames()
 	assert.Contains(t, names, "user/shared-ok")
-	assert.Contains(t, names, "user/shared-unlimited")
+	assert.NotContains(t, names, "user/shared-balance-empty")
+	assert.NotContains(t, names, "user/shared-available-empty")
 	assert.NotContains(t, names, "user/shared-exhausted")
 	assert.NotContains(t, names, "user/not-shared")
 
-	// 共享额度的剩余视图字段正确喵。
+	// 共享视图只包含共享中的模型喵。
 	views, err := GetSharedUserUpstreamModels()
 	require.NoError(t, err)
-	assert.Len(t, views, 2)
+	assert.Len(t, views, 1)
 
-	// 共享耗尽模型按名称查询返回记录不存在（停止共享）喵。
+	// 任一账户耗尽的模型按名称查询返回记录不存在（自动停止共享）喵。
 	_, err = GetEnabledSharedUserUpstreamModelByName("shared-exhausted")
+	require.Error(t, err)
+	_, err = GetEnabledSharedUserUpstreamModelByName("shared-balance-empty")
+	require.Error(t, err)
+	_, err = GetEnabledSharedUserUpstreamModelByName("shared-available-empty")
 	require.Error(t, err)
 
 	// 共享中模型可被任意用户按名称查找到喵。
@@ -230,4 +242,69 @@ func TestGetSharedUserUpstreamModelByNormalizedName(t *testing.T) {
 	// 空名称直接返回记录不存在喵。
 	_, err = GetSharedUserUpstreamModelByNormalizedName("")
 	require.Error(t, err)
+}
+
+// TestSyncUserUpstreamModelAvailable 验证「一键设为可用额度」把嗅探结果写入可用账户喵。
+func TestSyncUserUpstreamModelAvailable(t *testing.T) {
+	truncateTables(t)
+	require.NoError(t, DB.AutoMigrate(&UserUpstreamModel{}))
+	require.NoError(t, DB.Exec("DELETE FROM user_upstream_models").Error)
+
+	// 创建可用额度 100 分、嗅探剩余 2500 分的模型喵。
+	created := &UserUpstreamModel{
+		OwnerUserID:            7,
+		NormalizedName:         "sync-available",
+		Enabled:                true,
+		BalanceCents:           500,
+		AvailableCents:         100,
+		UpstreamRemainingCents: 2500,
+		Version:                1,
+		CreatedTime:            100,
+		UpdatedTime:            100,
+	}
+	require.NoError(t, DB.Create(created).Error)
+
+	// 一键设为可用：可用额度被嗅探结果覆盖，余额不变喵。
+	require.NoError(t, SyncUserUpstreamModelAvailable(created.ID, 7))
+	fetched, err := GetUserUpstreamModelByOwnerID(created.ID, 7)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2500), fetched.AvailableCents)
+	assert.Equal(t, int64(500), fetched.BalanceCents)
+
+	// 无效参数返回记录不存在喵。
+	require.Error(t, SyncUserUpstreamModelAvailable(created.ID, 8))
+	require.Error(t, SyncUserUpstreamModelAvailable(0, 7))
+}
+
+// TestMigrateUserUpstreamAvailableCents 验证旧「使用上限」幂等回填为「可用额度」喵。
+func TestMigrateUserUpstreamAvailableCents(t *testing.T) {
+	truncateTables(t)
+	require.NoError(t, DB.AutoMigrate(&UserUpstreamModel{}))
+	require.NoError(t, DB.Exec("DELETE FROM user_upstream_models").Error)
+
+	// 旧使用上限为 800 且可用为 0 的行应回填为 800；可用已设置的行不受影响喵。
+	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "migrate-a", Enabled: true, SpendLimitCents: 800, AvailableCents: 0}).Error)
+	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "migrate-b", Enabled: true, SpendLimitCents: 900, AvailableCents: 300}).Error)
+	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "migrate-c", Enabled: true, SpendLimitCents: 0, AvailableCents: 0}).Error)
+
+	require.NoError(t, migrateUserUpstreamAvailableCents())
+
+	// 回填后可用额度与旧使用上限一致喵。
+	var fetchedA UserUpstreamModel
+	require.NoError(t, DB.Where("normalized_name = ?", "migrate-a").First(&fetchedA).Error)
+	assert.Equal(t, int64(800), fetchedA.AvailableCents)
+	// 已设置可用额度的行不被覆盖喵。
+	var fetchedB UserUpstreamModel
+	require.NoError(t, DB.Where("normalized_name = ?", "migrate-b").First(&fetchedB).Error)
+	assert.Equal(t, int64(300), fetchedB.AvailableCents)
+	// 旧使用上限为 0 的行保持 0 喵。
+	var fetchedC UserUpstreamModel
+	require.NoError(t, DB.Where("normalized_name = ?", "migrate-c").First(&fetchedC).Error)
+	assert.Equal(t, int64(0), fetchedC.AvailableCents)
+
+	// 幂等：再次运行不回填已回填的行喵。
+	require.NoError(t, migrateUserUpstreamAvailableCents())
+	var fetchedAgain UserUpstreamModel
+	require.NoError(t, DB.Where("normalized_name = ?", "migrate-a").First(&fetchedAgain).Error)
+	assert.Equal(t, int64(800), fetchedAgain.AvailableCents)
 }

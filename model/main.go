@@ -312,6 +312,10 @@ func migrateDB() error {
 	if err != nil {
 		return err
 	}
+	// 旧版「使用上限」回填为「可用额度」初始值，保证存量上游模型迁移后可用额度非零喵。
+	if err := migrateUserUpstreamAvailableCents(); err != nil {
+		return err
+	}
 	if err := InitializeUserAuthVersions(); err != nil {
 		return err
 	}
@@ -676,6 +680,30 @@ func migrateTokenModelLimitsToText() error {
 			return fmt.Errorf("failed to migrate %s.%s to text: %w", tableName, columnName, err)
 		}
 		common.SysLog(fmt.Sprintf("Successfully migrated %s.%s to text", tableName, columnName))
+	}
+	return nil
+}
+
+// migrateUserUpstreamAvailableCents 把旧版「使用上限」回填为「可用额度」初始值喵。
+// 幂等迁移：只有可用额度为 0 且旧使用上限为正时回填，多次运行不会覆盖用户新设置的可用额度喵。
+func migrateUserUpstreamAvailableCents() error {
+	// 喵~防御：表不存在或旧列不存在时跳过，避免空表迁移报错喵。
+	if !DB.Migrator().HasTable("user_upstream_models") {
+		return nil
+	}
+	if !DB.Migrator().HasColumn(&UserUpstreamModel{}, "spend_limit_cents") || !DB.Migrator().HasColumn(&UserUpstreamModel{}, "available_cents") {
+		return nil
+	}
+	// 用通用条件更新替代方言专用 SQL，SQLite/MySQL/PostgreSQL 三库一致喵。
+	result := DB.Model(&UserUpstreamModel{}).
+		Where("available_cents = 0 AND spend_limit_cents > 0").
+		Update("available_cents", gorm.Expr("spend_limit_cents"))
+	if result.Error != nil {
+		return result.Error
+	}
+	// 回填影响行数大于 0 时记录审计日志，便于管理员了解迁移范围喵。
+	if result.RowsAffected > 0 {
+		common.SysLog(fmt.Sprintf("migrated available_cents from spend_limit_cents for %d upstream models", result.RowsAffected))
 	}
 	return nil
 }

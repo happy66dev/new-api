@@ -41,14 +41,18 @@ type UserUpstreamModel struct {
 	AudioRatio           string `json:"audio_ratio" gorm:"type:varchar(32)"`
 	AudioCompletionRatio string `json:"audio_completion_ratio" gorm:"type:varchar(32)"`
 	// 余额与额度控制（分）喵。
-	BalanceCents           int64  `json:"balance_cents"`
+	// 余额 = 这个模型理论上还能用那么多（手动预存，递减账户）喵。
+	BalanceCents int64 `json:"balance_cents"`
+	// 可用额度 = 这个模型用户能接受用那么多（递减账户，自用/共享调用都扣）喵。
+	AvailableCents int64 `json:"available_cents"`
+	// 以下字段为旧版余额体系遗留，保留列以兼容旧数据但不再参与任何扣费与展示喵。
 	SpendLimitCents        int64  `json:"spend_limit_cents"`
 	TotalSpentCents        int64  `json:"total_spent_cents"`
 	UpstreamRemainingCents int64  `json:"upstream_remaining_cents"`
 	UpstreamRemainingAt    int64  `json:"upstream_remaining_at"`
 	BalanceCheckEnabled    bool   `json:"balance_check_enabled"`
 	BalanceCheckPath       string `json:"balance_check_path" gorm:"type:varchar(256)"`
-	// 共享配置喵。
+	// 共享配置：共享额度是递减账户，共享调用扣「余额+可用+共享」，耗尽后自动停止共享喵。
 	ShareEnabled       bool  `json:"share_enabled"`
 	ShareLimitCents    int64 `json:"share_limit_cents"`
 	ShareSpentCents    int64 `json:"share_spent_cents"`
@@ -145,6 +149,7 @@ func DeleteUserUpstreamModelByOwnerWithVersion(upstreamModelID int64, ownerUserI
 }
 
 // UpdateUserUpstreamModelBalanceResult 持久化嗅探到的剩余额度与时间戳喵。
+// 嗅探结果是只读参考提示（上游真实剩余），不参与扣费喵。
 func UpdateUserUpstreamModelBalanceResult(upstreamModelID int64, ownerUserID int, remainingCents int64) error {
 	// 喵~防御：无效参数直接返回记录不存在，避免空值进入更新喵。
 	if upstreamModelID <= 0 || ownerUserID <= 0 {
@@ -157,7 +162,7 @@ func UpdateUserUpstreamModelBalanceResult(upstreamModelID int64, ownerUserID int
 	}).Error
 }
 
-// SyncUserUpstreamModelBalance 把嗅探到的剩余额度同步为可用余额喵。
+// SyncUserUpstreamModelBalance 一键把嗅探到的剩余额度设为「余额」喵。
 // 事务加行锁读取最新剩余额度后覆盖余额，保证与嗅探结果一致喵。
 func SyncUserUpstreamModelBalance(upstreamModelID int64, ownerUserID int) error {
 	// 喵~防御：无效参数直接返回记录不存在喵。
@@ -178,31 +183,50 @@ func SyncUserUpstreamModelBalance(upstreamModelID int64, ownerUserID int) error 
 	})
 }
 
-// SharedUserUpstreamModelView 描述共享模型中可对其他用户展示的公开信息喵。
-type SharedUserUpstreamModelView struct {
-	ID                     int64
-	OwnerUserID            int
-	NormalizedName         string
-	DisplayName            string
-	Description            string
-	RealModelName          string
-	ModelRatio             string
-	CompletionRatio        string
-	ShareLimitCents        int64
-	ShareSpentCents        int64
-	ShowBalanceEnabled     bool
-	BalanceCents           int64
-	SpendLimitCents        int64
-	UpstreamRemainingCents int64
+// SyncUserUpstreamModelAvailable 一键把嗅探到的剩余额度设为「可用额度」喵。
+// 可用额度表示用户能接受用那么多，嗅探到的上游剩余是合理参考值喵。
+func SyncUserUpstreamModelAvailable(upstreamModelID int64, ownerUserID int) error {
+	// 喵~防御：无效参数直接返回记录不存在喵。
+	if upstreamModelID <= 0 || ownerUserID <= 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var upstreamModel UserUpstreamModel
+		// lockForUpdate 在 MySQL/PostgreSQL 加行锁，SQLite 跳过锁语法喵。
+		if err := lockForUpdate(tx).Where("id = ? AND owner_user_id = ?", upstreamModelID, ownerUserID).First(&upstreamModel).Error; err != nil {
+			return err
+		}
+		// 把嗅探结果覆盖可用额度，同步操作显式接受该结果喵。
+		upstreamModel.AvailableCents = upstreamModel.UpstreamRemainingCents
+		upstreamModel.UpdatedTime = time.Now().Unix()
+		// 只更新可用额度字段，避免覆盖控制面并发修改的其他配置喵。
+		return tx.Model(&upstreamModel).Select("available_cents", "updated_time").Updates(upstreamModel).Error
+	})
 }
 
-// GetSharedUserUpstreamModels 返回当前共享中（共享开启且共享额度未耗尽）的全部上游模型喵。
+// SharedUserUpstreamModelView 描述共享模型中可对其他用户展示的公开信息喵。
+type SharedUserUpstreamModelView struct {
+	ID                 int64
+	OwnerUserID        int
+	NormalizedName     string
+	DisplayName        string
+	Description        string
+	RealModelName      string
+	ModelRatio         string
+	CompletionRatio    string
+	ShareLimitCents    int64
+	ShowBalanceEnabled bool
+	BalanceCents       int64
+	AvailableCents     int64
+}
+
+// GetSharedUserUpstreamModels 返回当前共享中（余额>0、可用>0、共享额度>0）的全部上游模型喵。
 func GetSharedUserUpstreamModels() ([]SharedUserUpstreamModelView, error) {
 	var views []SharedUserUpstreamModelView
-	// 共享额度为 0 表示不限；达到额度即自动停止共享（从列表消失）喵。
+	// 三账户都是递减账户，任一耗尽即自动停止共享（从共享列表消失）喵。
 	if err := DB.Model(&UserUpstreamModel{}).
-		Select("id", "owner_user_id", "normalized_name", "display_name", "description", "real_model_name", "model_ratio", "completion_ratio", "share_limit_cents", "share_spent_cents", "show_balance_enabled", "balance_cents", "spend_limit_cents", "upstream_remaining_cents").
-		Where("share_enabled = ? AND (share_limit_cents = 0 OR share_spent_cents < share_limit_cents)", true).
+		Select("id", "owner_user_id", "normalized_name", "display_name", "description", "real_model_name", "model_ratio", "completion_ratio", "share_limit_cents", "show_balance_enabled", "balance_cents", "available_cents").
+		Where("share_enabled = ? AND balance_cents > 0 AND available_cents > 0 AND share_limit_cents > 0", true).
 		Find(&views).Error; err != nil {
 		return nil, err
 	}
@@ -238,23 +262,23 @@ func GetSharedUserUpstreamModelByNormalizedName(normalizedName string) (*UserUps
 }
 
 // GetEnabledSharedUserUpstreamModelByName 返回指定名称的共享启用上游模型，供共享调用授权用喵。
-// 不限定属主：任何用户都可调用共享中的模型；额度耗尽时按记录不存在处理喵。
+// 不限定属主：任何用户都可调用共享中的模型；任一账户耗尽时按记录不存在处理喵。
 func GetEnabledSharedUserUpstreamModelByName(normalizedName string) (*UserUpstreamModel, error) {
 	// 喵~防御：空名称直接返回记录不存在喵。
 	if strings.TrimSpace(normalizedName) == "" {
 		return nil, gorm.ErrRecordNotFound
 	}
 	var upstreamModel UserUpstreamModel
-	// 启用 + 共享开启 + 共享额度未耗尽才算"共享中"喵。
+	// 启用 + 共享开启 + 余额/可用/共享三账户都未耗尽才算"共享中"喵。
 	// Order("id asc") 保证存量重复命名数据（命名池上线前的历史遗留）下有确定选择，不依赖数据库返回顺序喵。
-	if err := DB.Where("normalized_name = ? AND enabled = ? AND share_enabled = ? AND (share_limit_cents = 0 OR share_spent_cents < share_limit_cents)", normalizedName, true, true).Order("id asc").First(&upstreamModel).Error; err != nil {
+	if err := DB.Where("normalized_name = ? AND enabled = ? AND share_enabled = ? AND balance_cents > 0 AND available_cents > 0 AND share_limit_cents > 0", normalizedName, true, true).Order("id asc").First(&upstreamModel).Error; err != nil {
 		return nil, err
 	}
 	return &upstreamModel, nil
 }
 
-// DeductUserUpstreamModelCharge 请求后按实际费用扣减余额与累计消耗，事务加行锁防止并发超扣喵。
-// isShared 为 true 时只累加共享消耗（共享调用免费，不扣所有者余额）喵。
+// DeductUserUpstreamModelCharge 请求后按实际费用扣减三个递减账户，事务加行锁防止并发超扣喵。
+// isShared 为 true 时扣「余额+可用+共享」，为 false 时扣「余额+可用」喵。
 func DeductUserUpstreamModelCharge(upstreamModelID int64, ownerUserID int, costCents int64, isShared bool) error {
 	// 喵~防御：费用必须非负，负数费用是计费缺陷，直接拒绝避免余额被错误增加喵。
 	if costCents < 0 {
@@ -275,21 +299,24 @@ func DeductUserUpstreamModelCharge(upstreamModelID int64, ownerUserID int, costC
 		if costCents == 0 {
 			return nil
 		}
+		// 递减账户减法统一钳制到 0，绝不产生负余额；余额/可用/共享任一归零后由请求前硬检查拦截喵。
+		upstreamModel.BalanceCents = clampUpstreamModelCents(upstreamModel.BalanceCents, costCents)
+		upstreamModel.AvailableCents = clampUpstreamModelCents(upstreamModel.AvailableCents, costCents)
 		if isShared {
-			// 共享调用只累计共享消耗，达到共享额度后由请求前硬检查拦截喵。
-			upstreamModel.ShareSpentCents += costCents
-		} else {
-			// 自用调用扣减余额，余额不足时置 0（下次请求被请求前硬检查拦截），绝不产生负余额喵。
-			if upstreamModel.BalanceCents <= costCents {
-				upstreamModel.BalanceCents = 0
-			} else {
-				upstreamModel.BalanceCents -= costCents
-			}
-			// 自用累计消耗单调递增，供使用上限判断喵。
-			upstreamModel.TotalSpentCents += costCents
+			// 共享调用额外扣减共享额度，反映共享专属余额的消耗喵。
+			upstreamModel.ShareLimitCents = clampUpstreamModelCents(upstreamModel.ShareLimitCents, costCents)
 		}
 		upstreamModel.UpdatedTime = time.Now().Unix()
 		// 只更新金额相关字段，避免覆盖控制面并发修改的其他配置喵。
-		return tx.Model(&upstreamModel).Select("balance_cents", "total_spent_cents", "share_spent_cents", "updated_time").Updates(upstreamModel).Error
+		return tx.Model(&upstreamModel).Select("balance_cents", "available_cents", "share_limit_cents", "updated_time").Updates(upstreamModel).Error
 	})
+}
+
+// clampUpstreamModelCents 递减减法钳制到非负，防止任何计费路径产生负账户喵。
+func clampUpstreamModelCents(current int64, costCents int64) int64 {
+	// 喵~防御：费用非负（调用方已校验），余额不足时置 0 即可喵。
+	if current <= costCents {
+		return 0
+	}
+	return current - costCents
 }
