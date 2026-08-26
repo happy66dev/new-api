@@ -63,7 +63,7 @@ export function FailureRuleEditorRow({
       <div className='grid gap-3 sm:grid-cols-2 lg:grid-cols-3'>
         <label className='grid gap-1 text-sm font-medium'>
           {t('HTTP status')}
-          <Input inputMode='numeric' value={rule.httpStatus} disabled={isSaving} placeholder={t('0 means any status')} onChange={(event) => onChange({ httpStatus: event.target.value })} />
+          <Input value={rule.httpStatus} disabled={isSaving} placeholder={t('0 = any, e.g. 429 or 500~524')} onChange={(event) => onChange({ httpStatus: event.target.value })} />
           {/* 常用状态码预设：点击填入，再次点击清除喵。 */}
           <span className='flex flex-wrap gap-1'>
             {COMMON_HTTP_STATUSES.map((status) => {
@@ -86,18 +86,6 @@ export function FailureRuleEditorRow({
           </span>
         </label>
         <label className='grid gap-1 text-sm font-medium'>
-          {t('Error class')}
-          <select className='border-input bg-background h-9 rounded-md border px-3 text-sm' value={rule.errorClass} disabled={isSaving} onChange={(event) => onChange({ errorClass: event.target.value })}>
-            <option value=''>{t('Any error class')}</option>
-            <option value='rate_limited'>{t('Rate limited (429)')}</option>
-            <option value='timeout'>{t('Timeout')}</option>
-            <option value='upstream_server_error'>{t('Upstream server error (5xx)')}</option>
-            <option value='upstream_client_error'>{t('Upstream client error (4xx)')}</option>
-            <option value='network_error'>{t('Network error')}</option>
-            <option value='upstream_error'>{t('Other upstream error')}</option>
-          </select>
-        </label>
-        <label className='grid gap-1 text-sm font-medium'>
           {t('Action')}
           <select className='border-input bg-background h-9 rounded-md border px-3 text-sm' value={rule.action} disabled={isSaving} onChange={(event) => onChange({ action: event.target.value as FailureRuleDraft['action'] })}>
             <option value='retry'>{t('Retry current candidate')}</option>
@@ -110,7 +98,7 @@ export function FailureRuleEditorRow({
         {rule.action === 'freeze' && (
           <label className='grid gap-1 text-sm font-medium'>
             {t('Freeze seconds')}
-            <Input inputMode='numeric' value={rule.freezeSeconds} disabled={isSaving} placeholder='0' onChange={(event) => onChange({ freezeSeconds: event.target.value })} />
+            <Input inputMode='numeric' value={rule.freezeSeconds} disabled={isSaving} placeholder={t('0 = auto from Retry-After')} onChange={(event) => onChange({ freezeSeconds: event.target.value })} />
           </label>
         )}
 

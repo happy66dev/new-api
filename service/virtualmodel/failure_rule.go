@@ -101,14 +101,21 @@ func DecideVirtualModelFailureAction(executionSnapshot *model.VirtualModelExecut
 }
 
 // candidateFailureRuleMatches 判断单条规则是否同时满足所有已配置条件喵。
+// 规则只按 HTTP 状态码（单值或范围）与响应体正则匹配，不依赖可能让用户困惑的错误分类抽象喵。
 func candidateFailureRuleMatches(rule model.VirtualModelFailureRule, failure CandidateFailure) bool {
-	// HTTP 状态已配置时必须精确匹配喵。
-	if rule.HTTPStatus != 0 && rule.HTTPStatus != failure.HTTPStatus {
-		return false
-	}
-	// 错误分类已配置时必须精确匹配喵。
-	if strings.TrimSpace(rule.ErrorClass) != "" && strings.TrimSpace(rule.ErrorClass) != failure.ErrorClass {
-		return false
+	// HTTP 状态已配置时必须匹配；带范围上界时落在闭区间内喵。
+	if rule.HTTPStatus != 0 {
+		if rule.HTTPStatusMax > 0 {
+			// 范围匹配：失败状态码必须落在 [HTTPStatus, HTTPStatusMax] 闭区间内喵。
+			if failure.HTTPStatus < rule.HTTPStatus || failure.HTTPStatus > rule.HTTPStatusMax {
+				return false
+			}
+		} else {
+			// 单值匹配：失败状态码必须精确等于配置值喵。
+			if failure.HTTPStatus != rule.HTTPStatus {
+				return false
+			}
+		}
 	}
 	bodyPattern := strings.TrimSpace(rule.BodyRegex)
 	if bodyPattern == "" {
@@ -164,7 +171,7 @@ func ValidateCandidateFailureRule(rule *model.VirtualModelFailureRule) error {
 		return errors.New("virtual model failure rule is invalid")
 	}
 	// 规则字段边界由共享校验函数统一把关喵。
-	return validateFailureRuleFields(rule.RuleOrder, rule.HTTPStatus, rule.FreezeSeconds, rule.ErrorClass, rule.BodyRegex, rule.Action)
+	return validateFailureRuleFields(rule.RuleOrder, rule.HTTPStatus, rule.HTTPStatusMax, rule.FreezeSeconds, rule.ErrorClass, rule.BodyRegex, rule.Action)
 }
 
 // ValidateGlobalFailureRule 校验控制面写入的模型级全局兜底失败规则边界喵。
@@ -174,13 +181,17 @@ func ValidateGlobalFailureRule(rule *model.VirtualModelGlobalFailureRule) error 
 		return errors.New("virtual model failure rule is invalid")
 	}
 	// 模型级与候选级规则的字段约束一致，直接复用共享校验喵。
-	return validateFailureRuleFields(rule.RuleOrder, rule.HTTPStatus, rule.FreezeSeconds, rule.ErrorClass, rule.BodyRegex, rule.Action)
+	return validateFailureRuleFields(rule.RuleOrder, rule.HTTPStatus, rule.HTTPStatusMax, rule.FreezeSeconds, rule.ErrorClass, rule.BodyRegex, rule.Action)
 }
 
 // validateFailureRuleFields 校验失败规则字段的通用边界喵。
-func validateFailureRuleFields(ruleOrder int, httpStatus int, freezeSeconds int, errorClass string, bodyRegex string, action model.VirtualModelFailureAction) error {
-	// 喵~防御：非法序号、越界状态码和超长冻结配置必须拒绝持久化喵。
-	if ruleOrder < 0 || httpStatus < 0 || httpStatus > 599 || freezeSeconds < 0 || freezeSeconds > 24*60*60 {
+func validateFailureRuleFields(ruleOrder int, httpStatus int, httpStatusMax int, freezeSeconds int, errorClass string, bodyRegex string, action model.VirtualModelFailureAction) error {
+	// 喵~防御：非法序号、越界状态码、范围上界越界和超长冻结配置必须拒绝持久化喵。
+	if ruleOrder < 0 || httpStatus < 0 || httpStatus > 599 || httpStatusMax < 0 || httpStatusMax > 599 || freezeSeconds < 0 || freezeSeconds > 24*60*60 {
+		return errors.New("virtual model failure rule is invalid")
+	}
+	// 喵~防御：范围上界非零时不得小于下界，否则产生永远无法命中的空范围喵。
+	if httpStatusMax > 0 && httpStatusMax < httpStatus {
 		return errors.New("virtual model failure rule is invalid")
 	}
 	// 喵~防御：只接受四种稳定动作枚举，拒绝未知动作破坏编排状态机喵。

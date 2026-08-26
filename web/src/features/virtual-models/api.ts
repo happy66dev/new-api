@@ -120,6 +120,8 @@ export async function replaceVirtualModelCandidates(
 export type VirtualModelFailureRule = {
   id?: number
   http_status: number
+  // http_status_max 是状态码范围匹配上界，零或省略表示仅匹配 http_status 单值喵。
+  http_status_max?: number
   error_class: string
   body_regex: string
   action: 'retry' | 'next' | 'freeze' | 'passthrough'

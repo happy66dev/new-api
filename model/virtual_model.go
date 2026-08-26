@@ -114,6 +114,8 @@ type VirtualModelFailureRule struct {
 	CandidateID   int                       `json:"candidate_id" gorm:"index;not null;uniqueIndex:idx_virtual_model_failure_rule_order,priority:1"`
 	RuleOrder     int                       `json:"rule_order" gorm:"not null;uniqueIndex:idx_virtual_model_failure_rule_order,priority:2"`
 	HTTPStatus    int                       `json:"http_status"`
+	// HTTPStatusMax 是状态码范围匹配的上界，零表示仅匹配 HTTPStatus 单值喵。
+	HTTPStatusMax int                       `json:"http_status_max"`
 	ErrorClass    string                    `json:"error_class" gorm:"type:varchar(64)"`
 	BodyRegex     string                    `json:"body_regex" gorm:"type:text"`
 	Action        VirtualModelFailureAction `json:"action" gorm:"type:varchar(16);not null"`
@@ -128,6 +130,8 @@ type VirtualModelGlobalFailureRule struct {
 	VirtualModelID int                       `json:"virtual_model_id" gorm:"index;not null;uniqueIndex:idx_virtual_model_global_failure_rule_order,priority:1"`
 	RuleOrder      int                       `json:"rule_order" gorm:"not null;uniqueIndex:idx_virtual_model_global_failure_rule_order,priority:2"`
 	HTTPStatus     int                       `json:"http_status"`
+	// HTTPStatusMax 是状态码范围匹配的上界，零表示仅匹配 HTTPStatus 单值喵。
+	HTTPStatusMax  int                       `json:"http_status_max"`
 	ErrorClass     string                    `json:"error_class" gorm:"type:varchar(64)"`
 	BodyRegex      string                    `json:"body_regex" gorm:"type:text"`
 	Action         VirtualModelFailureAction `json:"action" gorm:"type:varchar(16);not null"`
@@ -449,7 +453,7 @@ func GetVirtualModelGlobalFailureRulesWithDB(database *gorm.DB, virtualModelID i
 	// 将模型级规则字段复制到候选规则结构，字段语义与候选规则完全一致喵。
 	globalFailureRules := make([]VirtualModelFailureRule, 0, len(storedGlobalRules))
 	for _, storedRule := range storedGlobalRules {
-		globalFailureRules = append(globalFailureRules, VirtualModelFailureRule{ID: storedRule.ID, RuleOrder: storedRule.RuleOrder, HTTPStatus: storedRule.HTTPStatus, ErrorClass: storedRule.ErrorClass, BodyRegex: storedRule.BodyRegex, Action: storedRule.Action, FreezeSeconds: storedRule.FreezeSeconds})
+		globalFailureRules = append(globalFailureRules, VirtualModelFailureRule{ID: storedRule.ID, RuleOrder: storedRule.RuleOrder, HTTPStatus: storedRule.HTTPStatus, HTTPStatusMax: storedRule.HTTPStatusMax, ErrorClass: storedRule.ErrorClass, BodyRegex: storedRule.BodyRegex, Action: storedRule.Action, FreezeSeconds: storedRule.FreezeSeconds})
 	}
 	return globalFailureRules, nil
 }

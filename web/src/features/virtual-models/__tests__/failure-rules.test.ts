@@ -15,6 +15,7 @@ import {
   MAXIMUM_HTTP_STATUS,
   createFailureRuleDraft,
   escapeRegex,
+  parseHttpStatusText,
   resolveBodyRegex,
   toFailureRuleDraft,
   validateFailureRuleDraft,
@@ -73,6 +74,12 @@ describe('toFailureRuleDraft', () => {
     expect(draft.bodyRegexPreset).toBe('rate_limited')
   })
 
+  it('renders a status range as min~max text', () => {
+    // 存储中的范围上界非零时应还原为 "min~max" 文本喵。
+    const draft = toFailureRuleDraft({ http_status: 500, http_status_max: 524, error_class: '', body_regex: '', action: 'next', freeze_seconds: 0 })
+    expect(draft.httpStatus).toBe('500~524')
+  })
+
   it('provides safe defaults for missing optional fields', () => {
     // 缺失的可选字段必须以零/空/next 兜底，避免编辑表单出现 undefined 喵。
     const draft = toFailureRuleDraft({ http_status: 0, error_class: '', body_regex: '', action: 'next', freeze_seconds: 0 })
@@ -122,6 +129,33 @@ describe('escapeRegex', () => {
   })
 })
 
+// describe parseHttpStatusText：状态码文本到下界/上界的解析喵。
+describe('parseHttpStatusText', () => {
+  it('parses empty and zero as any status', () => {
+    // 空串与零都表示不限制状态码喵。
+    expect(parseHttpStatusText('')).toEqual({ min: 0, max: 0 })
+    expect(parseHttpStatusText('0')).toEqual({ min: 0, max: 0 })
+  })
+
+  it('parses a single status code', () => {
+    // 单值状态码没有范围上界喵。
+    expect(parseHttpStatusText('429')).toEqual({ min: 429, max: 0 })
+  })
+
+  it('parses a range with tilde or hyphen separator', () => {
+    // 范围分隔符支持波浪号与连字符喵。
+    expect(parseHttpStatusText('500~524')).toEqual({ min: 500, max: 524 })
+    expect(parseHttpStatusText('500-524')).toEqual({ min: 500, max: 524 })
+  })
+
+  it('returns null for malformed status text', () => {
+    // 喵~防御：非整数、不完整范围与多段范围都无法安全解析喵。
+    expect(parseHttpStatusText('abc')).toBeNull()
+    expect(parseHttpStatusText('500~')).toBeNull()
+    expect(parseHttpStatusText('500~524~600')).toBeNull()
+  })
+})
+
 // describe resolveBodyRegex：按编辑模式生成最终响应体正则喵。
 describe('resolveBodyRegex', () => {
   it('uses preset pattern when preset mode is selected', () => {
@@ -166,6 +200,7 @@ describe('validateFailureRuleDraft', () => {
     expect(payload).toEqual({
       id: 3,
       http_status: 503,
+      http_status_max: 0,
       error_class: 'upstream_server_error',
       body_regex: 'overloaded',
       action: 'retry',
@@ -204,6 +239,34 @@ describe('validateFailureRuleDraft', () => {
     )
     expect(payload.http_status).toBe(MAXIMUM_HTTP_STATUS)
     expect(payload.freeze_seconds).toBe(MAXIMUM_FREEZE_SECONDS)
+  })
+
+  it('writes a status range into min and max fields', () => {
+    // 状态码范围文本应拆分为下界与上界字段写给后端喵。
+    const payload = validateFailureRuleDraft(
+      makeDraft({ httpStatus: '500~524', action: 'passthrough' }),
+      0,
+      identityTranslator
+    )
+    expect(payload.http_status).toBe(500)
+    expect(payload.http_status_max).toBe(524)
+  })
+
+  it('rejects a range above 599 or below zero', () => {
+    // 喵~防御：范围端点超出合法状态码区间必须拒绝喵。
+    expect(() => validateFailureRuleDraft(makeDraft({ httpStatus: '600~700' }), 0, identityTranslator)).toThrow()
+    expect(() => validateFailureRuleDraft(makeDraft({ httpStatus: '-1~5' }), 0, identityTranslator)).toThrow()
+  })
+
+  it('rejects an inverted range where max is below min', () => {
+    // 喵~防御：上界小于下界会产生永远无法命中的空范围，必须拒绝喵。
+    expect(() => validateFailureRuleDraft(makeDraft({ httpStatus: '524~500' }), 0, identityTranslator)).toThrow()
+  })
+
+  it('rejects malformed status text', () => {
+    // 喵~防御：无法解析的状态码文本必须拒绝喵。
+    expect(() => validateFailureRuleDraft(makeDraft({ httpStatus: 'abc' }), 0, identityTranslator)).toThrow()
+    expect(() => validateFailureRuleDraft(makeDraft({ httpStatus: '500~' }), 0, identityTranslator)).toThrow()
   })
 
   it('rejects negative http status', () => {

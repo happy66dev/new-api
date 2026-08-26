@@ -36,11 +36,47 @@ func TestDecideCandidateFailureAction(t *testing.T) {
 			expectedFreeze: 0,
 		},
 		{
-			name: "error class and regex must match",
+			name: "response body regex must match",
 			rules: []model.VirtualModelFailureRule{
-				{ErrorClass: "upstream_server_error", BodyRegex: "capacity", Action: model.VirtualModelActionRetry},
+				{BodyRegex: "capacity", Action: model.VirtualModelActionRetry},
 			},
 			failure:        CandidateFailure{HTTPStatus: http.StatusServiceUnavailable, ErrorClass: "upstream_server_error", BodyPreview: "temporary capacity exhaustion"},
+			expectedAction: model.VirtualModelActionRetry,
+			expectedFreeze: 0,
+		},
+		{
+			name: "status code range matches inside interval",
+			rules: []model.VirtualModelFailureRule{
+				{HTTPStatus: http.StatusInternalServerError, HTTPStatusMax: 524, Action: model.VirtualModelActionPassthrough},
+			},
+			failure:        CandidateFailure{HTTPStatus: http.StatusBadGateway},
+			expectedAction: model.VirtualModelActionPassthrough,
+			expectedFreeze: 0,
+		},
+		{
+			name: "status code range rejects outside interval",
+			rules: []model.VirtualModelFailureRule{
+				{HTTPStatus: http.StatusInternalServerError, HTTPStatusMax: 524, Action: model.VirtualModelActionPassthrough},
+			},
+			failure:        CandidateFailure{HTTPStatus: 525},
+			expectedAction: model.VirtualModelActionNext,
+			expectedFreeze: 0,
+		},
+		{
+			name: "exact status code still matches when max is unset",
+			rules: []model.VirtualModelFailureRule{
+				{HTTPStatus: http.StatusTooManyRequests, Action: model.VirtualModelActionFreeze},
+			},
+			failure:        CandidateFailure{HTTPStatus: http.StatusTooManyRequests},
+			expectedAction: model.VirtualModelActionFreeze,
+			expectedFreeze: 0,
+		},
+		{
+			name: "matching ignores error class entirely",
+			rules: []model.VirtualModelFailureRule{
+				{HTTPStatus: http.StatusServiceUnavailable, Action: model.VirtualModelActionRetry},
+			},
+			failure:        CandidateFailure{HTTPStatus: http.StatusServiceUnavailable, ErrorClass: "unrelated_class"},
 			expectedAction: model.VirtualModelActionRetry,
 			expectedFreeze: 0,
 		},

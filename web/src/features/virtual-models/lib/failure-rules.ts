@@ -58,6 +58,7 @@ export const BODY_REGEX_PRESETS: Record<string, { labelKey: string; pattern: str
 
 // toFailureRuleDraft 将读取响应映射为可编辑草稿，并为缺失字段提供明确默认值喵。
 // 已存在的响应体正则若匹配预设则进入 preset 模式，否则作为自定义正则展示喵。
+// 状态码范围以 "min~max" 文本呈现，单值直接显示，零表示任意喵。
 export function toFailureRuleDraft(rule: VirtualModelFailureRule): FailureRuleDraft {
   const bodyRegex = rule.body_regex ?? ''
   // 默认不匹配响应体，待根据已有正则内容推断编辑模式喵。
@@ -74,6 +75,10 @@ export function toFailureRuleDraft(rule: VirtualModelFailureRule): FailureRuleDr
       bodyRegexMode = 'custom'
     }
   }
+  // 存储中的范围上界非零时以 "min~max" 文本呈现，否则显示单值喵。
+  const httpStatusValue = rule.http_status ?? 0
+  const httpStatusMaxValue = rule.http_status_max ?? 0
+  const httpStatusText = httpStatusMaxValue > 0 ? `${httpStatusValue}~${httpStatusMaxValue}` : String(httpStatusValue)
   return {
     bodyRegex,
     bodyRegexMode,
@@ -81,7 +86,7 @@ export function toFailureRuleDraft(rule: VirtualModelFailureRule): FailureRuleDr
     bodyRegexSimple: '',
     errorClass: rule.error_class ?? '',
     freezeSeconds: String(rule.freeze_seconds ?? 0),
-    httpStatus: String(rule.http_status ?? 0),
+    httpStatus: httpStatusText,
     id: rule.id,
     action: rule.action ?? 'next',
   }
@@ -99,6 +104,26 @@ export function createFailureRuleDraft(): FailureRuleDraft {
     httpStatus: '0',
     action: 'next',
   }
+}
+
+// parseHttpStatusText 把状态码文本解析为匹配下界与可选上界喵。
+// 支持 "0"（任意）、"429"（单值）与 "500~524" 或 "500-524"（范围）喵。
+export function parseHttpStatusText(text: string): { min: number; max: number } | null {
+  const trimmed = text.trim()
+  // 空串与零都表示不限制状态码喵。
+  if (trimmed === '' || trimmed === '0') return { min: 0, max: 0 }
+  // 范围匹配：两端均为非负整数，分隔符支持波浪号与连字符喵。
+  const rangeMatch = /^(\d+)\s*[~-]\s*(\d+)$/.exec(trimmed)
+  if (rangeMatch) {
+    return { min: Number(rangeMatch[1]), max: Number(rangeMatch[2]) }
+  }
+  // 单值匹配：必须为非负整数，负号、小数与空段都视为畸形输入喵。
+  const singleMatch = /^\d+$/.exec(trimmed)
+  if (singleMatch) {
+    return { min: Number(singleMatch[0]), max: 0 }
+  }
+  // 喵~防御：无法识别的文本返回空，交由校验层拒绝喵。
+  return null
 }
 
 // escapeRegex 将普通文本中的正则元字符转义，使输入文本按字面包含语义匹配喵。
@@ -131,14 +156,21 @@ export function validateFailureRuleDraft(
   index: number,
   t: (key: string, options?: Record<string, unknown>) => string
 ): VirtualModelFailureRule {
-  // 将状态码文本转换为数值，零表示不限制状态码喵。
-  const httpStatus = Number(rule.httpStatus)
+  // 将状态码文本解析为下界与可选上界，零表示不限制状态码喵。
+  const parsedStatus = parseHttpStatusText(rule.httpStatus)
+  // 喵~防御：状态码必须可解析且落在 0 到 599 之间，范围上界非零时不得小于下界喵。
+  if (
+    !parsedStatus ||
+    parsedStatus.min < 0 ||
+    parsedStatus.min > MAXIMUM_HTTP_STATUS ||
+    parsedStatus.max < 0 ||
+    parsedStatus.max > MAXIMUM_HTTP_STATUS ||
+    (parsedStatus.max > 0 && parsedStatus.max < parsedStatus.min)
+  ) {
+    throw new Error(t('Failure rule {{index}} HTTP status must be 0, a single code, or a range like 500~524', { index: index + 1 }))
+  }
   // 将冻结秒数文本转换为数值，零表示不追加固定冻结时间喵。
   const freezeSeconds = Number(rule.freezeSeconds)
-  // 喵~防御：状态码必须是 0 到 599 的整数，避免后端请求因输入中间态而失败喵。
-  if (!Number.isInteger(httpStatus) || httpStatus < 0 || httpStatus > MAXIMUM_HTTP_STATUS) {
-    throw new Error(t('Failure rule {{index}} HTTP status must be between 0 and 599', { index: index + 1 }))
-  }
   // 喵~防御：冻结时长必须处于零到一天，防止意外长期冻结候选喵。
   if (!Number.isInteger(freezeSeconds) || freezeSeconds < 0 || freezeSeconds > MAXIMUM_FREEZE_SECONDS) {
     throw new Error(t('Failure rule {{index}} freeze duration must be between 0 and 86400 seconds', { index: index + 1 }))
@@ -148,7 +180,8 @@ export function validateFailureRuleDraft(
   // 返回后端期待的下划线字段，空条件表示该维度不限制匹配喵。
   return {
     id: rule.id,
-    http_status: httpStatus,
+    http_status: parsedStatus.min,
+    http_status_max: parsedStatus.max,
     error_class: rule.errorClass.trim(),
     body_regex: bodyRegex,
     action: rule.action,
