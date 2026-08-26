@@ -17,7 +17,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 
 import type { VirtualModel, VirtualModelFailureRule } from '../api'
-import { replaceVirtualModelGlobalFailureRules } from '../api'
+import { replaceVirtualModelCandidateFailureRules } from '../api'
 import {
   MAXIMUM_FAILURE_RULES,
   createFailureRuleDraft,
@@ -26,13 +26,19 @@ import {
   type FailureRuleDraft,
 } from '../lib/failure-rules'
 
-// VirtualModelGlobalFailureRulesEditor 管理模型级全局兜底失败规则喵。
-// 候选未配置自己的失效规则时，运行时按此组规则从上到下首条命中做失败决策喵。
-export function VirtualModelGlobalFailureRulesEditor({
+// VirtualModelCandidateFailureRulesEditor 管理单个候选按从上到下首条命中的失败规则喵。
+// 候选配置了自己的规则后，运行时优先使用这组规则；未命中或未配置时回退模型级全局兜底规则喵。
+export function VirtualModelCandidateFailureRulesEditor({
   model,
+  candidateID,
+  candidateLabel,
+  rules,
   onSaved,
 }: {
   model: VirtualModel
+  candidateID: number
+  candidateLabel: string
+  rules: VirtualModelFailureRule[]
   onSaved: () => void
 }) {
   // 读取双语翻译函数，保持控制台文案与现有页面一致喵。
@@ -42,10 +48,10 @@ export function VirtualModelGlobalFailureRulesEditor({
   // 保存中状态阻止并发编辑和重复提交喵。
   const [isSaving, setIsSaving] = useState(false)
 
-  // 当服务端模型版本或全局规则变化时，以最新响应重建规则草稿喵。
+  // 当候选、模型版本或规则变化时，以最新响应重建规则草稿喵。
   useEffect(() => {
-    setDraftRules((model.global_failure_rules ?? []).map(toFailureRuleDraft))
-  }, [model.id, model.version, model.global_failure_rules])
+    setDraftRules(rules.map(toFailureRuleDraft))
+  }, [candidateID, model.version, rules])
 
   // updateRule 精确更新指定规则的局部字段，其他规则保持原有顺序与内容喵。
   const updateRule = (index: number, patch: Partial<FailureRuleDraft>) => {
@@ -79,22 +85,22 @@ export function VirtualModelGlobalFailureRulesEditor({
   const addRule = () => {
     // 喵~防御：前端同步后端的 32 条上限，避免用户编辑后才收到请求失败喵。
     if (draftRules.length >= MAXIMUM_FAILURE_RULES) {
-      toast.error(t('A virtual model can contain at most 32 failure rules'))
+      toast.error(t('A candidate can contain at most 32 failure rules'))
       return
     }
     // 追加默认草稿，供用户选择匹配条件和动作喵。
     setDraftRules((currentRules) => [...currentRules, createFailureRuleDraft()])
   }
 
-  // saveRules 将整个有序全局规则集与当前模型 version 一并原子替换喵。
+  // saveRules 将整个有序规则集与当前模型 version 一并原子替换喵。
   const saveRules = async () => {
     try {
       // 设置保存态，防止请求进行期间再次提交或重排喵。
       setIsSaving(true)
       // 在发请求前逐条校验，将草稿转换成 API 载荷喵。
       const validatedRules = draftRules.map((rule, index) => validateFailureRuleDraft(rule, index, t))
-      // 通过模型级接口提交模型版本与完整全局规则链喵。
-      const response = await replaceVirtualModelGlobalFailureRules(model.id, {
+      // 通过候选范围接口提交模型版本与完整规则链喵。
+      const response = await replaceVirtualModelCandidateFailureRules(model.id, candidateID, {
         version: model.version,
         rules: validatedRules,
       })
@@ -102,7 +108,7 @@ export function VirtualModelGlobalFailureRulesEditor({
       if (!response.success) {
         throw new Error(response.message || t('Unable to save failure rules'))
       }
-      // 告知用户规则已落盘，再由父页面刷新最新模型版本与全局规则喵。
+      // 告知用户规则已落盘，再由父页面刷新最新模型版本与候选数据喵。
       toast.success(t('Failure rules saved'))
       onSaved()
     } catch (error) {
@@ -116,10 +122,12 @@ export function VirtualModelGlobalFailureRulesEditor({
 
   return (
     <div className='space-y-4'>
+      <p className='text-muted-foreground text-xs'>{t('Editing rules for candidate: {{candidate}}', { candidate: candidateLabel })}</p>
+
       <div className='flex flex-wrap items-center justify-between gap-3'>
         <div>
-          <h3 className='font-medium'>{t('Global fallback failure rules')}</h3>
-          <p className='text-muted-foreground text-sm'>{t('Used when a candidate has no failure rules of its own. Rules are evaluated from top to bottom.')}</p>
+          <h3 className='font-medium'>{t('Failure Rules')}</h3>
+          <p className='text-muted-foreground text-sm'>{t('Rules are evaluated from top to bottom. The first matching rule decides the candidate action.')}</p>
         </div>
         <Button type='button' size='sm' variant='outline' onClick={addRule} disabled={isSaving}>
           <HugeiconsIcon icon={Add01Icon} strokeWidth={2} aria-hidden='true' />
@@ -174,7 +182,7 @@ export function VirtualModelGlobalFailureRulesEditor({
         </div>
       ))}
 
-      {draftRules.length === 0 && <p className='text-muted-foreground text-sm'>{t('No global fallback rules configured. Candidates without rules use the next candidate on failure.')}</p>}
+      {draftRules.length === 0 && <p className='text-muted-foreground text-sm'>{t('No failure rules configured. This candidate falls back to the global fallback rules.')}</p>}
       <div className='flex justify-end'>
         <Button type='button' onClick={() => void saveRules()} disabled={isSaving}>
           {isSaving ? t('Saving') : t('Save failure rules')}

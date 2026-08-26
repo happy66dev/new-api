@@ -7,7 +7,7 @@
  (at your option) any later version.
 */
 import { useQueryClient } from '@tanstack/react-query'
-import { KeyRound, ListTree, Settings2, ShieldCheck } from 'lucide-react'
+import { Settings2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -35,12 +35,9 @@ import { Switch } from '@/components/ui/switch'
 
 import { createVirtualModel, updateVirtualModel } from '../api'
 import type { VirtualModel, VirtualModelInput } from '../api'
-import { VirtualModelBindingsEditor } from './virtual-model-bindings-editor'
-import { VirtualModelCandidatesEditor } from './virtual-model-candidates-editor'
-import { VirtualModelGlobalFailureRulesEditor } from './virtual-model-global-failure-rules-editor'
 
-// VirtualModelDrawer 提供创建/编辑虚拟模型的一体化抽屉喵。
-// 抽屉按 API Key 抽屉风格分段：基本信息、调用链、全局兜底失效规则与 API Key 授权喵。
+// VirtualModelDrawer 提供创建/编辑虚拟模型基本信息的一体化抽屉喵。
+// 抽屉只承载模型编辑这一个功能；候选链、失效规则与授权仍在页面选项卡中配置喵。
 export function VirtualModelDrawer({
   open,
   onOpenChange,
@@ -52,9 +49,6 @@ export function VirtualModelDrawer({
 }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
-  // currentModel 跟随抽屉内最新保存结果；创建模式先为空，基本信息保存成功后填入新建模型喵。
-  const [currentModel, setCurrentModel] = useState<VirtualModel | null>(model ?? null)
-
   // 基本信息表单的受控状态，字符串字段避免输入中间态被过早截断喵。
   const [normalizedName, setNormalizedName] = useState('')
   const [displayName, setDisplayName] = useState('')
@@ -64,32 +58,22 @@ export function VirtualModelDrawer({
   const [maxLoopRounds, setMaxLoopRounds] = useState('1')
   const [isSavingBasics, setIsSavingBasics] = useState(false)
 
-  // 父组件列表刷新后同步最新模型数据，保证候选/规则编辑基于最新版本喵。
-  useEffect(() => {
-    setCurrentModel(model ?? null)
-  }, [model, open])
-
-  // 当前模型或打开状态变化时重置基本信息表单，避免把上一个模型的字段带入喵。
+  // 打开状态或编辑对象变化时重置本地草稿，避免把上一次模型字段带入新模型喵。
   useEffect(() => {
     if (!open) return
-    setNormalizedName(currentModel?.normalized_name ?? '')
-    setDisplayName(currentModel?.display_name ?? '')
-    setEnabled(currentModel?.enabled ?? true)
-    setLoopEnabled(currentModel?.loop_enabled ?? false)
-    setTotalTimeoutSeconds(String(currentModel?.total_timeout_seconds ?? 120))
-    setMaxLoopRounds(String(currentModel?.max_loop_rounds ?? 1))
-  }, [currentModel, open])
+    setNormalizedName(model?.normalized_name ?? '')
+    setDisplayName(model?.display_name ?? '')
+    setEnabled(model?.enabled ?? true)
+    setLoopEnabled(model?.loop_enabled ?? false)
+    setTotalTimeoutSeconds(String(model?.total_timeout_seconds ?? 120))
+    setMaxLoopRounds(String(model?.max_loop_rounds ?? 1))
+  }, [model, open])
 
-  // refreshVirtualModels 使列表查询失效，父页面会自动重新拉取最新模型数据喵。
-  const refreshVirtualModels = () => {
-    void queryClient.invalidateQueries({ queryKey: ['virtual-models'] })
-  }
-
-  // saveBasics 保存或创建模型基本信息，创建成功后自动进入编辑模式继续配置候选喵。
+  // saveBasics 保存或创建模型基本信息，成功后刷新列表让选项卡展示最新配置喵。
   const saveBasics = async () => {
     // 喵~防御：创建时必须提供合法资源名，编辑模式沿用既有名称喵。
     const trimmedNormalizedName = normalizedName.trim()
-    if (!currentModel && !/^[A-Za-z0-9_-]{1,96}$/.test(trimmedNormalizedName)) {
+    if (!model && !/^[A-Za-z0-9_-]{1,96}$/.test(trimmedNormalizedName)) {
       toast.error(t('Virtual model name can only contain letters, numbers, hyphens, and underscores'))
       return
     }
@@ -118,21 +102,21 @@ export function VirtualModelDrawer({
       loop_enabled: loopEnabled,
       total_timeout_seconds: totalTimeout,
       max_loop_rounds: maxRounds,
-      ...(currentModel ? { version: currentModel.version } : {}),
+      ...(model ? { version: model.version } : {}),
     }
     try {
       setIsSavingBasics(true)
-      const response = currentModel
-        ? await updateVirtualModel(currentModel.id, input)
+      const response = model
+        ? await updateVirtualModel(model.id, input)
         : await createVirtualModel(input)
       // 喵~防御：业务失败必须抛出后端消息，不能把过期版本伪装成保存成功喵。
       if (!response.success) {
         throw new Error(response.message || t('Unable to save virtual model'))
       }
-      // 保存成功后记录最新模型并刷新列表，让后续候选/规则编辑基于新版本喵。
-      setCurrentModel(response.data ?? null)
       toast.success(t('Virtual model saved'))
-      refreshVirtualModels()
+      // 刷新列表让选项卡拿到最新模型版本与配置喵。
+      void queryClient.invalidateQueries({ queryKey: ['virtual-models'] })
+      onOpenChange(false)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('Unable to save virtual model'))
     } finally {
@@ -141,21 +125,12 @@ export function VirtualModelDrawer({
   }
 
   return (
-    <Sheet
-      open={open}
-      onOpenChange={(nextOpen) => {
-        onOpenChange(nextOpen)
-        // 关闭抽屉时清空内部模型，避免下次打开残留旧模型引用喵。
-        if (!nextOpen) {
-          setCurrentModel(model ?? null)
-        }
-      }}
-    >
-      <SheetContent className={sideDrawerContentClassName('max-w-none sm:!max-w-[720px]')}>
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent className={sideDrawerContentClassName('max-w-none sm:!max-w-[560px]')}>
         <SheetHeader className={sideDrawerHeaderClassName()}>
-          <SheetTitle>{currentModel ? t('Edit virtual model') : t('Create virtual model')}</SheetTitle>
+          <SheetTitle>{model ? t('Edit virtual model') : t('Create virtual model')}</SheetTitle>
           <SheetDescription>
-            {currentModel ? t('Update the virtual model by providing necessary info.') : t('Add a new virtual model by providing necessary info.')}
+            {model ? t('Update the virtual model by providing necessary info.') : t('Add a new virtual model by providing necessary info.')}
           </SheetDescription>
         </SheetHeader>
 
@@ -173,7 +148,7 @@ export function VirtualModelDrawer({
                 value={normalizedName}
                 onChange={(event) => setNormalizedName(event.target.value)}
                 placeholder='research-route'
-                disabled={Boolean(currentModel) || isSavingBasics}
+                disabled={Boolean(model) || isSavingBasics}
               />
             </label>
             <label className='grid gap-1 text-sm font-medium'>
@@ -198,53 +173,16 @@ export function VirtualModelDrawer({
               <span>{t('Enable candidate loop')}</span>
               <Switch checked={loopEnabled} onCheckedChange={setLoopEnabled} disabled={isSavingBasics} />
             </label>
-            <div className='flex justify-end'>
-              <Button type='button' onClick={() => void saveBasics()} disabled={isSavingBasics}>
-                {isSavingBasics ? t('Saving') : currentModel ? t('Save changes') : t('Create virtual model')}
-              </Button>
-            </div>
           </SideDrawerSection>
-
-          {/* 模型创建成功后才会出现调用链、全局规则与授权分区喵。 */}
-          {currentModel && (
-            <>
-              <SideDrawerSection>
-                <SideDrawerSectionHeader
-                  title={t('Call chain')}
-                  description={t('Ordered candidates used when a request fails.')}
-                  icon={<ListTree className='size-4' />}
-                  iconTone='info'
-                />
-                <VirtualModelCandidatesEditor model={currentModel} onSaved={refreshVirtualModels} />
-              </SideDrawerSection>
-
-              <SideDrawerSection>
-                <SideDrawerSectionHeader
-                  title={t('Global fallback failure rules')}
-                  description={t('Used when a candidate has no failure rules of its own.')}
-                  icon={<ShieldCheck className='size-4' />}
-                  iconTone='success'
-                />
-                <VirtualModelGlobalFailureRulesEditor model={currentModel} onSaved={refreshVirtualModels} />
-              </SideDrawerSection>
-
-              <SideDrawerSection>
-                <SideDrawerSectionHeader
-                  title={t('API Key Authorization')}
-                  description={t('Only explicitly authorized API Keys can call this virtual model.')}
-                  icon={<KeyRound className='size-4' />}
-                  iconTone='info'
-                />
-                <VirtualModelBindingsEditor model={currentModel} onSaved={refreshVirtualModels} />
-              </SideDrawerSection>
-            </>
-          )}
         </div>
 
         <SheetFooter className={sideDrawerFooterClassName()}>
           <SheetClose render={<Button variant='outline' className='w-full sm:w-auto' />}>
             {t('Close')}
           </SheetClose>
+          <Button type='button' onClick={() => void saveBasics()} disabled={isSavingBasics} className='w-full sm:w-auto'>
+            {isSavingBasics ? t('Saving') : model ? t('Save changes') : t('Create virtual model')}
+          </Button>
         </SheetFooter>
       </SheetContent>
     </Sheet>

@@ -13,9 +13,13 @@ import { useTranslation } from 'react-i18next'
 import { SectionPageLayout } from '@/components/layout'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { getVirtualModelStatus, getVirtualModels } from '@/features/virtual-models/api'
+import { VirtualModelBindingsEditor } from '@/features/virtual-models/components/virtual-model-bindings-editor'
+import { VirtualModelCandidatesEditor } from '@/features/virtual-models/components/virtual-model-candidates-editor'
 import { VirtualModelDeleteDialog } from '@/features/virtual-models/components/virtual-model-dialogs'
 import { VirtualModelDrawer } from '@/features/virtual-models/components/virtual-model-drawer'
+import { VirtualModelGlobalFailureRulesEditor } from '@/features/virtual-models/components/virtual-model-global-failure-rules-editor'
 
 export function VirtualModels() {
   const { t } = useTranslation()
@@ -66,6 +70,12 @@ export function VirtualModels() {
     )
   }
 
+  // refreshSelectedModel 触发列表刷新，供各选项卡保存后同步最新模型版本喵。
+  const refreshSelectedModel = () => {
+    void virtualModelsQuery.refetch()
+    void virtualModelStatusQuery.refetch()
+  }
+
   return (
     <SectionPageLayout fixedContent>
       <SectionPageLayout.Title>{t('Virtual Models')}</SectionPageLayout.Title>
@@ -97,32 +107,53 @@ export function VirtualModels() {
           </div>
           <div className='min-h-0 flex-1 overflow-auto'>
             {selectedModel ? (
-              <div className='space-y-4'>
-                <div className='flex flex-wrap items-center justify-between gap-3 rounded-md border p-4'>
-                  <div>
-                    <h2 className='text-lg font-semibold'>{selectedModel.display_name}</h2>
-                    <p className='text-sm text-muted-foreground'>{`virtual/${selectedModel.normalized_name}`}</p>
+              <Tabs defaultValue='overview'>
+                <TabsList className='max-w-full flex-wrap justify-start'>
+                  <TabsTrigger value='overview'>{t('Overview')}</TabsTrigger>
+                  <TabsTrigger value='candidates'>{t('Candidate Chain')}</TabsTrigger>
+                  <TabsTrigger value='failure-rules'>{t('Failure Rules')}</TabsTrigger>
+                  <TabsTrigger value='bindings'>{t('API Key Authorization')}</TabsTrigger>
+                  <TabsTrigger value='status'>{t('Runtime Status')}</TabsTrigger>
+                </TabsList>
+                <TabsContent className='mt-4' value='overview'>
+                  <div className='space-y-2 rounded-md border p-4'>
+                    <div className='flex flex-wrap items-center justify-between gap-3'>
+                      <div>
+                        <h2 className='text-lg font-semibold'>{selectedModel.display_name}</h2>
+                        <p className='text-sm text-muted-foreground'>{`virtual/${selectedModel.normalized_name}`}</p>
+                      </div>
+                      <div className='flex gap-2'>
+                        <Button size='sm' variant='outline' onClick={openEditDrawer}>{t('Edit')}</Button>
+                        <Button size='sm' variant='destructive' onClick={() => setIsDeleteDialogOpen(true)}>{t('Delete')}</Button>
+                      </div>
+                    </div>
+                    <p className='text-sm'>{t('Candidate count')}: {selectedModel.candidates?.length ?? 0}</p>
                   </div>
-                  <div className='flex gap-2'>
-                    <Button size='sm' variant='outline' onClick={openEditDrawer}>{t('Edit')}</Button>
-                    <Button size='sm' variant='destructive' onClick={() => setIsDeleteDialogOpen(true)}>{t('Delete')}</Button>
+                </TabsContent>
+                <TabsContent className='mt-4' value='candidates'>
+                  <VirtualModelCandidatesEditor model={selectedModel} onSaved={refreshSelectedModel} />
+                </TabsContent>
+                <TabsContent className='mt-4' value='failure-rules'>
+                  <VirtualModelGlobalFailureRulesEditor model={selectedModel} onSaved={refreshSelectedModel} />
+                </TabsContent>
+                <TabsContent className='mt-4' value='bindings'>
+                  <VirtualModelBindingsEditor model={selectedModel} onSaved={refreshSelectedModel} />
+                </TabsContent>
+                <TabsContent className='mt-4' value='status'>
+                  <div className='space-y-3 rounded-md border p-4 text-sm'>
+                    {virtualModelStatusQuery.isLoading && <p className='text-muted-foreground'>{t('Loading')}</p>}
+                    {virtualModelStatusQuery.isError && <p className='text-destructive'>{t('Unable to load virtual model status')}</p>}
+                    {virtualModelStatus && (
+                      <>
+                        <p>{t('Enabled')}: {virtualModelStatus.enabled ? t('Yes') : t('No')}</p>
+                        <p>{t('Candidate count')}: {virtualModelStatus.candidate_count}</p>
+                        <p>{t('Enabled candidates')}: {virtualModelStatus.enabled_candidates}</p>
+                      </>
+                    )}
+                    <Button size='sm' variant='outline' onClick={() => void virtualModelStatusQuery.refetch()}>{t('Refresh')}</Button>
                   </div>
-                </div>
-
-                <div className='space-y-3 rounded-md border p-4 text-sm'>
-                  <p className='font-medium'>{t('Runtime Status')}</p>
-                  {virtualModelStatusQuery.isLoading && <p className='text-muted-foreground'>{t('Loading')}</p>}
-                  {virtualModelStatusQuery.isError && <p className='text-destructive'>{t('Unable to load virtual model status')}</p>}
-                  {virtualModelStatus && (
-                    <>
-                      <p>{t('Enabled')}: {virtualModelStatus.enabled ? t('Yes') : t('No')}</p>
-                      <p>{t('Candidate count')}: {virtualModelStatus.candidate_count}</p>
-                      <p>{t('Enabled candidates')}: {virtualModelStatus.enabled_candidates}</p>
-                    </>
-                  )}
-                  <Button size='sm' variant='outline' onClick={() => void virtualModelStatusQuery.refetch()}>{t('Refresh')}</Button>
-                </div>
-              </div>
+                </TabsContent>
+              </Tabs>
             ) : (
               <p className='p-4 text-sm text-muted-foreground'>{t('Select a virtual model')}</p>
             )}

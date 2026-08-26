@@ -16,14 +16,30 @@ import {
 } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
 import { useQuery } from '@tanstack/react-query'
+import { ShieldCheck } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { ModelGroupSelector } from '@/components/model-group-selector'
+import {
+  sideDrawerContentClassName,
+  sideDrawerFooterClassName,
+  sideDrawerFormClassName,
+  sideDrawerHeaderClassName,
+} from '@/components/drawer-layout'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import {
+  Sheet,
+  SheetClose,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
 import { getUserGroups, getUserModels } from '@/features/playground/api'
 import { shouldClearModelForGroup } from '@/features/playground/lib/options/playground-option-utils'
@@ -35,6 +51,7 @@ import type {
   VirtualModelCandidateInput,
 } from '../api'
 import { replaceVirtualModelCandidates } from '../api'
+import { VirtualModelCandidateFailureRulesEditor } from './virtual-model-candidate-failure-rules-editor'
 
 // CandidateDraft 仅保存编辑候选链需要的字段；已有自定义候选的密钥不回填到草稿喵。
 type CandidateDraft = {
@@ -208,6 +225,8 @@ export function VirtualModelCandidatesEditor({
   const [isSaving, setIsSaving] = useState(false)
   // expandedIndex 记录当前展开完整编辑的候选下标，同一时刻只展开一个喵。
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null)
+  // rulesCandidateIndex 记录正在编辑失败规则的候选下标，非空时打开候选级规则抽屉喵。
+  const [rulesCandidateIndex, setRulesCandidateIndex] = useState<number | null>(null)
 
   // 当服务端模型版本变化时重新生成草稿，避免对已替换候选链进行过期编辑喵。
   useEffect(() => {
@@ -370,6 +389,9 @@ export function VirtualModelCandidatesEditor({
               <Button type='button' size='icon-sm' variant='ghost' disabled={isSaving || index === draftCandidates.length - 1} onClick={() => moveCandidate(index, 'down')} aria-label={t('Move candidate down')}>
                 <HugeiconsIcon icon={ArrowDown01Icon} strokeWidth={2} aria-hidden='true' />
               </Button>
+              <Button type='button' size='icon-sm' variant='ghost' disabled={isSaving || candidate.id === undefined} onClick={() => setRulesCandidateIndex(index)} aria-label={t('Candidate failure rules')}>
+                <ShieldCheck className='size-4' />
+              </Button>
               <Button type='button' size='icon-sm' variant='ghost' disabled={isSaving} onClick={() => removeCandidate(index)} aria-label={t('Remove candidate')}>
                 <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} aria-hidden='true' />
               </Button>
@@ -438,6 +460,41 @@ export function VirtualModelCandidatesEditor({
           {isSaving ? t('Saving') : t('Save candidate chain')}
         </Button>
       </div>
+
+      {/* 候选级失败规则抽屉：为选中候选配置独立规则，未配置时运行时回退模型级全局兜底喵。 */}
+      <Sheet
+        open={rulesCandidateIndex !== null}
+        onOpenChange={(open) => {
+          if (!open) setRulesCandidateIndex(null)
+        }}
+      >
+        <SheetContent className={sideDrawerContentClassName('max-w-none sm:!max-w-[620px]')}>
+          <SheetHeader className={sideDrawerHeaderClassName()}>
+            <SheetTitle>{t('Candidate failure rules')}</SheetTitle>
+            <SheetDescription>{t('Configure the failure rules used when this candidate fails.')}</SheetDescription>
+          </SheetHeader>
+          <div className={sideDrawerFormClassName('gap-5')}>
+            {rulesCandidateIndex !== null && draftCandidates[rulesCandidateIndex] && draftCandidates[rulesCandidateIndex].id !== undefined && (
+              <VirtualModelCandidateFailureRulesEditor
+                model={model}
+                candidateID={draftCandidates[rulesCandidateIndex].id ?? 0}
+                candidateLabel={candidateDisplayName(draftCandidates[rulesCandidateIndex])}
+                rules={(model.candidates ?? []).find((candidate) => candidate.id === draftCandidates[rulesCandidateIndex].id)?.failure_rules ?? []}
+                onSaved={() => {
+                  // 保存成功后刷新父级模型数据并关闭抽屉喵。
+                  onSaved()
+                  setRulesCandidateIndex(null)
+                }}
+              />
+            )}
+          </div>
+          <SheetFooter className={sideDrawerFooterClassName()}>
+            <SheetClose render={<Button variant='outline' className='w-full sm:w-auto' />}>
+              {t('Close')}
+            </SheetClose>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
     </div>
   )
 }
