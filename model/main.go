@@ -305,6 +305,7 @@ func migrateDB() error {
 		&VirtualModelTokenBinding{},
 		&VirtualModelManualFreeze{},
 		&VirtualModelCustomFreezeState{},
+		&VirtualModelInternalFreezeState{},
 		&VirtualModelAuditLog{},
 	)
 	if err != nil {
@@ -383,6 +384,7 @@ func migrateDBFast() error {
 		{&VirtualModelTokenBinding{}, "VirtualModelTokenBinding"},
 		{&VirtualModelManualFreeze{}, "VirtualModelManualFreeze"},
 		{&VirtualModelCustomFreezeState{}, "VirtualModelCustomFreezeState"},
+		{&VirtualModelInternalFreezeState{}, "VirtualModelInternalFreezeState"},
 		{&VirtualModelAuditLog{}, "VirtualModelAuditLog"},
 	}
 	// 动态计算migration数量，确保errChan缓冲区足够大

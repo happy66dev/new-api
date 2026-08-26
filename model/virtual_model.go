@@ -190,6 +190,17 @@ type VirtualModelCustomFreezeState struct {
 	UpdatedTime      int64  `json:"updated_time" gorm:"bigint"`
 }
 
+// VirtualModelInternalFreezeState 保存内部候选按候选编号共享的自动冻结状态喵。
+type VirtualModelInternalFreezeState struct {
+	ID               int    `json:"id" gorm:"primaryKey"`
+	OwnerUserID      int    `json:"owner_user_id" gorm:"index;not null;uniqueIndex:idx_virtual_internal_freeze_candidate,priority:1"`
+	CandidateID      int    `json:"candidate_id" gorm:"not null;uniqueIndex:idx_virtual_internal_freeze_candidate,priority:2"`
+	FrozenUntil      int64  `json:"frozen_until" gorm:"bigint"`
+	ConsecutiveFails int    `json:"consecutive_fails"`
+	LastFailureClass string `json:"last_failure_class" gorm:"type:varchar(64)"`
+	UpdatedTime      int64  `json:"updated_time" gorm:"bigint"`
+}
+
 // VirtualModelAuditLog 只保存不可还原的资源操作摘要喵。
 type VirtualModelAuditLog struct {
 	ID             int    `json:"id" gorm:"primaryKey"`
@@ -598,6 +609,80 @@ func ClearVirtualModelCustomFreezeStateWithDB(database *gorm.DB, ownerUserID int
 // ClearVirtualModelCustomFreezeState 清除一次成功调用对应的自动冻结失败计数喵。
 func ClearVirtualModelCustomFreezeState(ownerUserID int, identityDigest string, expectedUpdatedTime int64, currentTimestamp int64) error {
 	return ClearVirtualModelCustomFreezeStateWithDB(DB, ownerUserID, identityDigest, expectedUpdatedTime, currentTimestamp)
+}
+
+// GetActiveVirtualModelInternalFreezeStatesWithDB 使用给定数据库连接查询当前用户可见内部候选的自动冻结状态喵。
+func GetActiveVirtualModelInternalFreezeStatesWithDB(database *gorm.DB, ownerUserID int, candidateIDs []int, currentTimestamp int64) (map[int]VirtualModelInternalFreezeState, error) {
+	// 喵~防御：无效 owner、空候选集合或非法时间不执行查询，避免跨用户或全表读取喵。
+	if ownerUserID <= 0 || len(candidateIDs) == 0 || currentTimestamp <= 0 {
+		return map[int]VirtualModelInternalFreezeState{}, nil
+	}
+	// 喵~防御：数据库连接为空时拒绝查询，避免运行时空指针或绕过调用方事务边界喵。
+	if database == nil {
+		return nil, errors.New("virtual model database is unavailable")
+	}
+	freezeStates := make([]VirtualModelInternalFreezeState, 0)
+	queryError := database.Where("owner_user_id = ? AND candidate_id IN ? AND frozen_until > ?", ownerUserID, candidateIDs, currentTimestamp).Find(&freezeStates).Error
+	if queryError != nil {
+		return nil, queryError
+	}
+	freezeStatesByCandidate := make(map[int]VirtualModelInternalFreezeState, len(freezeStates))
+	for _, freezeState := range freezeStates {
+		freezeStatesByCandidate[freezeState.CandidateID] = freezeState
+	}
+	return freezeStatesByCandidate, nil
+}
+
+// GetActiveVirtualModelInternalFreezeStates 查询当前用户可见内部候选的自动冻结状态喵。
+func GetActiveVirtualModelInternalFreezeStates(ownerUserID int, candidateIDs []int, currentTimestamp int64) (map[int]VirtualModelInternalFreezeState, error) {
+	return GetActiveVirtualModelInternalFreezeStatesWithDB(DB, ownerUserID, candidateIDs, currentTimestamp)
+}
+
+// UpsertVirtualModelInternalFreezeStateWithDB 使用给定数据库连接在 owner 范围内更新内部候选的自动冻结状态喵。
+func UpsertVirtualModelInternalFreezeStateWithDB(database *gorm.DB, ownerUserID int, candidateID int, frozenUntil int64, failureClass string, currentTimestamp int64) error {
+	// 喵~防御：缺少所有者、候选编号或时间时拒绝写入，避免创建无法隔离或永不过期的冻结状态喵。
+	if ownerUserID <= 0 || candidateID <= 0 || frozenUntil <= currentTimestamp || currentTimestamp <= 0 {
+		return errors.New("virtual model internal freeze state is invalid")
+	}
+	// 喵~防御：数据库连接为空时拒绝写入，避免运行时空指针或绕过调用方事务边界喵。
+	if database == nil {
+		return errors.New("virtual model database is unavailable")
+	}
+	// 喵~防御：使用数据库原子 upsert，避免并发首次冻结时唯一键竞争导致请求被错误拒绝喵。
+	return database.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "owner_user_id"}, {Name: "candidate_id"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			// 喵~防御：并发失败不得将更长的既有冻结缩短为较短的新冻结时间喵。
+			"frozen_until":       gorm.Expr("CASE WHEN frozen_until > ? THEN frozen_until ELSE ? END", frozenUntil, frozenUntil),
+			"consecutive_fails":  gorm.Expr("consecutive_fails + ?", 1),
+			"last_failure_class": strings.TrimSpace(failureClass),
+			"updated_time":       currentTimestamp,
+		}),
+	}).Create(&VirtualModelInternalFreezeState{OwnerUserID: ownerUserID, CandidateID: candidateID, FrozenUntil: frozenUntil, ConsecutiveFails: 1, LastFailureClass: strings.TrimSpace(failureClass), UpdatedTime: currentTimestamp}).Error
+}
+
+// UpsertVirtualModelInternalFreezeState 在 owner 范围内更新内部候选的自动冻结状态喵。
+func UpsertVirtualModelInternalFreezeState(ownerUserID int, candidateID int, frozenUntil int64, failureClass string, currentTimestamp int64) error {
+	return UpsertVirtualModelInternalFreezeStateWithDB(DB, ownerUserID, candidateID, frozenUntil, failureClass, currentTimestamp)
+}
+
+// ClearVirtualModelInternalFreezeStateWithDB 使用给定数据库连接仅清除本次调用开始前已存在的内部候选自动冻结状态喵。
+func ClearVirtualModelInternalFreezeStateWithDB(database *gorm.DB, ownerUserID int, candidateID int, expectedUpdatedTime int64, currentTimestamp int64) error {
+	// 喵~防御：无效输入无需触发写库，调用方成功路径可安全忽略该空操作喵。
+	if ownerUserID <= 0 || candidateID <= 0 || expectedUpdatedTime <= 0 || currentTimestamp <= 0 {
+		return nil
+	}
+	// 喵~防御：数据库连接为空时拒绝写入，避免运行时空指针或绕过调用方事务边界喵。
+	if database == nil {
+		return errors.New("virtual model database is unavailable")
+	}
+	// 喵~防御：仅匹配请求启动时观察到的版本，避免成功请求清除并发失败刚写入的新冻结喵。
+	return database.Model(&VirtualModelInternalFreezeState{}).Where("owner_user_id = ? AND candidate_id = ? AND updated_time = ?", ownerUserID, candidateID, expectedUpdatedTime).Updates(map[string]any{"frozen_until": 0, "consecutive_fails": 0, "last_failure_class": "", "updated_time": currentTimestamp}).Error
+}
+
+// ClearVirtualModelInternalFreezeState 清除一次成功调用对应的内部候选自动冻结失败计数喵。
+func ClearVirtualModelInternalFreezeState(ownerUserID int, candidateID int, expectedUpdatedTime int64, currentTimestamp int64) error {
+	return ClearVirtualModelInternalFreezeStateWithDB(DB, ownerUserID, candidateID, expectedUpdatedTime, currentTimestamp)
 }
 
 // DeleteVirtualModelByOwnerWithVersion 在版本匹配时事务删除所有关联数据并写入不可还原审计喵。

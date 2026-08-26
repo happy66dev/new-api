@@ -271,6 +271,8 @@ candidateRelayLoop:
 
 			if newAPIError == nil {
 				relayInfo.LastError = nil
+				// 内部候选成功后清除其请求启动时观察到的自动冻结状态，失败只记录日志不影响成功响应喵。
+				middleware.ClearCurrentVirtualModelCandidateAutomaticFreeze(c)
 				return
 			}
 
@@ -286,8 +288,15 @@ candidateRelayLoop:
 		}
 
 		if newAPIError != nil {
-			// 喵~防御：只有内部候选完成全部原生 Channel 重试且尚未提交任何响应时，才允许虚拟层选择后备候选喵。
-			if nextInternalCandidateActivated, customCandidateCommitted := middleware.AdvanceVirtualModelAfterNativeFailure(c, newAPIError); nextInternalCandidateActivated {
+			// 喵~防御：只有内部候选完成全部原生 Channel 重试且尚未提交任何响应时，才允许虚拟层编排后备候选喵。
+			nativeFailureDecision := middleware.AdvanceVirtualModelAfterNativeFailure(c, newAPIError)
+			if nativeFailureDecision.RetryCurrentCandidate {
+				// 失败规则要求重试当前内部候选：清除本次错误并回到候选循环顶部重新走原生分发，不切换候选喵。
+				relayInfo.LastError = nil
+				newAPIError = nil
+				continue candidateRelayLoop
+			}
+			if nativeFailureDecision.NextCandidateActivated {
 				// 旧候选进入终态并完成同步退款后，才为后备候选创建独立 relay、定价与计费会话喵。
 				nextCandidateRelayInfo, candidateSwitchError := switchToNextVirtualModelCandidate(c, relayInfo, candidateRelayBaseline, relayFormat, meta)
 				if candidateSwitchError != nil {
@@ -298,7 +307,8 @@ candidateRelayLoop:
 				relayInfo = nextCandidateRelayInfo
 				newAPIError = nil
 				continue candidateRelayLoop
-			} else if customCandidateCommitted {
+			}
+			if nativeFailureDecision.CustomCandidateCommitted {
 				// 自定义候选已把响应字节交给客户端，此后绝不允许再向同一个响应追加第二个错误正文喵。
 				if relayInfo.Billing != nil {
 					if refundError := relayInfo.Billing.RefundImmediately(c); refundError != nil {
