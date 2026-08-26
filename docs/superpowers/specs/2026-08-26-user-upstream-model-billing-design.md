@@ -51,16 +51,16 @@ type UserUpstreamModel struct {
     APIKeyFingerprint      string
     RealModelName          string // 上游真实模型名
     AuthStyle              string // bearer/api_key/anthropic（复用 NormalizeVirtualModelAuthStyle）
-    // 计费（RMB，金额存"分" int64 避免浮点；价格机制参考 new-api 的 ModelRatio 体系）
-    ModelRatio             string // 模型基础倍率：每百万 token 的 RMB，decimal 字符串，如 "18.5000"
-    CompletionRatio        string // 输出倍率，参考 new-api completion_ratio，默认 "1"
-    CacheRatio             string // 缓存命中倍率，参考 new-api cache_ratio，默认与 new-api 一致
-    CacheCreationRatio     string // 缓存写入倍率，参考 new-api cache_creation_ratio
-    CacheCreation5mRatio   string // 5m 缓存写入倍率，参考 new-api cache_creation_5m_ratio
-    CacheCreation1hRatio   string // 1h 缓存写入倍率，参考 new-api cache_creation_1h_ratio
-    ImageRatio             string // 图片输入倍率，参考 new-api image_ratio
-    AudioRatio             string // 音频输入倍率，参考 new-api audio_ratio
-    AudioCompletionRatio   string // 音频输出倍率，参考 new-api audio_completion_ratio
+    // 计费（RMB，金额存"分" int64 避免浮点；每类型独立价格，单位元/每百万 token）
+    ModelRatio             string // 输入价格：每百万输入 token 的 RMB，decimal 字符串，默认 "1"
+    CompletionRatio        string // 输出价格，默认 "1"
+    CacheRatio             string // 缓存命中价格，默认 "1"
+    CacheCreationRatio     string // 缓存写入价格，默认 "1"
+    CacheCreation5mRatio   string // 5m 缓存写入价格，默认 "1"
+    CacheCreation1hRatio   string // 1h 缓存写入价格，默认 "1"
+    ImageRatio             string // 图片输入价格，默认 "1"
+    AudioRatio             string // 音频输入价格，默认 "1"
+    AudioCompletionRatio   string // 音频输出价格，默认 "1"
     BalanceCents           int64  // 余额（分）
     SpendLimitCents        int64  // 自用使用上限（分），0=不限
     TotalSpentCents        int64  // 自用累计消耗（分）
@@ -83,7 +83,7 @@ type UserUpstreamModel struct {
 }
 ```
 
-- 金额一律 `int64` 分存储，前端展示转为元（2 位小数）；价格/倍率用 decimal 字符串，运算走 `github.com/shopspring/decimal`（项目已有），结果再转分（复用 `common.QuotaFromDecimalChecked` 的饱和防御思路）喵。
+- 金额一律 `int64` 分存储，前端展示转为元（2 位小数）；价格用 decimal 字符串，运算走 `github.com/shopspring/decimal`（项目已有），结果再转分（复用 `common.QuotaFromDecimalChecked` 的饱和防御思路）喵。
 - `VirtualModelCustomCandidate` 增加 `UpstreamModelID *int64`：非空时激活改从 `user_upstream_models` 取 base_url/api_key/real_model_name；为空时保留旧直填配置（兼容已有数据）喵。
 
 ### 4.2 硬编码共享分组
@@ -103,33 +103,34 @@ type UserUpstreamModel struct {
 - 复用 `relaykit/dto/openai_response.go` 的 `Usage`（`PromptTokens`/`CompletionTokens`/`PromptCacheHitTokens`/`CacheWriteTokens`/`InputTokenDetails.ImageTokens`/`AudioTokens` 等），分类口径与 new-api 的 `calculateTextQuotaSummary`（`service/text_quota.go`）一致喵。
 - 上游返回非 OpenAI 兼容格式或缺失 usage 时：不计费（费用=0），写日志标注"无 usage"；失败请求不扣费喵。
 
-### 5.2 费用计算（参考 new-api 定价机制，单位 RMB 转分）
-参考 `service/text_quota.go` `calculateTextQuotaSummary` 的加权公式（去掉 GroupRatio/QuotaPerUnit/固定价分支，落成 RMB 分）：
+### 5.2 费用计算（每类型直接价格，单位 RMB 转分）
+每个价格字段代表"每百万该类型 token 的 RMB 元"，各分类 token 数乘各自价格后求和喵：
 
 ```
-ratio = ModelRatio   // 每百万 token 的 RMB 基准价
-
 promptBaseTokens = PromptTokens
   - CachedTokens          // 缓存命中从基础输入扣除
   - CacheCreationTokens   // 缓存写入从基础输入扣除
   - ImageTokens           // 图片输入从基础输入扣除
   - AudioTokens           // 音频输入从基础输入扣除
   （钳制 ≥0，参考 new-api 的 overlap 钳制）
+textCompletionTokens = CompletionTokens - AudioCompletionTokens   // 音频输出从普通输出扣除，钳制 ≥0
+remainingCacheCreationTokens = CacheCreationTokens - 5mTokens - 1hTokens   // 钳制 ≥0
 
-cachedTokensWithRatio       = CachedTokens × CacheRatio
-cacheCreationWithRatio      = CacheCreationTokens × CacheCreationRatio
-  （Claude 语义时按 5m/1h 拆分：5m×CacheCreation5mRatio + 1h×CacheCreation1hRatio + 剩余×CacheCreationRatio）
-imageTokensWithRatio        = ImageTokens × ImageRatio
-audioTokensWithRatio        = AudioTokens × AudioRatio
-
-promptQuota   = promptBaseTokens + cachedTokensWithRatio + cacheCreationWithRatio + imageTokensWithRatio + audioTokensWithRatio
-completionQuota = CompletionTokens × CompletionRatio + AudioCompletionTokens × AudioCompletionRatio
-weightedTokens = promptQuota + completionQuota
-
-costCents = QuotaFromDecimalChecked(weightedTokens × ratio / 1e6)   // 每百万 token → RMB 分
+costCents = (
+    promptBaseTokens × ModelRatio
+  + CachedTokens × CacheRatio
+  + remainingCacheCreationTokens × CacheCreationRatio
+  + 5mTokens × CacheCreation5mRatio
+  + 1hTokens × CacheCreation1hRatio
+  + ImageTokens × ImageRatio
+  + AudioTokens × AudioRatio
+  + textCompletionTokens × CompletionRatio
+  + AudioCompletionTokens × AudioCompletionRatio
+) / 1e6 × 100   // 元 → 分
 ```
 - 全程 decimal，避免浮点误差；转分用 `common.QuotaFromDecimalChecked`，钳制时 `common.SysError` 审计喵。
-- 按请求固定价（new-api 的 `UsePrice`/ModelPrice 分支）本系统暂不支持；上游模型一律按 token 加权计费喵。
+- 所有价格字段默认 1 元/百万 token（前端默认值即 1，用户按需调整）喵。
+- 按请求固定价（new-api 的 `UsePrice`/ModelPrice 分支）本系统暂不支持；上游模型一律按 token 分类型计费喵。
 
 ### 5.3 扣费与拦截
 - **请求前硬检查**（`handleUserUpstreamModelRequest` 与候选链激活时）：
@@ -172,7 +173,7 @@ costCents = QuotaFromDecimalChecked(weightedTokens × ratio / 1e6)   // 每百�
 ## 9. 前端
 
 - **常规栏新增菜单**"上游模型"（`web/src/hooks/use-sidebar-data.ts` general 分组加 `Custom Upstream Models` → `/upstream-models`）喵。
-- **页面** `web/src/features/upstream-models/`：列表 + 创建/编辑抽屉。布局参考 models 页，字段参考渠道页：模型名、显示名、base_url、api_key（不回显）、真实模型名、认证方式、**定价配置（参考管理员模型页的 Pricing Configuration：ModelRatio 每百万 RMB 基准价 + CompletionRatio/CacheRatio/CacheCreation 系/ImageRatio/AudioRatio/AudioCompletionRatio 倍率）**、余额（含"一键同步嗅探"按钮）、使用上限、剩余API额度（嗅探/手动）、嗅探开关与路径、共享开关、共享额度、广场展示开关、启用开关喵。
+- **页面** `web/src/features/upstream-models/`：列表 + 创建/编辑抽屉。布局参考 models 页，字段参考渠道页：模型名、显示名、base_url、api_key（不回显）、真实模型名、认证方式、**定价配置（每种请求类型独立价格，单位 RMB 元/每百万 token：输入/输出/缓存命中/缓存写入（含 5m、1h）/图片输入/音频输入/音频输出，默认全部 1 元）**、余额（含"一键同步嗅探"按钮）、使用上限、剩余API额度（嗅探/手动）、嗅探开关与路径、共享开关、共享额度、广场展示开关、启用开关喵。
 - **候选链编辑器**：custom 候选改为从用户上游模型下拉选择，选中后隐藏 base_url/api_key 输入（显示条目摘要），保留 timeout/retry/启用喵。
 - **模型广场**（`web/src/features/pricing/`）：共享模型卡片展示"共享剩余额度"；所有者额外可见自己模型的余额/上限/剩余API额度（受 `ShowBalanceEnabled` 控制）喵。
 - **使用日志**（`web/src/features/usage-logs/`）：类型筛选增加"自定上游"；该类型下可按分组筛选共享调用（group=user-shared）；日志详情展示自定义计费明细（`custom_cost_rmb`、token 明细）喵。
@@ -220,6 +221,6 @@ costCents = QuotaFromDecimalChecked(weightedTokens × ratio / 1e6)   // 每百�
 ## 12. 待确认的次要细节（已给推荐值，实现前如主人有异议再改）
 
 1. 直接调用前缀用 **`upstream/<name>`**（与 `virtual/` 平行）喵。
-2. 定价机制**完整参考 new-api 的 ModelRatio 体系**（含 completion/cache/cache_creation/image/audio 倍率），按请求固定价（UsePrice）暂不支持；若主人只想要单一价格，可只用 ModelRatio、其余倍率全留默认喵。
+2. 定价采用**每类型直接价格**（输入/输出/缓存/图片/音频等各自独立，单位 RMB 元/每百万 token，默认全 1），按请求固定价（UsePrice）暂不支持喵。
 3. RMB 金额内部以**分**（int64）存储，前端展示元喵。
 4. 嗅探 USD→RMB 汇率**默认固定值**（可在设置里改），嗅探失败不自动禁用喵。

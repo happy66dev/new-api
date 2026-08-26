@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestCalculateUpstreamModelCostCents 用表驱动验证各 token 分类与倍率的加权计费喵。
-// 费用 = 加权 token × ModelRatio（每百万 token RMB）÷ 1e6 × 100 分，结果四舍五入到分喵。
+// TestCalculateUpstreamModelCostCents 用表驱动验证各 token 分类按直接价格计费喵。
+// 每个价格代表每百万该类型 token 的 RMB 元，费用 = 各分类 token × 价格 求和 ÷ 1e6 × 100 分喵。
 func TestCalculateUpstreamModelCostCents(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -20,28 +20,28 @@ func TestCalculateUpstreamModelCostCents(t *testing.T) {
 		want  int64
 	}{
 		{
-			name:  "基础输入输出按 1 倍计费",
+			name:  "基础输入输出按各自价格计费",
 			model: &model.UserUpstreamModel{ModelRatio: "10", CompletionRatio: "1"},
 			usage: &dto.Usage{PromptTokens: 100000, CompletionTokens: 50000},
-			// 15 万加权 token × 10 元/百万 × 100 分 = 150 分喵。
-			want: 150,
-		},
-		{
-			name:  "缓存命中按 cache_ratio 加权",
-			model: &model.UserUpstreamModel{ModelRatio: "10", CacheRatio: "0.1"},
-			usage: &dto.Usage{PromptTokens: 100000, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 10000}},
-			// 基础 90000 + 缓存 10000×0.1=1000 → 91000 → 91 分喵。
-			want: 91,
-		},
-		{
-			name:  "缓存写入按 cache_creation_ratio 加权",
-			model: &model.UserUpstreamModel{ModelRatio: "10", CacheCreationRatio: "2"},
-			usage: &dto.Usage{PromptTokens: 100000, PromptTokensDetails: dto.InputTokenDetails{CachedCreationTokens: 5000}},
-			// 基础 95000 + 写入 5000×2=10000 → 105000 → 105 分喵。
+			// 输入 100000×10 + 输出 50000×1 = 1050000 → 105 分喵。
 			want: 105,
 		},
 		{
-			name:  "Claude 5m/1h 缓存写入拆分加权",
+			name:  "缓存命中按 cache_ratio 价格计费",
+			model: &model.UserUpstreamModel{ModelRatio: "10", CacheRatio: "0.1"},
+			usage: &dto.Usage{PromptTokens: 100000, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 10000}},
+			// 基础输入 90000×10 + 缓存 10000×0.1 = 901000 → 90.1 → 90 分喵。
+			want: 90,
+		},
+		{
+			name:  "缓存写入按 cache_creation_ratio 价格计费",
+			model: &model.UserUpstreamModel{ModelRatio: "10", CacheCreationRatio: "2"},
+			usage: &dto.Usage{PromptTokens: 100000, PromptTokensDetails: dto.InputTokenDetails{CachedCreationTokens: 5000}},
+			// 基础输入 95000×10 + 写入 5000×2 = 960000 → 96 分喵。
+			want: 96,
+		},
+		{
+			name:  "Claude 5m/1h 缓存写入拆分计费",
 			model: &model.UserUpstreamModel{ModelRatio: "10", CacheCreationRatio: "1", CacheCreation5mRatio: "3", CacheCreation1hRatio: "5"},
 			usage: &dto.Usage{
 				PromptTokens:                100000,
@@ -49,35 +49,43 @@ func TestCalculateUpstreamModelCostCents(t *testing.T) {
 				ClaudeCacheCreation5mTokens: 3000,
 				ClaudeCacheCreation1hTokens: 1000,
 			},
-			// 基础 96000 + 5m 3000×3 + 1h 1000×5 = 14000 → 110000 → 110 分喵。
+			// 基础输入 96000×10 + 5m 3000×3 + 1h 1000×5 = 974000 → 97.4 → 97 分喵。
+			want: 97,
+		},
+		{
+			name:  "图片输入按 image_ratio 价格计费",
+			model: &model.UserUpstreamModel{ModelRatio: "10", ImageRatio: "2"},
+			usage: &dto.Usage{PromptTokens: 100000, PromptTokensDetails: dto.InputTokenDetails{ImageTokens: 2000}},
+			// 基础输入 98000×10 + 图片 2000×2 = 984000 → 98.4 → 98 分喵。
+			want: 98,
+		},
+		{
+			name:  "音频输入按 audio_ratio 价格计费",
+			model: &model.UserUpstreamModel{ModelRatio: "10", AudioRatio: "0.5"},
+			usage: &dto.Usage{PromptTokens: 100000, PromptTokensDetails: dto.InputTokenDetails{AudioTokens: 3000}},
+			// 基础输入 97000×10 + 音频 3000×0.5 = 971500 → 97.15 → 97 分喵。
+			want: 97,
+		},
+		{
+			name:  "输出按 completion_ratio 价格计费",
+			model: &model.UserUpstreamModel{ModelRatio: "10", CompletionRatio: "2"},
+			usage: &dto.Usage{PromptTokens: 100000, CompletionTokens: 50000},
+			// 输入 100000×10 + 输出 50000×2 = 1100000 → 110 分喵。
 			want: 110,
 		},
 		{
-			name:  "图片输入按 image_ratio 加权",
-			model: &model.UserUpstreamModel{ModelRatio: "10", ImageRatio: "2"},
-			usage: &dto.Usage{PromptTokens: 100000, PromptTokensDetails: dto.InputTokenDetails{ImageTokens: 2000}},
-			// 基础 98000 + 图片 2000×2=4000 → 102000 → 102 分喵。
-			want: 102,
+			name:  "音频输出按 audio_completion_ratio 单独计费",
+			model: &model.UserUpstreamModel{ModelRatio: "10", CompletionRatio: "1", AudioCompletionRatio: "3"},
+			usage: &dto.Usage{PromptTokens: 100000, CompletionTokens: 50000, CompletionTokenDetails: dto.OutputTokenDetails{AudioTokens: 10000}},
+			// 输入 100000×10 + 文本输出 40000×1 + 音频输出 10000×3 = 1070000 → 107 分喵。
+			want: 107,
 		},
 		{
-			name:  "音频输入按 audio_ratio 加权",
-			model: &model.UserUpstreamModel{ModelRatio: "10", AudioRatio: "0.5"},
-			usage: &dto.Usage{PromptTokens: 100000, PromptTokensDetails: dto.InputTokenDetails{AudioTokens: 3000}},
-			// 基础 97000 + 音频 3000×0.5=1500 → 98500 ×10/1e6×100=98.5 → 四舍五入 99 分喵。
-			want: 99,
-		},
-		{
-			name:  "输出按 completion_ratio 加权",
-			model: &model.UserUpstreamModel{ModelRatio: "10", CompletionRatio: "2"},
-			usage: &dto.Usage{PromptTokens: 100000, CompletionTokens: 50000},
-			// 输入 100000 + 输出 50000×2=100000 → 200000 → 200 分喵。
-			want: 200,
-		},
-		{
-			name:  "ModelRatio 为空不计费",
+			name:  "ModelRatio 为空按默认 1 元计费",
 			model: &model.UserUpstreamModel{CompletionRatio: "1"},
 			usage: &dto.Usage{PromptTokens: 100000},
-			want:  0,
+			// 输入价格默认 1 元：100000×1 /1e6×100 = 10 分喵。
+			want: 10,
 		},
 		{
 			name:  "ModelRatio 非法回退为零不计费",
@@ -92,11 +100,11 @@ func TestCalculateUpstreamModelCostCents(t *testing.T) {
 			want:  0,
 		},
 		{
-			name:  "分类倍率非法回退为 1",
+			name:  "分类价格非法回退为 1 元",
 			model: &model.UserUpstreamModel{ModelRatio: "10", CacheRatio: "oops"},
 			usage: &dto.Usage{PromptTokens: 100000, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 10000}},
-			// 基础 90000 + 缓存 10000×1=10000 → 100000 → 100 分喵。
-			want: 100,
+			// 基础输入 90000×10 + 缓存 10000×1 = 910000 → 91 分喵。
+			want: 91,
 		},
 		{
 			name:  "零 token usage 不计费",

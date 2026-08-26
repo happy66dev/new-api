@@ -74,7 +74,7 @@ function UpstreamModelDrawer({
   const [apiKey, setAPIKey] = useState('')
   const [realModelName, setRealModelName] = useState('')
   const [authStyle, setAuthStyle] = useState('bearer')
-  const [modelRatio, setModelRatio] = useState('')
+  const [modelRatio, setModelRatio] = useState('1')
   const [completionRatio, setCompletionRatio] = useState('1')
   const [cacheRatio, setCacheRatio] = useState('1')
   const [cacheCreationRatio, setCacheCreationRatio] = useState('1')
@@ -102,7 +102,7 @@ function UpstreamModelDrawer({
     setAPIKey('')
     setRealModelName(model?.real_model_name ?? '')
     setAuthStyle(model?.auth_style ?? 'bearer')
-    setModelRatio(model?.model_ratio ?? '')
+    setModelRatio(model?.model_ratio ?? '1')
     setCompletionRatio(model?.completion_ratio ?? '1')
     setCacheRatio(model?.cache_ratio ?? '1')
     setCacheCreationRatio(model?.cache_creation_ratio ?? '1')
@@ -274,45 +274,45 @@ function UpstreamModelDrawer({
           <SideDrawerSection>
             <SideDrawerSectionHeader
               title={t('Pricing Configuration')}
-              description={t('RMB per million tokens using the new-api ratio system')}
+              description={t('Prices are RMB per million tokens for each type')}
               icon={<Settings2 className='size-4' />}
               iconTone='info'
             />
             <label className='grid gap-1 text-sm font-medium'>
-              {t('Model ratio (RMB per million tokens)')}
-              <Input inputMode='decimal' value={modelRatio} onChange={(event) => setModelRatio(event.target.value)} placeholder='18.5' disabled={isSaving} />
+              {t('Input price (RMB per million tokens)')}
+              <Input inputMode='decimal' value={modelRatio} onChange={(event) => setModelRatio(event.target.value)} placeholder='1' disabled={isSaving} />
             </label>
             <div className='grid grid-cols-2 gap-3'>
               <label className='grid gap-1 text-sm font-medium'>
-                {t('Completion ratio')}
+                {t('Output price (RMB per million tokens)')}
                 <Input inputMode='decimal' value={completionRatio} onChange={(event) => setCompletionRatio(event.target.value)} disabled={isSaving} />
               </label>
               <label className='grid gap-1 text-sm font-medium'>
-                {t('Cache ratio')}
+                {t('Cache hit price (RMB per million tokens)')}
                 <Input inputMode='decimal' value={cacheRatio} onChange={(event) => setCacheRatio(event.target.value)} disabled={isSaving} />
               </label>
               <label className='grid gap-1 text-sm font-medium'>
-                {t('Cache creation ratio')}
+                {t('Cache write price (RMB per million tokens)')}
                 <Input inputMode='decimal' value={cacheCreationRatio} onChange={(event) => setCacheCreationRatio(event.target.value)} disabled={isSaving} />
               </label>
               <label className='grid gap-1 text-sm font-medium'>
-                {t('Cache creation 5m ratio')}
+                {t('Cache write 5m price (RMB per million tokens)')}
                 <Input inputMode='decimal' value={cacheCreation5mRatio} onChange={(event) => setCacheCreation5mRatio(event.target.value)} disabled={isSaving} />
               </label>
               <label className='grid gap-1 text-sm font-medium'>
-                {t('Cache creation 1h ratio')}
+                {t('Cache write 1h price (RMB per million tokens)')}
                 <Input inputMode='decimal' value={cacheCreation1hRatio} onChange={(event) => setCacheCreation1hRatio(event.target.value)} disabled={isSaving} />
               </label>
               <label className='grid gap-1 text-sm font-medium'>
-                {t('Image ratio')}
+                {t('Image input price (RMB per million tokens)')}
                 <Input inputMode='decimal' value={imageRatio} onChange={(event) => setImageRatio(event.target.value)} disabled={isSaving} />
               </label>
               <label className='grid gap-1 text-sm font-medium'>
-                {t('Audio ratio')}
+                {t('Audio input price (RMB per million tokens)')}
                 <Input inputMode='decimal' value={audioRatio} onChange={(event) => setAudioRatio(event.target.value)} disabled={isSaving} />
               </label>
               <label className='grid gap-1 text-sm font-medium'>
-                {t('Audio completion ratio')}
+                {t('Audio output price (RMB per million tokens)')}
                 <Input inputMode='decimal' value={audioCompletionRatio} onChange={(event) => setAudioCompletionRatio(event.target.value)} disabled={isSaving} />
               </label>
             </div>

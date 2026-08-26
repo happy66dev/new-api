@@ -28,7 +28,7 @@ type UserUpstreamModel struct {
 	CredentialVersion  int    `json:"-"`
 	RealModelName      string `json:"real_model_name" gorm:"type:varchar(128)"`
 	AuthStyle          string `json:"auth_style" gorm:"type:varchar(32)"`
-	// 计费：价格机制参考 new-api 的 ModelRatio 体系，倍率为 decimal 字符串喵。
+	// 计费：每个字段是该 token 分类的独立价格（每百万 token 的 RMB 元），decimal 字符串喵。
 	ModelRatio           string `json:"model_ratio" gorm:"type:varchar(32)"`
 	CompletionRatio      string `json:"completion_ratio" gorm:"type:varchar(32)"`
 	CacheRatio           string `json:"cache_ratio" gorm:"type:varchar(32)"`

@@ -79,11 +79,11 @@ func loadOwnedUpstreamModel(c *gin.Context, upstreamModelID int64) (*model.UserU
 	return upstreamModel, true
 }
 
-// applyUpstreamModelCredentialDefaults 为空白倍率填充安全默认值，避免 P2 计费解析空字符串喵。
+// applyUpstreamModelCredentialDefaults 为空白价格字段填充默认值（默认全 1 元/每百万 token）喵。
 func applyUpstreamModelCredentialDefaults(upstreamModel *model.UserUpstreamModel) {
-	// 各倍率字段为空时填充默认值：输出与各输入分类默认按 1 倍计价，ModelRatio 默认 0（未定价）喵。
+	// 各价格字段为空时填充默认值 1 元，输入/输出/缓存/图片/音频分类全部按统一价计费喵。
 	if upstreamModel.ModelRatio == "" {
-		upstreamModel.ModelRatio = "0"
+		upstreamModel.ModelRatio = "1"
 	}
 	if upstreamModel.CompletionRatio == "" {
 		upstreamModel.CompletionRatio = "1"
