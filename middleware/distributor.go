@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	virtualmodelservice "github.com/QuantumNous/new-api/service/virtualmodel"
@@ -206,17 +207,17 @@ type virtualModelExecutionState struct {
 	// internalFreezeStatesByCandidate 保存请求启动时观察到的内部候选自动冻结状态，成功清除时用其版本防并发喵。
 	internalFreezeStatesByCandidate map[int]model.VirtualModelInternalFreezeState
 	// ruleRetryCounts 记录失败规则对内部候选的重试次数，防止规则 retry 无限重放候选喵。
-	ruleRetryCounts map[int]int
-	originalRequestBody             []byte
-	modelRequest                    *ModelRequest
-	requestDeadline                 time.Time
-	loopEnabled                     bool
-	loopRoundsCompleted             int
-	maximumLoopRounds               int
-	currentCandidateIndex           int
-	skippedCandidateIDs             map[int]bool
-	candidateAttemptSequence        int    // 请求内已分配的候选尝试序号，单调递增，单位：次喵。
-	currentCandidateAttemptID       string // 当前已激活候选尝试的请求内唯一标识，未激活时为空喵。
+	ruleRetryCounts           map[int]int
+	originalRequestBody       []byte
+	modelRequest              *ModelRequest
+	requestDeadline           time.Time
+	loopEnabled               bool
+	loopRoundsCompleted       int
+	maximumLoopRounds         int
+	currentCandidateIndex     int
+	skippedCandidateIDs       map[int]bool
+	candidateAttemptSequence  int    // 请求内已分配的候选尝试序号，单调递增，单位：次喵。
+	currentCandidateAttemptID string // 当前已激活候选尝试的请求内唯一标识，未激活时为空喵。
 }
 
 // handleVirtualModelRequest 验证虚拟模型授权、构造请求级快照并激活首个可执行候选喵。
@@ -567,17 +568,63 @@ func restoreVirtualModelOriginalRequest(c *gin.Context, originalRequestBody []by
 // executeCustomVirtualModelCandidate 在当前 middleware 生命周期内安全完成单次自定义候选透传喵。
 // executionSnapshot 提供候选级与模型级全局兜底失败规则，候选未配置规则时自动回退全局规则喵。
 func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.VirtualModelInternalCandidateSnapshot, executionSnapshot *model.VirtualModelExecutionSnapshot) bool {
-	// 喵~防御：自定义候选必须带有完整加密凭据和模型配置，缺失时绝不尝试外发请求喵。
-	if c == nil || candidate == nil || strings.TrimSpace(candidate.EncryptedBaseURL) == "" || strings.TrimSpace(candidate.EncryptedAPIKey) == "" || strings.TrimSpace(candidate.RealModelName) == "" {
+	// 喵~防御：自定义候选必须存在，缺失时绝不尝试外发请求喵。
+	if c == nil || candidate == nil {
 		abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
 		return false
 	}
-	baseURL, decryptBaseURLError := virtualmodelservice.DecryptCredential(candidate.EncryptedBaseURL, candidate.CredentialVersion)
-	apiKey, decryptAPIKeyError := virtualmodelservice.DecryptCredential(candidate.EncryptedAPIKey, candidate.CredentialVersion)
-	// 喵~防御：凭据密文篡改、主密钥缺失或解密失败均只返回受控不可用错误，不泄露秘密或密文状态喵。
-	if decryptBaseURLError != nil || decryptAPIKeyError != nil {
-		abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
-		return false
+	// 记录请求起始时间供结算耗时使用喵。
+	startTime := time.Now()
+	// 解析候选执行来源：引用用户上游模型条目或直填凭据喵。
+	hasUpstreamReference := candidate.UpstreamModelID != nil && *candidate.UpstreamModelID > 0
+	var referencedUpstreamModel *model.UserUpstreamModel
+	var baseURL string
+	var apiKey string
+	candidateRealModelName := candidate.RealModelName
+	candidateAuthStyle := candidate.AuthStyle
+	// 喵~防御：引用用户上游模型时以条目为准实时加载，缺失或越权按候选不可用处理喵。
+	if hasUpstreamReference {
+		loadedModel, loadError := model.GetUserUpstreamModelByOwnerID(*candidate.UpstreamModelID, c.GetInt("id"))
+		if loadError != nil {
+			abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
+			return false
+		}
+		referencedUpstreamModel = loadedModel
+		// 请求前硬检查：引用上游模型同样受余额与使用上限约束喵。
+		if referencedUpstreamModel.BalanceCents <= 0 {
+			abortUpstreamModelQuotaExhausted(c)
+			return false
+		}
+		if referencedUpstreamModel.SpendLimitCents > 0 && referencedUpstreamModel.TotalSpentCents >= referencedUpstreamModel.SpendLimitCents {
+			abortUpstreamModelQuotaExhausted(c)
+			return false
+		}
+		decryptedBaseURL, decryptBaseURLError := virtualmodelservice.DecryptCredential(referencedUpstreamModel.EncryptedBaseURL, referencedUpstreamModel.CredentialVersion)
+		decryptedAPIKey, decryptAPIKeyError := virtualmodelservice.DecryptCredential(referencedUpstreamModel.EncryptedAPIKey, referencedUpstreamModel.CredentialVersion)
+		// 喵~防御：条目凭据不可用时返回受控不可用错误喵。
+		if decryptBaseURLError != nil || decryptAPIKeyError != nil {
+			abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
+			return false
+		}
+		baseURL = decryptedBaseURL
+		apiKey = decryptedAPIKey
+		candidateRealModelName = referencedUpstreamModel.RealModelName
+		candidateAuthStyle = model.VirtualModelAuthStyle(referencedUpstreamModel.AuthStyle)
+	} else {
+		// 喵~防御：直填候选必须带有完整加密凭据和模型配置，缺失时绝不尝试外发请求喵。
+		if strings.TrimSpace(candidate.EncryptedBaseURL) == "" || strings.TrimSpace(candidate.EncryptedAPIKey) == "" || strings.TrimSpace(candidate.RealModelName) == "" {
+			abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
+			return false
+		}
+		decryptedBaseURL, decryptBaseURLError := virtualmodelservice.DecryptCredential(candidate.EncryptedBaseURL, candidate.CredentialVersion)
+		decryptedAPIKey, decryptAPIKeyError := virtualmodelservice.DecryptCredential(candidate.EncryptedAPIKey, candidate.CredentialVersion)
+		// 喵~防御：凭据密文篡改、主密钥缺失或解密失败均只返回受控不可用错误，不泄露秘密或密文状态喵。
+		if decryptBaseURLError != nil || decryptAPIKeyError != nil {
+			abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
+			return false
+		}
+		baseURL = decryptedBaseURL
+		apiKey = decryptedAPIKey
 	}
 	// 候选级与模型级全局兜底规则均随请求快照传入，禁止在候选执行期间二次读取已可能被控制面替换的规则喵。
 	maximumRetries := candidate.MaxRetries
@@ -593,16 +640,40 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 		if executionState, foundState := getVirtualModelExecutionState(c); foundState && ((!executionState.requestDeadline.IsZero() && !time.Now().Before(executionState.requestDeadline)) || c.Request == nil || c.Request.Context().Err() != nil) {
 			return false
 		}
-		executionError := virtualmodelservice.ExecuteCustomCandidate(c, virtualmodelservice.CustomCandidateExecutionInput{
-			CandidateID:    candidate.CandidateID,
-			BaseURL:        baseURL,
-			APIKey:         apiKey,
-			RealModelName:  candidate.RealModelName,
-			AuthStyle:      candidate.AuthStyle,
-			TimeoutSeconds: candidate.TimeoutSeconds,
-		})
+		var executionError error
+		var executionUsage *dto.Usage
+		if hasUpstreamReference {
+			// 引用用户上游模型：走带 usage 解析的独立透传，返回解析结果供结算喵。
+			executionResult := virtualmodelservice.ExecuteUserUpstreamModel(c, virtualmodelservice.CustomCandidateExecutionInput{
+				CandidateID:    candidate.CandidateID,
+				BaseURL:        baseURL,
+				APIKey:         apiKey,
+				RealModelName:  candidateRealModelName,
+				AuthStyle:      candidateAuthStyle,
+				TimeoutSeconds: candidate.TimeoutSeconds,
+			})
+			executionError = executionResult.Err
+			executionUsage = executionResult.Usage
+		} else {
+			executionError = virtualmodelservice.ExecuteCustomCandidate(c, virtualmodelservice.CustomCandidateExecutionInput{
+				CandidateID:    candidate.CandidateID,
+				BaseURL:        baseURL,
+				APIKey:         apiKey,
+				RealModelName:  candidateRealModelName,
+				AuthStyle:      candidateAuthStyle,
+				TimeoutSeconds: candidate.TimeoutSeconds,
+			})
+		}
 		// 成功响应已由透传器直接写出，此时仅清除请求开始前已观察到的历史冻结并中止后续 controller relay 喵。
 		if executionError == nil {
+			// 引用上游模型成功时结算独立 RMB 计费并写自定上游日志喵。
+			if hasUpstreamReference && referencedUpstreamModel != nil {
+				requestGroup := ""
+				if executionState, foundState := getVirtualModelExecutionState(c); foundState && executionState.modelRequest != nil {
+					requestGroup = executionState.modelRequest.Group
+				}
+				settleUserUpstreamModelCharge(c, referencedUpstreamModel.OwnerUserID, referencedUpstreamModel, executionUsage, requestGroup, isUpstreamModelRequestStreaming(c), int(time.Since(startTime).Seconds()), false)
+			}
 			identityDigest := virtualmodelservice.CustomCandidateIdentityDigest(*candidate)
 			// 喵~防御：只清除请求开始时观察到的历史冻结，避免并发失败请求写入的新冻结被成功响应误删喵。
 			expectedUpdatedTime := int64(0)

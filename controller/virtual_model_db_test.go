@@ -67,3 +67,39 @@ func TestBuildVirtualModelResponseGlobalFailureRules(t *testing.T) {
 	require.Equal(t, 500, response.GlobalFailureRules[0].HTTPStatus)
 	require.Equal(t, model.VirtualModelActionPassthrough, response.GlobalFailureRules[0].Action)
 }
+
+// TestSaveCustomCandidateCarriesUpstreamModelID 验证自定义候选保存透传用户上游模型引用喵。
+// 引用条目后凭据直填可选，保存不要求地址与密钥喵。
+func TestSaveCustomCandidateCarriesUpstreamModelID(t *testing.T) {
+	// 使用内存 SQLite 快速构造候选相关表喵。
+	testDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, testDB.AutoMigrate(&model.VirtualModel{}, &model.VirtualModelCandidate{}, &model.VirtualModelInternalCandidate{}, &model.VirtualModelCustomCandidate{}, &model.VirtualModelFailureRule{}))
+
+	// 喵~防御：保存并恢复全局数据库连接，避免污染其他测试用例。
+	originalDB := model.DB
+	model.DB = testDB
+	t.Cleanup(func() { model.DB = originalDB })
+
+	now := time.Now().Unix()
+	candidate := &model.VirtualModelCandidate{VirtualModelID: 1, StableOrder: 0, SourceType: model.VirtualModelSourceCustom, Enabled: true, Version: 1, CreatedTime: now, UpdatedTime: now}
+	require.NoError(t, testDB.Create(candidate).Error)
+
+	// 带引用的候选保存成功，无需直填凭据喵。
+	upstreamModelID := int64(42)
+	saveError := saveVirtualModelCandidateSourceConfig(testDB, candidate, virtualModelCandidateInput{
+		SourceType:      model.VirtualModelSourceCustom,
+		UpstreamModelID: &upstreamModelID,
+	}, true)
+	require.NoError(t, saveError)
+	var saved model.VirtualModelCustomCandidate
+	require.NoError(t, testDB.Where("candidate_id = ?", candidate.ID).First(&saved).Error)
+	require.NotNil(t, saved.UpstreamModelID)
+	require.Equal(t, int64(42), *saved.UpstreamModelID)
+
+	// 无引用的直填候选仍要求真实模型与凭据：空配置被校验拦截喵。
+	saveError = saveVirtualModelCandidateSourceConfig(testDB, candidate, virtualModelCandidateInput{
+		SourceType: model.VirtualModelSourceCustom,
+	}, false)
+	require.Error(t, saveError)
+}

@@ -120,14 +120,16 @@ type VirtualModelCustomCandidate struct {
 	APIKeyFingerprint  string                `json:"-" gorm:"type:varchar(128);index"`
 	RealModelName      string                `json:"real_model_name" gorm:"type:varchar(256);not null"`
 	AuthStyle          VirtualModelAuthStyle `json:"auth_style" gorm:"type:varchar(32);not null"`
+	// UpstreamModelID 引用用户上游模型条目；非空时凭据与真实模型名以该条目为准，直填凭据仅作兼容喵。
+	UpstreamModelID *int64 `json:"upstream_model_id,omitempty" gorm:"index"`
 }
 
 // VirtualModelFailureRule 保存候选级有序失败规则喵。
 type VirtualModelFailureRule struct {
-	ID            int                       `json:"id" gorm:"primaryKey"`
-	CandidateID   int                       `json:"candidate_id" gorm:"index;not null;uniqueIndex:idx_virtual_model_failure_rule_order,priority:1"`
-	RuleOrder     int                       `json:"rule_order" gorm:"not null;uniqueIndex:idx_virtual_model_failure_rule_order,priority:2"`
-	HTTPStatus    int                       `json:"http_status"`
+	ID          int `json:"id" gorm:"primaryKey"`
+	CandidateID int `json:"candidate_id" gorm:"index;not null;uniqueIndex:idx_virtual_model_failure_rule_order,priority:1"`
+	RuleOrder   int `json:"rule_order" gorm:"not null;uniqueIndex:idx_virtual_model_failure_rule_order,priority:2"`
+	HTTPStatus  int `json:"http_status"`
 	// HTTPStatusMax 是状态码范围匹配的上界，零表示仅匹配 HTTPStatus 单值喵。
 	HTTPStatusMax int                       `json:"http_status_max"`
 	ErrorClass    string                    `json:"error_class" gorm:"type:varchar(64)"`
@@ -135,30 +137,30 @@ type VirtualModelFailureRule struct {
 	Action        VirtualModelFailureAction `json:"action" gorm:"type:varchar(16);not null"`
 	FreezeSeconds int                       `json:"freeze_seconds"`
 	// FreezeField 是响应体中的冻结时间字段名，非空时启用从响应体解析冻结时间喵。
-	FreezeField   string                    `json:"freeze_field" gorm:"type:varchar(64)"`
+	FreezeField string `json:"freeze_field" gorm:"type:varchar(64)"`
 	// FreezeUnit 标记响应体字段冻结时间的单位，仅在 FreezeField 非空时生效喵。
-	FreezeUnit    VirtualModelFreezeUnit    `json:"freeze_unit" gorm:"type:varchar(16)"`
-	Version       int64                     `json:"version" gorm:"default:1"`
+	FreezeUnit VirtualModelFreezeUnit `json:"freeze_unit" gorm:"type:varchar(16)"`
+	Version    int64                  `json:"version" gorm:"default:1"`
 }
 
 // VirtualModelGlobalFailureRule 保存模型级全局兜底失败规则喵。
 // 当候选没有配置自己的失效规则时，运行时回退到这组全局规则做失败决策喵。
 type VirtualModelGlobalFailureRule struct {
-	ID             int                       `json:"id" gorm:"primaryKey"`
-	VirtualModelID int                       `json:"virtual_model_id" gorm:"index;not null;uniqueIndex:idx_virtual_model_global_failure_rule_order,priority:1"`
-	RuleOrder      int                       `json:"rule_order" gorm:"not null;uniqueIndex:idx_virtual_model_global_failure_rule_order,priority:2"`
-	HTTPStatus     int                       `json:"http_status"`
+	ID             int `json:"id" gorm:"primaryKey"`
+	VirtualModelID int `json:"virtual_model_id" gorm:"index;not null;uniqueIndex:idx_virtual_model_global_failure_rule_order,priority:1"`
+	RuleOrder      int `json:"rule_order" gorm:"not null;uniqueIndex:idx_virtual_model_global_failure_rule_order,priority:2"`
+	HTTPStatus     int `json:"http_status"`
 	// HTTPStatusMax 是状态码范围匹配的上界，零表示仅匹配 HTTPStatus 单值喵。
-	HTTPStatusMax  int                       `json:"http_status_max"`
-	ErrorClass     string                    `json:"error_class" gorm:"type:varchar(64)"`
-	BodyRegex      string                    `json:"body_regex" gorm:"type:text"`
-	Action         VirtualModelFailureAction `json:"action" gorm:"type:varchar(16);not null"`
-	FreezeSeconds  int                       `json:"freeze_seconds"`
+	HTTPStatusMax int                       `json:"http_status_max"`
+	ErrorClass    string                    `json:"error_class" gorm:"type:varchar(64)"`
+	BodyRegex     string                    `json:"body_regex" gorm:"type:text"`
+	Action        VirtualModelFailureAction `json:"action" gorm:"type:varchar(16);not null"`
+	FreezeSeconds int                       `json:"freeze_seconds"`
 	// FreezeField 是响应体中的冻结时间字段名，非空时启用从响应体解析冻结时间喵。
-	FreezeField    string                    `json:"freeze_field" gorm:"type:varchar(64)"`
+	FreezeField string `json:"freeze_field" gorm:"type:varchar(64)"`
 	// FreezeUnit 标记响应体字段冻结时间的单位，仅在 FreezeField 非空时生效喵。
-	FreezeUnit     VirtualModelFreezeUnit    `json:"freeze_unit" gorm:"type:varchar(16)"`
-	Version        int64                     `json:"version" gorm:"default:1"`
+	FreezeUnit VirtualModelFreezeUnit `json:"freeze_unit" gorm:"type:varchar(16)"`
+	Version    int64                  `json:"version" gorm:"default:1"`
 }
 
 // VirtualModelTokenBinding 保存模型和用户 API Key 的显式授权关系喵。
@@ -373,6 +375,8 @@ type VirtualModelCandidateSnapshot struct {
 	APIKeyFingerprint  string                 // 自定义候选 API Key 不可逆摘要，用于共享冻结身份喵。
 	CredentialVersion  int                    // 自定义候选凭据加密版本喵。
 	AuthStyle          VirtualModelAuthStyle  // 自定义候选认证头样式喵。
+	// UpstreamModelID 引用用户上游模型条目，自定义候选专用；非空时凭据以条目为准喵。
+	UpstreamModelID *int64
 }
 
 // VirtualModelInternalCandidateSnapshot 保留旧名称兼容现有内部候选调用代码喵。
@@ -434,7 +438,7 @@ func GetEnabledVirtualModelCandidateSnapshotsWithDB(database *gorm.DB, virtualMo
 	}
 	candidateSnapshots := make([]VirtualModelCandidateSnapshot, 0)
 	queryError := database.Model(&VirtualModelCandidate{}).
-		Select("virtual_model_candidates.id AS candidate_id, virtual_model_candidates.virtual_model_id, virtual_model_candidates.stable_order, virtual_model_candidates.source_type, virtual_model_candidates.enabled, virtual_model_candidates.max_retries, virtual_model_candidates.timeout_seconds, virtual_model_internal_candidates.group_name, CASE WHEN virtual_model_candidates.source_type = ? THEN virtual_model_internal_candidates.real_model_name ELSE virtual_model_custom_candidates.real_model_name END AS real_model_name, virtual_model_custom_candidates.encrypted_base_url, virtual_model_custom_candidates.base_url_summary, virtual_model_custom_candidates.base_url_fingerprint, virtual_model_custom_candidates.encrypted_api_key, virtual_model_custom_candidates.api_key_fingerprint, virtual_model_custom_candidates.credential_version, virtual_model_custom_candidates.auth_style", VirtualModelSourceInternal).
+		Select("virtual_model_candidates.id AS candidate_id, virtual_model_candidates.virtual_model_id, virtual_model_candidates.stable_order, virtual_model_candidates.source_type, virtual_model_candidates.enabled, virtual_model_candidates.max_retries, virtual_model_candidates.timeout_seconds, virtual_model_internal_candidates.group_name, CASE WHEN virtual_model_candidates.source_type = ? THEN virtual_model_internal_candidates.real_model_name ELSE virtual_model_custom_candidates.real_model_name END AS real_model_name, virtual_model_custom_candidates.encrypted_base_url, virtual_model_custom_candidates.base_url_summary, virtual_model_custom_candidates.base_url_fingerprint, virtual_model_custom_candidates.encrypted_api_key, virtual_model_custom_candidates.api_key_fingerprint, virtual_model_custom_candidates.credential_version, virtual_model_custom_candidates.auth_style, virtual_model_custom_candidates.upstream_model_id", VirtualModelSourceInternal).
 		Joins("LEFT JOIN virtual_model_internal_candidates ON virtual_model_internal_candidates.candidate_id = virtual_model_candidates.id AND virtual_model_candidates.source_type = ?", VirtualModelSourceInternal).
 		Joins("LEFT JOIN virtual_model_custom_candidates ON virtual_model_custom_candidates.candidate_id = virtual_model_candidates.id AND virtual_model_candidates.source_type = ?", VirtualModelSourceCustom).
 		Where("virtual_model_candidates.virtual_model_id = ? AND virtual_model_candidates.enabled = ?", virtualModelID, true).

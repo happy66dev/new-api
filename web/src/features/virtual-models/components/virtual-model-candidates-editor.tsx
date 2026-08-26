@@ -53,6 +53,7 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { getUserGroups, getUserModels } from '@/features/playground/api'
 import { shouldClearModelForGroup } from '@/features/playground/lib/options/playground-option-utils'
+import { getUserUpstreamModels } from '@/features/upstream-models/api'
 
 import type {
   VirtualModel,
@@ -75,6 +76,8 @@ type CandidateDraft = {
   realModelName: string
   sourceType: 'internal' | 'custom'
   timeoutSeconds: string
+  // 引用用户上游模型条目时非空，凭据与真实模型名以该条目为准喵。
+  upstreamModelID: number | null
 }
 
 // DEFAULT_TIMEOUT_SECONDS 是新候选在未改动时的保守单次超时秒数喵。
@@ -96,6 +99,7 @@ function toCandidateDraft(candidate: VirtualModelCandidate): CandidateDraft {
     realModelName: candidate.real_model_name ?? '',
     sourceType: candidate.source_type === 'custom' ? 'custom' : 'internal',
     timeoutSeconds: String(candidate.timeout_seconds),
+    upstreamModelID: candidate.upstream_model_id ?? null,
   }
 }
 
@@ -111,6 +115,7 @@ function createCandidateDraft(sourceType: 'internal' | 'custom'): CandidateDraft
     realModelName: '',
     sourceType,
     timeoutSeconds: DEFAULT_TIMEOUT_SECONDS,
+    upstreamModelID: null,
   }
 }
 
@@ -173,7 +178,8 @@ function validateCandidateDraft(
   const maxRetries = Number(candidate.maxRetries)
   const timeoutSeconds = Number(candidate.timeoutSeconds)
   const realModelName = candidate.realModelName.trim()
-  if (!realModelName) {
+  // 引用用户上游模型时真实模型名以条目为准，不要求草稿填写喵。
+  if (!candidate.upstreamModelID && !realModelName) {
     throw new Error(t('Candidate {{index}} requires a real model name', { index: index + 1 }))
   }
   if (!Number.isInteger(maxRetries) || maxRetries < 0 || maxRetries > 20) {
@@ -200,6 +206,17 @@ function validateCandidateDraft(
 
   const baseURL = candidate.baseURL.trim()
   const apiKey = candidate.apiKey.trim()
+  // 引用用户上游模型条目时只需提交引用编号，真实模型名与凭据以该条目为准喵。
+  if (candidate.upstreamModelID) {
+    return {
+      id: candidate.id,
+      source_type: 'custom',
+      enabled: candidate.enabled,
+      max_retries: maxRetries,
+      timeout_seconds: timeoutSeconds,
+      upstream_model_id: candidate.upstreamModelID,
+    }
+  }
   // 喵~防御：新自定义候选需要 URL，已保存候选可不回传脱敏摘要以保留服务端加密地址喵。
   if (!candidate.id && !baseURL) {
     throw new Error(t('Candidate {{index}} requires an upstream URL', { index: index + 1 }))
@@ -218,6 +235,7 @@ function validateCandidateDraft(
     api_key: apiKey || undefined,
     auth_style: candidate.authStyle,
     real_model_name: realModelName,
+    upstream_model_id: null,
   }
 }
 
@@ -240,6 +258,13 @@ export function VirtualModelCandidatesEditor({
   // pendingDeleteIndex 记录等待确认删除的候选下标，非空时打开删除确认弹窗喵。
   const [pendingDeleteIndex, setPendingDeleteIndex] = useState<number | null>(null)
 
+  // 加载当前用户的上游模型列表，供自定义候选引用选择喵。
+  const upstreamModelsQuery = useQuery({
+    queryKey: ['upstream-models'],
+    queryFn: getUserUpstreamModels,
+  })
+  const upstreamModels = upstreamModelsQuery.data?.data ?? []
+
   // 当服务端模型版本变化时重新生成草稿，避免对已替换候选链进行过期编辑喵。
   useEffect(() => {
     setDraftCandidates((model.candidates ?? []).map(toCandidateDraft))
@@ -257,7 +282,11 @@ export function VirtualModelCandidatesEditor({
       }
       return groupName || t('Unnamed candidate')
     }
-    // 自定义候选显示真实模型名，未填写时给出占位文案喵。
+    // 自定义候选显示真实模型名；引用用户上游模型时显示 upstream/ 名称喵。
+    if (candidate.upstreamModelID) {
+      const referencedModel = upstreamModels.find((upstreamItem) => upstreamItem.id === candidate.upstreamModelID)
+      return referencedModel ? `upstream/${referencedModel.normalized_name}` : t('Referenced upstream model')
+    }
     return candidate.realModelName.trim() || t('Unnamed candidate')
   }
 
@@ -427,27 +456,54 @@ export function VirtualModelCandidatesEditor({
                 />
               ) : (
                 <div className='grid gap-3 sm:grid-cols-2'>
-                  <label className='grid gap-1 text-sm font-medium'>
-                    {t('Upstream URL')}
-                    <Input value={candidate.baseURL} disabled={isSaving} placeholder={candidate.id ? t('Leave blank to retain the saved upstream URL') : 'https://api.example.com'} onChange={(event) => updateCandidate(index, { baseURL: event.target.value })} />
-                  </label>
-                  <label className='grid gap-1 text-sm font-medium'>
-                    {t('Real model name')}
-                    <Input value={candidate.realModelName} disabled={isSaving} onChange={(event) => updateCandidate(index, { realModelName: event.target.value })} />
-                  </label>
-                  <label className='grid gap-1 text-sm font-medium'>
-                    {t('Upstream API Key')}
-                    <Input type='password' autoComplete='new-password' value={candidate.apiKey} disabled={isSaving} placeholder={candidate.id ? t('Enter a new API Key to save this custom candidate') : t('Enter upstream API Key')} onChange={(event) => updateCandidate(index, { apiKey: event.target.value })} />
-                  </label>
-                  <label className='grid gap-1 text-sm font-medium'>
-                    {t('Authentication style')}
-                    <select className='border-input bg-background h-9 rounded-md border px-3 text-sm' value={candidate.authStyle} disabled={isSaving} onChange={(event) => updateCandidate(index, { authStyle: event.target.value as VirtualModelCandidateAuthStyle })}>
-                      <option value='bearer'>{t('Bearer token')}</option>
-                      <option value='api_key'>{t('API Key header')}</option>
-                      <option value='anthropic'>{t('Anthropic API Key')}</option>
+                  <label className='grid gap-1 text-sm font-medium sm:col-span-2'>
+                    {t('Use user upstream model (optional)')}
+                    <select
+                      className='border-input bg-background h-9 rounded-md border px-3 text-sm'
+                      value={candidate.upstreamModelID ?? ''}
+                      disabled={isSaving}
+                      onChange={(event) => {
+                        const selectedID = event.target.value ? Number(event.target.value) : null
+                        updateCandidate(index, { upstreamModelID: selectedID, realModelName: '', baseURL: '', apiKey: '' })
+                      }}
+                    >
+                      <option value=''>{t('Direct fill upstream URL and API Key')}</option>
+                      {upstreamModels.map((upstreamItem) => (
+                        <option key={upstreamItem.id} value={upstreamItem.id}>
+                          upstream/{upstreamItem.normalized_name} · {upstreamItem.real_model_name}
+                        </option>
+                      ))}
                     </select>
                   </label>
-                  {candidate.id && <p className='text-muted-foreground text-xs sm:col-span-2'>{t('For security, the saved upstream URL and API Key are never displayed. Leave either field blank to retain it, or enter a new value to rotate it.')}</p>}
+                  {candidate.upstreamModelID ? (
+                    <p className='text-muted-foreground text-xs sm:col-span-2'>
+                      {t('Credentials and real model name are resolved from the selected user upstream model.')}
+                    </p>
+                  ) : (
+                    <>
+                      <label className='grid gap-1 text-sm font-medium'>
+                        {t('Upstream URL')}
+                        <Input value={candidate.baseURL} disabled={isSaving} placeholder={candidate.id ? t('Leave blank to retain the saved upstream URL') : 'https://api.example.com'} onChange={(event) => updateCandidate(index, { baseURL: event.target.value })} />
+                      </label>
+                      <label className='grid gap-1 text-sm font-medium'>
+                        {t('Real model name')}
+                        <Input value={candidate.realModelName} disabled={isSaving} onChange={(event) => updateCandidate(index, { realModelName: event.target.value })} />
+                      </label>
+                      <label className='grid gap-1 text-sm font-medium'>
+                        {t('Upstream API Key')}
+                        <Input type='password' autoComplete='new-password' value={candidate.apiKey} disabled={isSaving} placeholder={candidate.id ? t('Enter a new API Key to save this custom candidate') : t('Enter upstream API Key')} onChange={(event) => updateCandidate(index, { apiKey: event.target.value })} />
+                      </label>
+                      <label className='grid gap-1 text-sm font-medium'>
+                        {t('Authentication style')}
+                        <select className='border-input bg-background h-9 rounded-md border px-3 text-sm' value={candidate.authStyle} disabled={isSaving} onChange={(event) => updateCandidate(index, { authStyle: event.target.value as VirtualModelCandidateAuthStyle })}>
+                          <option value='bearer'>{t('Bearer token')}</option>
+                          <option value='api_key'>{t('API Key header')}</option>
+                          <option value='anthropic'>{t('Anthropic API Key')}</option>
+                        </select>
+                      </label>
+                      {candidate.id && <p className='text-muted-foreground text-xs sm:col-span-2'>{t('For security, the saved upstream URL and API Key are never displayed. Leave either field blank to retain it, or enter a new value to rotate it.')}</p>}
+                    </>
+                  )}
                 </div>
               )}
 

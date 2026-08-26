@@ -14,6 +14,8 @@ export type VirtualModelCandidate = {
   // 喵~防御：候选响应绝不声明或接收可回显的上游 API Key 喵。
   base_url?: string
   auth_style?: VirtualModelCandidateAuthStyle
+  // 引用用户上游模型条目时非空，凭据与真实模型名以该条目为准喵。
+  upstream_model_id?: number | null
   failure_rules?: VirtualModelFailureRule[]
 }
 
@@ -28,10 +30,12 @@ export type VirtualModelCandidateInput = {
   max_retries: number
   timeout_seconds: number
   group_name?: string
-  real_model_name: string
+  real_model_name?: string
   base_url?: string
   api_key?: string
   auth_style?: VirtualModelCandidateAuthStyle
+  // 引用用户上游模型条目时非空，直填凭据字段可省略喵。
+  upstream_model_id?: number | null
 }
 
 // VirtualModelCandidatesReplaceInput 将候选链与读取时模型版本作为同一个原子写入请求发送喵。

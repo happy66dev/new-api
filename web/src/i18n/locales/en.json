@@ -6050,6 +6050,10 @@
     "Check remaining quota from upstream": "Check remaining quota from upstream",
     "Sync checked remaining quota into available balance": "Sync checked remaining quota into available balance",
     "Shared remaining": "Shared remaining",
-    "Custom Upstream": "Custom Upstream"
+    "Custom Upstream": "Custom Upstream",
+    "Use user upstream model (optional)": "Use user upstream model (optional)",
+    "Direct fill upstream URL and API Key": "Direct fill upstream URL and API Key",
+    "Credentials and real model name are resolved from the selected user upstream model.": "Credentials and real model name are resolved from the selected user upstream model.",
+    "Referenced upstream model": "Referenced upstream model"
   }
 }

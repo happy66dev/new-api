@@ -29,19 +29,21 @@ type virtualModelInput struct {
 
 // virtualModelCandidateInput 描述候选链编辑需要的非敏感字段喵。
 type virtualModelCandidateInput struct {
-	ID             int                            `json:"id"`
-	StableOrder    int                            `json:"stable_order"`
-	SourceType     model.VirtualModelSourceType   `json:"source_type"`
-	Enabled        bool                           `json:"enabled"`
-	MaxRetries     int                            `json:"max_retries"`
-	TimeoutSeconds int                            `json:"timeout_seconds"`
-	GroupName      string                         `json:"group_name"`
-	RealModelName  string                         `json:"real_model_name"`
-	BaseURL        string                         `json:"base_url"`
-	APIKey         string                         `json:"api_key"`
-	AuthStyle      model.VirtualModelAuthStyle    `json:"auth_style"`
+	ID             int                          `json:"id"`
+	StableOrder    int                          `json:"stable_order"`
+	SourceType     model.VirtualModelSourceType `json:"source_type"`
+	Enabled        bool                         `json:"enabled"`
+	MaxRetries     int                          `json:"max_retries"`
+	TimeoutSeconds int                          `json:"timeout_seconds"`
+	GroupName      string                       `json:"group_name"`
+	RealModelName  string                       `json:"real_model_name"`
+	BaseURL        string                       `json:"base_url"`
+	APIKey         string                       `json:"api_key"`
+	AuthStyle      model.VirtualModelAuthStyle  `json:"auth_style"`
+	// UpstreamModelID 引用用户上游模型条目，非空时凭据与真实模型名以该条目为准喵。
+	UpstreamModelID *int64 `json:"upstream_model_id,omitempty"`
 	// 喵~防御：FailureRules 必须使用真实模型类型而不是 DTO，否则 GORM 会按结构体名生成 virtual_model_failure_rule_inputs 表名导致查询报 no such table。
-	FailureRules   []model.VirtualModelFailureRule `json:"failure_rules,omitempty"`
+	FailureRules []model.VirtualModelFailureRule `json:"failure_rules,omitempty"`
 }
 
 // virtualModelCandidatesReplaceInput 描述带模型版本保护的候选链整体保存请求喵。
@@ -52,8 +54,8 @@ type virtualModelCandidatesReplaceInput struct {
 
 // virtualModelFailureRuleInput 描述一个失败规则的可编辑字段喵。
 type virtualModelFailureRuleInput struct {
-	ID            int                             `json:"id"`
-	HTTPStatus    int                             `json:"http_status"`
+	ID         int `json:"id"`
+	HTTPStatus int `json:"http_status"`
 	// HTTPStatusMax 是状态码范围匹配的上界，零表示仅匹配 HTTPStatus 单值喵。
 	HTTPStatusMax int                             `json:"http_status_max"`
 	ErrorClass    string                          `json:"error_class"`
@@ -118,8 +120,8 @@ func loadOwnedVirtualModel(c *gin.Context, modelID int) (*model.VirtualModel, bo
 // virtualModelResponse 返回脱敏的主模型配置和候选链喵。
 type virtualModelResponse struct {
 	*model.VirtualModel
-	Candidates []virtualModelCandidateInput        `json:"candidates"`
-	Bindings   []int                               `json:"binding_token_ids"`
+	Candidates []virtualModelCandidateInput `json:"candidates"`
+	Bindings   []int                        `json:"binding_token_ids"`
 	// GlobalFailureRules 是模型级全局兜底失败规则，候选未配置规则时运行时按其决策喵。
 	GlobalFailureRules []model.VirtualModelGlobalFailureRule `json:"global_failure_rules,omitempty"`
 }
@@ -154,6 +156,8 @@ func buildVirtualModelResponse(virtualModel *model.VirtualModel) (*virtualModelR
 			}
 			candidateResponse.RealModelName = customCandidate.RealModelName
 			candidateResponse.BaseURL = customCandidate.BaseURLSummary
+			// 用户上游模型引用回填，供前端候选链编辑器展示喵。
+			candidateResponse.UpstreamModelID = customCandidate.UpstreamModelID
 			// 喵~防御：历史认证枚举不得回显为旧内部值，控制面只输出稳定 wire value 喵。
 			candidateResponse.AuthStyle = model.VirtualModelAuthStyleFromStorage(customCandidate.AuthStyle)
 		}
@@ -539,6 +543,10 @@ func validateVirtualModelCandidateSourceInput(sourceType model.VirtualModelSourc
 	if sourceType != model.VirtualModelSourceCustom {
 		return errors.New("虚拟模型候选来源无效")
 	}
+	// 引用用户上游模型时，真实模型名与凭据以该条目为准，不要求直填字段喵。
+	if candidateInput.UpstreamModelID != nil && *candidateInput.UpstreamModelID > 0 {
+		return nil
+	}
 	if strings.TrimSpace(candidateInput.RealModelName) == "" {
 		return errors.New("自定义候选必须提供真实模型")
 	}
@@ -595,6 +603,14 @@ func saveVirtualModelCandidateSourceConfig(tx *gorm.DB, candidate *model.Virtual
 	if customCandidateQueryError != nil && !errors.Is(customCandidateQueryError, gorm.ErrRecordNotFound) {
 		return customCandidateQueryError
 	}
+	// 引用用户上游模型条目：凭据与真实模型名以条目为准，直填字段仅作展示兼容喵。
+	if candidateInput.UpstreamModelID != nil && *candidateInput.UpstreamModelID > 0 {
+		customCandidate.UpstreamModelID = candidateInput.UpstreamModelID
+		customCandidate.CandidateID = candidate.ID
+		return tx.Where("candidate_id = ?", candidate.ID).Assign(customCandidate).FirstOrCreate(&model.VirtualModelCustomCandidate{}).Error
+	}
+	// 无引用：清空引用标记并走原有直填凭据逻辑喵。
+	customCandidate.UpstreamModelID = nil
 	apiKey := strings.TrimSpace(candidateInput.APIKey)
 	baseURL := strings.TrimSpace(candidateInput.BaseURL)
 	// 喵~防御：保留候选省略地址时仅保留既有加密 URL，不用脱敏摘要重建或覆盖真正目标喵。
