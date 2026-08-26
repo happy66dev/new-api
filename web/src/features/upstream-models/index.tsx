@@ -531,13 +531,12 @@ export function UpstreamModels() {
             </div>
           ))}
         </div>
-      </SectionPageLayout.Content>
 
-      <UpstreamModelDrawer
-        open={isDrawerOpen}
-        onOpenChange={setIsDrawerOpen}
-        model={editingModel}
-      />
+        <UpstreamModelDrawer
+          open={isDrawerOpen}
+          onOpenChange={setIsDrawerOpen}
+          model={editingModel}
+        />
 
       <AlertDialog open={Boolean(deletingModel)} onOpenChange={(open) => !open && setDeletingModel(null)}>
         <AlertDialogContent>
@@ -553,6 +552,7 @@ export function UpstreamModels() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      </SectionPageLayout.Content>
     </SectionPageLayout>
   )
 }

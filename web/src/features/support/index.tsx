@@ -819,25 +819,25 @@ export function Support() {
             )}
           </section>
         </div>
+        <ImagePreviewDialog
+          open={Boolean(previewImage)}
+          onOpenChange={(open) => {
+            if (!open) setPreviewImage(null)
+          }}
+          title={t('Image Preview')}
+          description={t('View the generated image')}
+          contentClassName='sm:max-w-4xl'
+          bodyClassName='flex min-h-0 items-center justify-center'
+        >
+          {previewImage && (
+            <img
+              src={previewImage}
+              alt={t('Support attachment')}
+              className='max-h-[calc(100vh-12rem)] max-w-full object-contain'
+            />
+          )}
+        </ImagePreviewDialog>
       </SectionPageLayout.Content>
-      <ImagePreviewDialog
-        open={Boolean(previewImage)}
-        onOpenChange={(open) => {
-          if (!open) setPreviewImage(null)
-        }}
-        title={t('Image Preview')}
-        description={t('View the generated image')}
-        contentClassName='sm:max-w-4xl'
-        bodyClassName='flex min-h-0 items-center justify-center'
-      >
-        {previewImage && (
-          <img
-            src={previewImage}
-            alt={t('Support attachment')}
-            className='max-h-[calc(100vh-12rem)] max-w-full object-contain'
-          />
-        )}
-      </ImagePreviewDialog>
     </SectionPageLayout>
   )
 }
