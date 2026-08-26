@@ -62,13 +62,13 @@ export const ERROR_CLASS_OPTIONS = [
 ] as const
 
 // BODY_REGEX_PRESETS 提供常用上游错误响应体的预设正则喵。
-// pattern 是实际写入的正则；labelKey 是供 i18n 翻译的预设名称键喵。
-export const BODY_REGEX_PRESETS: Record<string, { labelKey: string; pattern: string }> = {
-  rate_limited: { labelKey: 'Preset: rate limited', pattern: 'rate.{0,12}limit' },
-  overloaded: { labelKey: 'Preset: overloaded or capacity', pattern: '(capacity|overloaded)' },
-  insufficient_quota: { labelKey: 'Preset: insufficient quota', pattern: 'insufficient.{0,20}quota' },
-  context_length: { labelKey: 'Preset: context length exceeded', pattern: 'context.{0,12}length' },
-  temporarily_unavailable: { labelKey: 'Preset: temporarily unavailable', pattern: 'temporarily.{0,20}(unavailable|down)' },
+// pattern 是实际写入的正则；labelKey 是供 i18n 翻译的预设名称键；descriptionKey 描述该预设匹配的文字特征喵。
+export const BODY_REGEX_PRESETS: Record<string, { labelKey: string; descriptionKey: string; pattern: string }> = {
+  rate_limited: { labelKey: 'Preset: rate limited', descriptionKey: 'Preset description: rate limited', pattern: 'rate.{0,12}limit' },
+  overloaded: { labelKey: 'Preset: overloaded or capacity', descriptionKey: 'Preset description: overloaded or capacity', pattern: '(capacity|overloaded)' },
+  insufficient_quota: { labelKey: 'Preset: insufficient quota', descriptionKey: 'Preset description: insufficient quota', pattern: 'insufficient.{0,20}quota' },
+  context_length: { labelKey: 'Preset: context length exceeded', descriptionKey: 'Preset description: context length exceeded', pattern: 'context.{0,12}length' },
+  temporarily_unavailable: { labelKey: 'Preset: temporarily unavailable', descriptionKey: 'Preset description: temporarily unavailable', pattern: 'temporarily.{0,20}(unavailable|down)' },
 }
 
 // toFailureRuleDraft 将读取响应映射为可编辑草稿，并为缺失字段提供明确默认值喵。

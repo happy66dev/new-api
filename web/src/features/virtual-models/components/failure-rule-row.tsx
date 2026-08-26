@@ -101,7 +101,7 @@ export function FailureRuleEditorRow({
           <>
             <label className='grid gap-1 text-sm font-medium'>
               {t('Freeze seconds')}
-              <Input inputMode='numeric' value={rule.freezeSeconds} disabled={isSaving} placeholder={t('0 = auto from Retry-After')} onChange={(event) => onChange({ freezeSeconds: event.target.value })} />
+              <Input inputMode='numeric' value={rule.freezeSeconds} disabled={isSaving} placeholder={t('0 = auto from the response body field')} onChange={(event) => onChange({ freezeSeconds: event.target.value })} />
             </label>
             {/* 高级冻结：从响应体指定字段解析冻结时间，适配上游不返回 Retry-After 头的情况喵。 */}
             <div className='grid gap-3 rounded-md border border-dashed p-3 sm:col-span-3'>
@@ -136,15 +136,21 @@ export function FailureRuleEditorRow({
             </select>
           </label>
           {rule.bodyRegexMode === 'preset' && (
-            <label className='grid gap-1 text-sm font-medium'>
-              {t('Preset')}
-              <select className='border-input bg-background h-9 rounded-md border px-3 text-sm' value={rule.bodyRegexPreset} disabled={isSaving} onChange={(event) => onChange({ bodyRegexPreset: event.target.value })}>
-                <option value=''>{t('Select a preset')}</option>
-                {Object.entries(BODY_REGEX_PRESETS).map(([presetKey, preset]) => (
-                  <option key={presetKey} value={presetKey}>{t(preset.labelKey)}</option>
-                ))}
-              </select>
-            </label>
+            <div className='grid gap-1'>
+              <label className='grid gap-1 text-sm font-medium'>
+                {t('Preset')}
+                <select className='border-input bg-background h-9 rounded-md border px-3 text-sm' value={rule.bodyRegexPreset} disabled={isSaving} onChange={(event) => onChange({ bodyRegexPreset: event.target.value })}>
+                  <option value=''>{t('Select a preset')}</option>
+                  {Object.entries(BODY_REGEX_PRESETS).map(([presetKey, preset]) => (
+                    <option key={presetKey} value={presetKey}>{t(preset.labelKey)}</option>
+                  ))}
+                </select>
+              </label>
+              {/* 已选预设时提示其匹配的文字特征，方便用户确认正则语义喵。 */}
+              {rule.bodyRegexPreset !== '' && BODY_REGEX_PRESETS[rule.bodyRegexPreset]?.descriptionKey != null && (
+                <p className='text-xs text-muted-foreground'>{t(BODY_REGEX_PRESETS[rule.bodyRegexPreset].descriptionKey)}</p>
+              )}
+            </div>
           )}
           {rule.bodyRegexMode === 'simple' && (
             <label className='grid gap-1 text-sm font-medium'>

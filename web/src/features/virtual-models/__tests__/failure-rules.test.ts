@@ -343,3 +343,14 @@ describe('validateFailureRuleDraft', () => {
     expect(draft.freezeUnit).toBe('minutes')
   })
 })
+
+// describe BODY_REGEX_PRESETS：预设正则与描述文案的完整性喵。
+describe('BODY_REGEX_PRESETS', () => {
+  it('every preset ships a description key and a non-empty pattern', () => {
+    // 预设必须同时提供可翻译的描述键与非空正则，供界面提示与运行时匹配使用喵。
+    for (const preset of Object.values(BODY_REGEX_PRESETS)) {
+      expect(preset.descriptionKey).not.toBe('')
+      expect(preset.pattern).not.toBe('')
+    }
+  })
+})
