@@ -52,7 +52,7 @@ func GetUserUsableGroups(userGroup string) map[string]string {
 		}
 	}
 	// 用户共享分组硬编码追加到所有用户可用分组，共享模型归入该分组喵。
-	groupsCopy[constant.GroupUserShared] = "用户共享分组"
+	groupsCopy[constant.GroupUserShared] = "用户共享"
 	return groupsCopy
 }
 

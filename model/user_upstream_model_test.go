@@ -15,7 +15,12 @@ func TestNormalizeUserUpstreamModelName(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "my-upstream_1", normalizedName)
 
-	// 带 upstream/ 前缀时自动剥离喵。
+	// 带 user/ 前缀时自动剥离喵。
+	normalizedName, err = NormalizeUserUpstreamModelName("user/My-Model")
+	require.NoError(t, err)
+	assert.Equal(t, "my-model", normalizedName)
+
+	// 兼容旧前缀 upstream/ 的存量请求喵。
 	normalizedName, err = NormalizeUserUpstreamModelName("upstream/My-Model")
 	require.NoError(t, err)
 	assert.Equal(t, "my-model", normalizedName)
@@ -62,7 +67,7 @@ func TestUserUpstreamModelCRUD(t *testing.T) {
 	fetched, err := GetUserUpstreamModelByOwnerID(created.ID, 7)
 	require.NoError(t, err)
 	assert.Equal(t, "alpha", fetched.NormalizedName)
-	assert.Equal(t, "upstream/alpha", fetched.UserUpstreamModelName())
+	assert.Equal(t, "user/alpha", fetched.UserUpstreamModelName())
 
 	// 列表只返回属主自己的模型喵。
 	list, err := GetUserUpstreamModelsByOwner(7)
@@ -175,10 +180,10 @@ func TestSharedUserUpstreamModels(t *testing.T) {
 
 	// 共享中的模型名只包含未耗尽的共享模型喵。
 	names := GetSharedUserUpstreamModelNames()
-	assert.Contains(t, names, "upstream/shared-ok")
-	assert.Contains(t, names, "upstream/shared-unlimited")
-	assert.NotContains(t, names, "upstream/shared-exhausted")
-	assert.NotContains(t, names, "upstream/not-shared")
+	assert.Contains(t, names, "user/shared-ok")
+	assert.Contains(t, names, "user/shared-unlimited")
+	assert.NotContains(t, names, "user/shared-exhausted")
+	assert.NotContains(t, names, "user/not-shared")
 
 	// 共享额度的剩余视图字段正确喵。
 	views, err := GetSharedUserUpstreamModels()

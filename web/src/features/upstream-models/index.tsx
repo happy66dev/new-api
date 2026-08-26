@@ -35,6 +35,7 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
+import { Textarea } from '@/components/ui/textarea'
 
 import {
   checkUserUpstreamModelBalance,
@@ -69,6 +70,8 @@ function UpstreamModelDrawer({
   // 表单受控状态集中管理，字符串字段避免输入中间态被过早截断喵。
   const [normalizedName, setNormalizedName] = useState('')
   const [displayName, setDisplayName] = useState('')
+  // 模型简介独立于显示名，用于模型广场卡片展示喵。
+  const [description, setDescription] = useState('')
   const [enabled, setEnabled] = useState(true)
   const [baseURL, setBaseURL] = useState('')
   const [apiKey, setAPIKey] = useState('')
@@ -96,6 +99,7 @@ function UpstreamModelDrawer({
     if (!open) return
     setNormalizedName(model?.normalized_name ?? '')
     setDisplayName(model?.display_name ?? '')
+    setDescription(model?.description ?? '')
     setEnabled(model?.enabled ?? true)
     // 编辑模式不自动回填密钥，留空表示保留服务端密文喵。
     setBaseURL(model?.base_url ?? '')
@@ -141,6 +145,7 @@ function UpstreamModelDrawer({
     const input: UserUpstreamModelInput = {
       normalized_name: trimmedNormalizedName,
       display_name: displayName.trim(),
+      description: description.trim(),
       enabled,
       base_url: baseURL.trim(),
       api_key: apiKey,
@@ -352,6 +357,16 @@ function UpstreamModelDrawer({
               icon={<Settings2 className='size-4' />}
               iconTone='info'
             />
+            <label className='grid gap-1 text-sm font-medium'>
+              {t('Model description')}
+              <Textarea
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
+                placeholder={t('Describe what this model is about')}
+                disabled={isSaving}
+                rows={3}
+              />
+            </label>
             <label className='flex items-center justify-between gap-3 text-sm'>
               <span>{t('Share to all users')}</span>
               <Switch checked={shareEnabled} onCheckedChange={setShareEnabled} disabled={isSaving} />
@@ -483,7 +498,7 @@ export function UpstreamModels() {
                   {item.share_enabled && <Badge variant='outline'>{t('Shared')}</Badge>}
                 </div>
                 <div className='text-muted-foreground mt-0.5 truncate text-xs'>
-                  upstream/{item.normalized_name} · {item.real_model_name}
+                  user/{item.normalized_name} · {item.real_model_name}
                   {item.base_url ? ` · ${item.base_url}` : ''}
                 </div>
                 <div className='text-muted-foreground mt-1 text-xs'>

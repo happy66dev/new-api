@@ -26,7 +26,7 @@ const defaultUserUpstreamGroupName = "default"
 
 // isUserUpstreamModelRequest 判断请求模型是否进入用户上游模型独立命名空间喵。
 func isUserUpstreamModelRequest(modelName string) bool {
-	return strings.HasPrefix(strings.TrimSpace(modelName), "upstream/")
+	return strings.HasPrefix(strings.TrimSpace(modelName), "user/")
 }
 
 // abortUpstreamModelQuotaExhausted 统一返回额度不足的受控错误喵。

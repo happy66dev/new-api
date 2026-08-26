@@ -250,12 +250,24 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
         {props.model.description || t('No description available.')}
       </p>
 
+      {/* 用户共享模型的免责说明：提示非本站提供、本站不担保安全喵。 */}
+      {props.model.owner_by === 'user-shared' && (
+        <p className='text-muted-foreground/60 mt-1.5 flex items-start gap-1.5 rounded-md border border-amber-300/50 bg-amber-50/50 px-2 py-1.5 text-[11px] leading-4 dark:border-amber-400/20 dark:bg-amber-400/10'>
+          <span className='mt-0.5 text-amber-600/70 dark:text-amber-300/70'>⚠</span>
+          <span>
+            {t(
+              'These are user-shared upstream models, not provided by this site. We do not guarantee their availability or safety.'
+            )}
+          </span>
+        </p>
+      )}
+
       {/* Footer: left metadata and right performance summary share row alignment */}
       <div className='mt-2 grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-2 gap-y-1 sm:mt-4'>
         <div className='flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1'>
           {primaryGroup && (
             <span className='text-muted-foreground text-sm font-medium'>
-              {primaryGroup}
+              {primaryGroup === 'user-shared' ? t('User Shared') : primaryGroup}
             </span>
           )}
           {/* 用户共享模型：展示共享剩余额度；属主且开启展示时附加余额信息喵。 */}

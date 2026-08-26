@@ -51,6 +51,8 @@ function getGroupLabel(params: {
   if (params.labelOverride) return params.labelOverride
   if (params.isEmptyGroup) return params.t('User Group')
   if (params.isAutoGroup) return params.t('Auto')
+  // 用户共享分组（user-shared）统一显示本地化译名"用户共享"喵。
+  if (params.groupName === 'user-shared') return params.t('User Shared')
   return params.groupName ?? ''
 }
 

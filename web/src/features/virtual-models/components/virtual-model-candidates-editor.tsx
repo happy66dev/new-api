@@ -282,10 +282,10 @@ export function VirtualModelCandidatesEditor({
       }
       return groupName || t('Unnamed candidate')
     }
-    // 自定义候选显示真实模型名；引用用户上游模型时显示 upstream/ 名称喵。
+    // 自定义候选显示真实模型名；引用用户上游模型时显示 user/ 名称喵。
     if (candidate.upstreamModelID) {
       const referencedModel = upstreamModels.find((upstreamItem) => upstreamItem.id === candidate.upstreamModelID)
-      return referencedModel ? `upstream/${referencedModel.normalized_name}` : t('Referenced upstream model')
+      return referencedModel ? `user/${referencedModel.normalized_name}` : t('Referenced upstream model')
     }
     return candidate.realModelName.trim() || t('Unnamed candidate')
   }
@@ -470,7 +470,7 @@ export function VirtualModelCandidatesEditor({
                       <option value=''>{t('Direct fill upstream URL and API Key')}</option>
                       {upstreamModels.map((upstreamItem) => (
                         <option key={upstreamItem.id} value={upstreamItem.id}>
-                          upstream/{upstreamItem.normalized_name} · {upstreamItem.real_model_name}
+                          user/{upstreamItem.normalized_name} · {upstreamItem.real_model_name}
                         </option>
                       ))}
                     </select>

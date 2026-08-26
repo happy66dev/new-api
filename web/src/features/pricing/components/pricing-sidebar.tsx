@@ -187,7 +187,8 @@ export function PricingSidebar(props: PricingSidebarProps) {
     },
     ...props.groups.map((group) => ({
       value: group,
-      label: group,
+      // 用户共享分组下拉显示本地化译名，其余分组显示原始分组名喵。
+      label: group === 'user-shared' ? t('User Shared') : group,
       suffix: formatGroupRatio(props.groupRatios?.[group]),
     })),
   ]

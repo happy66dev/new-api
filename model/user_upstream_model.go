@@ -19,7 +19,9 @@ type UserUpstreamModel struct {
 	OwnerUserID    int    `json:"owner_user_id" gorm:"index"`
 	NormalizedName string `json:"normalized_name" gorm:"type:varchar(96);uniqueIndex:idx_upstream_owner_name"`
 	DisplayName    string `json:"display_name" gorm:"type:varchar(128)"`
-	Enabled        bool   `json:"enabled"`
+	// Description 是模型简介，展示在模型广场卡片上，独立于显示名喵。
+	Description string `json:"description" gorm:"type:text"`
+	Enabled     bool   `json:"enabled"`
 	// 上游连接：凭据一律加密存储，绝不落明文喵。
 	EncryptedBaseURL   string `json:"-" gorm:"type:text"`
 	EncryptedAPIKey    string `json:"-" gorm:"type:text"`
@@ -61,8 +63,12 @@ type UserUpstreamModel struct {
 func NormalizeUserUpstreamModelName(input string) (string, error) {
 	// 喵~防御：拒绝空值、路径分隔符、非 ASCII 字符和超长名称，避免资源穿透与歧义喵。
 	name := strings.TrimSpace(input)
-	if strings.HasPrefix(name, "upstream/") {
-		name = strings.TrimPrefix(name, "upstream/")
+	// 调用前缀统一为 user/，同时兼容旧前缀 upstream/ 的存量请求喵。
+	for _, prefix := range []string{"user/", "upstream/"} {
+		if strings.HasPrefix(name, prefix) {
+			name = strings.TrimPrefix(name, prefix)
+			break
+		}
 	}
 	if name == "" || len(name) > 96 || !UserUpstreamModelNamePattern.MatchString(name) {
 		return "", errors.New("用户上游模型名称只允许 ASCII 字母、数字、短横线和下划线")
@@ -70,13 +76,13 @@ func NormalizeUserUpstreamModelName(input string) (string, error) {
 	return strings.ToLower(name), nil
 }
 
-// UserUpstreamModelName 返回对外使用的 upstream/ 模型名称喵。
+// UserUpstreamModelName 返回对外使用的 user/ 模型名称喵。
 func (upstreamModel *UserUpstreamModel) UserUpstreamModelName() string {
 	// 喵~防御：空对象不生成名称，避免上游模型名悬空喵。
 	if upstreamModel == nil {
 		return ""
 	}
-	return "upstream/" + upstreamModel.NormalizedName
+	return "user/" + upstreamModel.NormalizedName
 }
 
 // GetUserUpstreamModelsByOwner 返回某用户拥有的全部上游模型喵。
@@ -178,6 +184,7 @@ type SharedUserUpstreamModelView struct {
 	OwnerUserID            int
 	NormalizedName         string
 	DisplayName            string
+	Description            string
 	RealModelName          string
 	ModelRatio             string
 	CompletionRatio        string
@@ -194,7 +201,7 @@ func GetSharedUserUpstreamModels() ([]SharedUserUpstreamModelView, error) {
 	var views []SharedUserUpstreamModelView
 	// 共享额度为 0 表示不限；达到额度即自动停止共享（从列表消失）喵。
 	if err := DB.Model(&UserUpstreamModel{}).
-		Select("id", "owner_user_id", "normalized_name", "display_name", "real_model_name", "model_ratio", "completion_ratio", "share_limit_cents", "share_spent_cents", "show_balance_enabled", "balance_cents", "spend_limit_cents", "upstream_remaining_cents").
+		Select("id", "owner_user_id", "normalized_name", "display_name", "description", "real_model_name", "model_ratio", "completion_ratio", "share_limit_cents", "share_spent_cents", "show_balance_enabled", "balance_cents", "spend_limit_cents", "upstream_remaining_cents").
 		Where("share_enabled = ? AND (share_limit_cents = 0 OR share_spent_cents < share_limit_cents)", true).
 		Find(&views).Error; err != nil {
 		return nil, err
@@ -211,7 +218,7 @@ func GetSharedUserUpstreamModelNames() []string {
 	}
 	names := make([]string, 0, len(views))
 	for _, view := range views {
-		names = append(names, "upstream/"+view.NormalizedName)
+		names = append(names, "user/"+view.NormalizedName)
 	}
 	return names
 }

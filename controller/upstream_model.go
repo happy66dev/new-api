@@ -16,6 +16,7 @@ import (
 type upstreamModelInput struct {
 	NormalizedName       string `json:"normalized_name"`
 	DisplayName          string `json:"display_name"`
+	Description          string `json:"description"`
 	Enabled              bool   `json:"enabled"`
 	BaseURL              string `json:"base_url"`
 	APIKey               string `json:"api_key"`
@@ -131,6 +132,7 @@ func saveUpstreamModelFields(input upstreamModelInput, ownerUserID int, existing
 	existing.OwnerUserID = ownerUserID
 	existing.NormalizedName = normalizedName
 	existing.DisplayName = input.DisplayName
+	existing.Description = input.Description
 	existing.Enabled = input.Enabled
 	existing.RealModelName = input.RealModelName
 	// 喵~防御：真实模型名必填，避免无模型名的上游请求喵。

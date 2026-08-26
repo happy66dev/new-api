@@ -450,7 +450,10 @@ function ModelBackendSignalsSection(props: { model: PricingModel }) {
 function ModelBackendProviderSection(props: { model: PricingModel }) {
   const { t } = useTranslation()
   const model = props.model
-  const groups = normalizeCatalogItems(model.enable_groups)
+  // 用户共享分组在详情中统一显示本地化译名喵。
+  const groups = normalizeCatalogItems(model.enable_groups).map((groupName) =>
+    groupName === 'user-shared' ? t('User Shared') : groupName
+  )
   const endpoints = normalizeCatalogItems(model.supported_endpoint_types)
   const tags = parseTags(model.tags)
   const cells: React.ReactNode[] = []

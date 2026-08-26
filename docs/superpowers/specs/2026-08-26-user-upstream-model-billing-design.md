@@ -27,7 +27,7 @@ new-api 目前只有"虚拟模型"（`virtual/<name>`）供用户管理私有模
 
 ## 3. 术语
 
-- **用户上游模型（User Upstream Model）**：用户私有的一条上游配置，`upstream/<normalizedName>` 唯一标识喵。
+- **用户上游模型（User Upstream Model）**：用户私有的一条上游配置，`user/<normalizedName>` 唯一标识喵。
 - **余额（Balance）**：该模型可扣减的 RMB 余额，手动预存或一键同步嗅探结果喵。
 - **使用额度上限（SpendLimit）**：自用累计消耗（RMB）阈值，达到后请求拦截喵。
 - **剩余API额度（UpstreamRemaining）**：上游 key 的真实剩余额度（嗅探或手动设置），仅展示，不直接参与扣费喵。
@@ -42,7 +42,8 @@ type UserUpstreamModel struct {
     ID                     int64
     OwnerUserID            int    // 属主，硬约束不可被客户端修改
     NormalizedName         string // 规范名，owner 内唯一（复用 NormalizeVirtualModelName 思路）
-    DisplayName            string
+    DisplayName            string // 显示名，界面展示用
+    Description            string // 模型简介，展示在模型广场卡片上，独立于显示名
     Enabled                bool
     // 上游连接（复用 service/virtualmodel/credential_vault.go 的 AES 加密）
     EncryptedBaseURL       string
@@ -89,7 +90,7 @@ type UserUpstreamModel struct {
 ### 4.2 硬编码共享分组
 
 - 常量 `constant.GroupUserShared = "user-shared"`，所有用户可用分组默认包含它喵。
-- 共享模型不写 abilities 表（不走 channel/ability 索引），`/api/user/models` 在 `user-shared` 分组下直接查共享中的 `upstream/<name>` 返回喵。
+- 共享模型不写 abilities 表（不走 channel/ability 索引），`/api/user/models` 在 `user-shared` 分组下直接查共享中的 `user/<name>` 返回喵。
 
 ### 4.3 日志类型
 
@@ -145,8 +146,8 @@ costCents = (
 
 ## 6. 调用流程
 
-### 6.1 直接调用 `upstream/<name>`
-1. 分发层新增 `isUserUpstreamModelRequest`（前缀 `upstream/`），在 `Distribute()` 中识别并转 `handleUserUpstreamModelRequest`（独立于虚拟模型链）喵。
+### 6.1 直接调用 `user/<name>`
+1. 分发层新增 `isUserUpstreamModelRequest`（前缀 `user/`），在 `Distribute()` 中识别并转 `handleUserUpstreamModelRequest`（独立于虚拟模型链）喵。
 2. 按 owner（会话态）或 token 授权查询启用模型；校验硬检查 → 解密凭据 → 构造上游请求转发喵。
 3. **读响应并解析 usage**（非流式读完整 body；流式逐 SSE 事件累积，最终 chunk 取 usage）→ 计费 → 原样转发响应喵。
 4. 写日志（type=自定上游/CustomUpstream），`Other` 记录 `custom_cost_rmb`/`model_ratio`/`completion_ratio`/`cache_ratio`/`cache_creation_ratio`/`image_ratio`/`audio_ratio`/四类 token 明细喵。
@@ -166,9 +167,9 @@ costCents = (
 
 - `GET/POST /api/upstream-models`、`GET/PUT/DELETE /api/upstream-models/:id`（owner 隔离，参考虚拟模型 controller 模式）喵。
 - `POST /api/upstream-models/:id/balance-check`（嗅探）、`POST /api/upstream-models/:id/balance/sync`（嗅探结果设为余额）喵。
-- `GET /api/user/models` 在 `user-shared` 分组返回共享 `upstream/<name>` 喵。
+- `GET /api/user/models` 在 `user-shared` 分组返回共享 `user/<name>` 喵。
 - `GET /api/pricing` 追加共享模型条目（含共享剩余额度，供模型广场）喵。
-- 直接调用入口：`/v1/chat/completions`、`/pg/chat/completions` 等现有 relay 路由，模型名 `upstream/<name>` 喵。
+- 直接调用入口：`/v1/chat/completions`、`/pg/chat/completions` 等现有 relay 路由，模型名 `user/<name>` 喵。
 
 ## 9. 前端
 
@@ -185,7 +186,7 @@ costCents = (
 ### P1：用户上游模型基础 CRUD + 直接调用透传 ✅ 已实现
 - 表 `user_upstream_models`、AutoMigrate、controller/router、owner 隔离、凭据加密存储（复用 credential_vault）喵。
 - 前端菜单 + 列表 + 创建/编辑抽屉喵。
-- 分发层 `upstream/` 识别 + 透传（**暂不计费**）喵。
+- 分发层 `user/` 识别 + 透传（**暂不计费**）喵。
 - 测试：CRUD 边界、加密、透传、owner 隔离、前缀识别喵。
 
 ### P2：独立 RMB 计费系统 ✅ 已实现
@@ -208,19 +209,19 @@ costCents = (
 ## 11. 验证
 
 - 每期：后端相关包 `go test`、前端 `bunx vitest run`、`bun run typecheck` 与 `bun run build` 喵。
-- 冒烟：启动 exe，创建用户上游模型 → 直接调用 `upstream/<name>` → 日志出现 type=自定上游 的计费明细；设共享 → 其他用户 `user-shared` 分组可见并免费调用 → 共享调用日志归入"自定上游"类型且 group=user-shared；余额耗尽 → 请求返回额度不足喵。
+- 冒烟：启动 exe，创建用户上游模型 → 直接调用 `user/<name>` → 日志出现 type=自定上游 的计费明细；设共享 → 其他用户 `user-shared` 分组可见并免费调用 → 共享调用日志归入"自定上游"类型且 group=user-shared；余额耗尽 → 请求返回额度不足喵。
 - 回归：普通模型与虚拟模型 internal 候选计费不受影响（`go test ./...` 除已知 Windows flaky 外通过）喵。
 
 ### 冒烟验证实录（2026-08-27，mock 上游 127.0.0.1:19090 + SQLite smoke.db）
 
 - **P3 嗅探**：`POST /api/upstream-models/1/balance-check` → `upstream_remaining_cents=65700`（(120-30)USD × 7.3 汇率 × 100）喵；`balance/sync` → `balance_cents=65700` 喵。
-- **P4 共享**：user2 在 `GET /api/user/models?group=user-shared` 看到 `upstream/smoke` 喵；共享调用成功且免费（owner balance 不变、total_spent 不变、share_spent +150）喵；日志 type=8、group=`user-shared`、quota=0、`is_shared_call=true` 喵；`share_spent` 达 `share_limit` 后共享调用返回 404（模型停止共享），owner 自用仍 200 且照常扣费喵。
+- **P4 共享**：user2 在 `GET /api/user/models?group=user-shared` 看到 `user/smoke` 喵；共享调用成功且免费（owner balance 不变、total_spent 不变、share_spent +150）喵；日志 type=8、group=`user-shared`、quota=0、`is_shared_call=true` 喵；`share_spent` 达 `share_limit` 后共享调用返回 404（模型停止共享），owner 自用仍 200 且照常扣费喵。
 - **P5 候选链**：虚拟模型 custom 候选设 `upstream_model_id=1` 后持久化成功喵；绑定 token 后调用 `virtual/smoke-vm` 返回 200，费用归属用户上游模型（balance 扣款、total_spent 累计）喵；日志 type=8、group=`default` 喵。
 - 清理：冒烟结束后停止 mock/exe 后台进程并删除 `smoke.db` 喵。
 
 ## 12. 待确认的次要细节（已给推荐值，实现前如主人有异议再改）
 
-1. 直接调用前缀用 **`upstream/<name>`**（与 `virtual/` 平行）喵。
+1. 直接调用前缀用 **`user/<name>`**（与 `virtual/` 平行）喵。
 2. 定价采用**每类型直接价格**（输入/输出/缓存/图片/音频等各自独立，单位 RMB 元/每百万 token，默认全 1），按请求固定价（UsePrice）暂不支持喵。
 3. RMB 金额内部以**分**（int64）存储，前端展示元喵。
 4. 嗅探 USD→RMB 汇率**默认固定值**（可在设置里改），嗅探失败不自动禁用喵。

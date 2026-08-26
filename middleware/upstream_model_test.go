@@ -22,11 +22,11 @@ func newUpstreamModelTestDB(t *testing.T) *gorm.DB {
 	return testDB
 }
 
-// TestIsUserUpstreamModelRequest 验证 upstream/ 前缀识别喵。
+// TestIsUserUpstreamModelRequest 验证 user/ 前缀识别喵。
 func TestIsUserUpstreamModelRequest(t *testing.T) {
 	// 带前缀的模型名应被识别为用户上游模型喵。
-	require.True(t, isUserUpstreamModelRequest("upstream/alpha"))
-	require.True(t, isUserUpstreamModelRequest("  upstream/alpha  "))
+	require.True(t, isUserUpstreamModelRequest("user/alpha"))
+	require.True(t, isUserUpstreamModelRequest("  user/alpha  "))
 
 	// 普通模型名与虚拟模型名不应被误识别喵。
 	require.False(t, isUserUpstreamModelRequest("gpt-4o"))
@@ -50,36 +50,36 @@ func TestHandleUserUpstreamModelRequestAuth(t *testing.T) {
 	// 模型不存在时返回统一 404，避免枚举资源喵。
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"upstream/missing"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/missing"}`))
 	ctx.Set("id", 7)
-	handled := handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "upstream/missing"})
+	handled := handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "user/missing"})
 	require.False(t, handled)
 	require.Equal(t, http.StatusNotFound, recorder.Code)
 
 	// 停用模型同样返回 404，不暴露停用状态喵。
 	recorder = httptest.NewRecorder()
 	ctx, _ = gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"upstream/disabled"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/disabled"}`))
 	ctx.Set("id", 7)
-	handled = handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "upstream/disabled"})
+	handled = handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "user/disabled"})
 	require.False(t, handled)
 	require.Equal(t, http.StatusNotFound, recorder.Code)
 
 	// 跨用户访问隐藏资源存在性，同样 404 喵。
 	recorder = httptest.NewRecorder()
 	ctx, _ = gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"upstream/alpha"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/alpha"}`))
 	ctx.Set("id", 8)
-	handled = handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "upstream/alpha"})
+	handled = handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "user/alpha"})
 	require.False(t, handled)
 	require.Equal(t, http.StatusNotFound, recorder.Code)
 
 	// 无效模型名直接拒绝，不触发数据库查询喵。
 	recorder = httptest.NewRecorder()
 	ctx, _ = gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"upstream/坏名"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/坏名"}`))
 	ctx.Set("id", 7)
-	handled = handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "upstream/坏名"})
+	handled = handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "user/坏名"})
 	require.False(t, handled)
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
 }
@@ -97,9 +97,9 @@ func TestHandleUserUpstreamModelRequestQuota(t *testing.T) {
 	require.NoError(t, testDB.Create(&model.UserUpstreamModel{OwnerUserID: 7, NormalizedName: "empty-balance", Enabled: true, BalanceCents: 0}).Error)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"upstream/empty-balance"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/empty-balance"}`))
 	ctx.Set("id", 7)
-	handled := handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "upstream/empty-balance"})
+	handled := handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "user/empty-balance"})
 	require.False(t, handled)
 	require.Equal(t, http.StatusConflict, recorder.Code)
 
@@ -107,9 +107,9 @@ func TestHandleUserUpstreamModelRequestQuota(t *testing.T) {
 	require.NoError(t, testDB.Create(&model.UserUpstreamModel{OwnerUserID: 7, NormalizedName: "limit-reached", Enabled: true, BalanceCents: 500, SpendLimitCents: 300, TotalSpentCents: 300}).Error)
 	recorder = httptest.NewRecorder()
 	ctx, _ = gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"upstream/limit-reached"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/limit-reached"}`))
 	ctx.Set("id", 7)
-	handled = handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "upstream/limit-reached"})
+	handled = handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "user/limit-reached"})
 	require.False(t, handled)
 	require.Equal(t, http.StatusConflict, recorder.Code)
 
@@ -117,9 +117,9 @@ func TestHandleUserUpstreamModelRequestQuota(t *testing.T) {
 	require.NoError(t, testDB.Create(&model.UserUpstreamModel{OwnerUserID: 7, NormalizedName: "quota-ok", Enabled: true, BalanceCents: 500, SpendLimitCents: 300, TotalSpentCents: 100, EncryptedBaseURL: "bad-enc", EncryptedAPIKey: "bad-enc", CredentialVersion: 1, RealModelName: "gpt-4o"}).Error)
 	recorder = httptest.NewRecorder()
 	ctx, _ = gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"upstream/quota-ok"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/quota-ok"}`))
 	ctx.Set("id", 7)
-	handled = handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "upstream/quota-ok"})
+	handled = handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "user/quota-ok"})
 	require.False(t, handled)
 	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
 }
@@ -139,9 +139,9 @@ func TestHandleUserUpstreamModelRequestShared(t *testing.T) {
 	// 用户 8 调用共享模型：授权回退到共享路径并放行，密文无效返回 503 而非 404 喵。
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"upstream/shared"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/shared"}`))
 	ctx.Set("id", 8)
-	handled := handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "upstream/shared"})
+	handled := handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "user/shared"})
 	require.False(t, handled)
 	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
 
@@ -149,18 +149,18 @@ func TestHandleUserUpstreamModelRequestShared(t *testing.T) {
 	require.NoError(t, testDB.Model(&model.UserUpstreamModel{}).Where("normalized_name = ?", "shared").Update("share_spent_cents", 1000).Error)
 	recorder = httptest.NewRecorder()
 	ctx, _ = gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"upstream/shared"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/shared"}`))
 	ctx.Set("id", 8)
-	handled = handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "upstream/shared"})
+	handled = handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "user/shared"})
 	require.False(t, handled)
 	require.Equal(t, http.StatusNotFound, recorder.Code)
 
 	// 属主自己调用同一模型不受共享耗尽影响：属主查询优先，自用仍放行到透传喵。
 	recorder = httptest.NewRecorder()
 	ctx, _ = gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"upstream/shared"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/shared"}`))
 	ctx.Set("id", 7)
-	handled = handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "upstream/shared"})
+	handled = handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "user/shared"})
 	require.False(t, handled)
 	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
 }

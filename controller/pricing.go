@@ -123,8 +123,8 @@ func buildSharedUpstreamPricing(view model.SharedUserUpstreamModelView, viewerUs
 	modelRatio, _ := strconv.ParseFloat(view.ModelRatio, 64)
 	completionRatio, _ := strconv.ParseFloat(view.CompletionRatio, 64)
 	item := model.Pricing{
-		ModelName:        "upstream/" + view.NormalizedName,
-		Description:      view.DisplayName,
+		ModelName:        "user/" + view.NormalizedName,
+		Description:      view.Description,
 		QuotaType:        0,
 		ModelRatio:       modelRatio,
 		CompletionRatio:  completionRatio,
