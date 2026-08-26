@@ -46,6 +46,8 @@ const (
 	VirtualModelFreezeUnitMinutes VirtualModelFreezeUnit = "minutes"
 	// VirtualModelFreezeUnitMixed 表示字段值是分钟+秒格式（如 1m30s）喵。
 	VirtualModelFreezeUnitMixed VirtualModelFreezeUnit = "mixed"
+	// VirtualModelFreezeUnitAuto 表示自动在响应体中扫描自然语言时间（如 "in 22 minutes"）喵。
+	VirtualModelFreezeUnitAuto VirtualModelFreezeUnit = "auto"
 )
 
 // VirtualModelAuthStyle 标记自定义上游采用的认证头语义喵。

@@ -154,12 +154,33 @@ func candidateFreezeSeconds(rule model.VirtualModelFailureRule, failure Candidat
 	return freezeSeconds
 }
 
-// parseBodyFreezeSeconds 从响应体文本查找指定字段后的值，并按单位换算冻结秒数喵。
-// field 是响应体中的字段名；unit 决定字段值解读方式：seconds 直接按秒、minutes 按分钟乘以 60、
-// mixed 支持 "1m30s" 之类的复合格式喵。
+// naturalLanguagePattern 识别响应体中的自然语言时间，如 "in 22 minutes"、"after 5 seconds" 喵。
+// 必须带 in/after/within/wait 触发词，避免误匹配 "1h usage" 这类窗口描述喵。
+var naturalLanguagePattern = regexp.MustCompile(`(?i)\b(?:in|after|within|wait)\s+(\d+(?:\.\d+)?)\s*(hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b`)
+
+// valueNaturalUnitPattern 识别值文本开头的自然语言单位，如 "22 minutes" 喵。
+var valueNaturalUnitPattern = regexp.MustCompile(`^(\d+(?:\.\d+)?)\s*(hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b`)
+
+// valueMixedPattern 识别 1m30s、2m、45s 复合格式喵。
+var valueMixedPattern = regexp.MustCompile(`^(\d+)\s*(m(?:\s*(\d+)\s*s)?|s)`)
+
+// valueNumericPattern 识别纯数字开头的值喵。
+var valueNumericPattern = regexp.MustCompile(`^(\d+)`)
+
+// parseBodyFreezeSeconds 从响应体文本查找冻结时间，并按单位换算冻结秒数喵。
+// field 是响应体中的字段名；unit 决定解读方式：seconds 直接按秒、minutes 按分钟乘以 60、
+// mixed 支持 "1m30s" 复合格式、auto 自动在响应体全文扫描自然语言时间喵。
 func parseBodyFreezeSeconds(field string, unit model.VirtualModelFreezeUnit, body string) int {
-	// 喵~防御：字段名或响应体为空时无法解析，直接返回零喵。
-	if strings.TrimSpace(field) == "" || body == "" {
+	// 喵~防御：响应体为空时无法解析，直接返回零喵。
+	if body == "" {
+		return 0
+	}
+	// auto 单位自动全文扫描自然语言时间（如 "refreshes in 22 minutes"），无需用户指定字段名喵。
+	if unit == model.VirtualModelFreezeUnitAuto {
+		return scanNaturalLanguageFreezeSeconds(body)
+	}
+	// 喵~防御：非 auto 单位但字段名为空时无法定位值，直接返回零喵。
+	if strings.TrimSpace(field) == "" {
 		return 0
 	}
 	// 转义字段名中的正则元字符，避免用户输入破坏匹配结构喵。
@@ -182,52 +203,118 @@ func parseBodyFreezeSeconds(field string, unit model.VirtualModelFreezeUnit, bod
 	return parseFreezeValue(body[valueStart:valueEnd], unit)
 }
 
+// scanNaturalLanguageFreezeSeconds 在响应体全文查找第一处自然语言时间并换算秒数喵。
+func scanNaturalLanguageFreezeSeconds(body string) int {
+	const maximumFreezeSeconds = 24 * 60 * 60
+	// 找到第一处触发词引导的时间（如 "in 22 minutes"），避免重复扫描误匹配喵。
+	match := naturalLanguagePattern.FindStringSubmatch(body)
+	if match == nil {
+		return 0
+	}
+	// 换算数字与单位到秒，并对超界值做饱和夹紧喵。
+	return convertDurationMatch(match[1], match[2], maximumFreezeSeconds)
+}
+
 // parseFreezeValue 按单位解析字段原始值文本并返回夹紧后的冻结秒数喵。
 func parseFreezeValue(rawValue string, unit model.VirtualModelFreezeUnit) int {
 	const maximumFreezeSeconds = 24 * 60 * 60
 	// 去除值文本首尾空白，并剥离 JSON 字符串值可能带的一层引号喵。
 	rawValue = strings.TrimPrefix(strings.TrimSpace(rawValue), `"`)
-	// mixed 单位按 XmYs、Xm 或 Xs 格式解析，分钟段与秒段可同时存在喵。
+	// mixed 单位优先识别复合格式，避免 1m30s 被自然语言模式截断成 1m 喵。
 	if unit == model.VirtualModelFreezeUnitMixed {
-		// 不锚定结尾以容忍值后残留的引号或括号等响应体字符喵。
-		mixedPattern := regexp.MustCompile(`^(\d+)\s*(m(?:\s*(\d+)\s*s)?|s)`)
-		mixedMatch := mixedPattern.FindStringSubmatch(rawValue)
-		// 喵~防御：无法匹配复合格式时返回零，拒绝错误解读分钟喵。
-		if mixedMatch == nil {
-			return 0
+		if mixedSeconds := parseMixedValue(rawValue, maximumFreezeSeconds); mixedSeconds > 0 {
+			return mixedSeconds
 		}
-		firstValue, _ := strconv.Atoi(mixedMatch[1])
-		// 纯秒格式直接作为秒数，带分钟标记时换算并累加可选秒段喵。
-		if mixedMatch[2] == "s" {
-			return clampFreezeSeconds(firstValue, maximumFreezeSeconds)
-		}
-		// 喵~防御：分钟数先夹紧再换算，避免超大分钟数乘法溢出喵。
-		if firstValue > maximumFreezeSeconds/60 {
-			return maximumFreezeSeconds
-		}
-		totalSeconds := firstValue * 60
-		if mixedMatch[3] != "" {
-			secondsValue, _ := strconv.Atoi(mixedMatch[3])
-			totalSeconds += secondsValue
-		}
-		return clampFreezeSeconds(totalSeconds, maximumFreezeSeconds)
 	}
-	// 秒与分钟单位都先取值文本开头的连续数字，兼容 `"2"` 与 `"2 minutes"` 形态喵。
-	numberPattern := regexp.MustCompile(`^(\d+)`)
-	numberMatch := numberPattern.FindStringSubmatch(rawValue)
+	// 值文本自带自然语言单位（如 "22 minutes"、"1 hour"）时按文本单位换算喵。
+	if naturalSeconds := parseValueWithNaturalUnit(rawValue, maximumFreezeSeconds); naturalSeconds > 0 {
+		return naturalSeconds
+	}
+	// 纯数字按用户选择的单位换算：秒单位乘 1、分钟单位乘 60、auto 视为秒喵。
+	multiplier := 1
+	if unit == model.VirtualModelFreezeUnitMinutes {
+		multiplier = 60
+	}
+	return parseNumericValue(rawValue, multiplier, maximumFreezeSeconds)
+}
+
+// parseValueWithNaturalUnit 解析值文本开头的自然语言单位，如 "22 minutes"、"1.5 hours" 喵。
+func parseValueWithNaturalUnit(rawValue string, maximumFreezeSeconds int) int {
+	match := valueNaturalUnitPattern.FindStringSubmatch(rawValue)
+	if match == nil {
+		return 0
+	}
+	return convertDurationMatch(match[1], match[2], maximumFreezeSeconds)
+}
+
+// parseMixedValue 解析 1m30s、2m、45s 复合格式的冻结时间喵。
+func parseMixedValue(rawValue string, maximumFreezeSeconds int) int {
+	mixedMatch := valueMixedPattern.FindStringSubmatch(rawValue)
+	// 喵~防御：无法匹配复合格式时返回零，拒绝错误解读分钟喵。
+	if mixedMatch == nil {
+		return 0
+	}
+	firstValue, _ := strconv.Atoi(mixedMatch[1])
+	// 纯秒格式直接作为秒数，带分钟标记时换算并累加可选秒段喵。
+	if mixedMatch[2] == "s" {
+		return clampFreezeSeconds(firstValue, maximumFreezeSeconds)
+	}
+	// 喵~防御：分钟数先夹紧再换算，避免超大分钟数乘法溢出喵。
+	if firstValue > maximumFreezeSeconds/60 {
+		return maximumFreezeSeconds
+	}
+	totalSeconds := firstValue * 60
+	if mixedMatch[3] != "" {
+		secondsValue, _ := strconv.Atoi(mixedMatch[3])
+		totalSeconds += secondsValue
+	}
+	return clampFreezeSeconds(totalSeconds, maximumFreezeSeconds)
+}
+
+// parseNumericValue 解析纯数字开头的值，并按倍率换算为秒喵。
+func parseNumericValue(rawValue string, multiplier int, maximumFreezeSeconds int) int {
+	numberMatch := valueNumericPattern.FindStringSubmatch(rawValue)
 	// 喵~防御：找不到数字时无法换算，返回零喵。
 	if numberMatch == nil {
 		return 0
 	}
 	numericValue, _ := strconv.Atoi(numberMatch[1])
-	// 分钟单位在夹紧前换算成秒，避免大分钟数与 60 相乘溢出喵。
-	if unit == model.VirtualModelFreezeUnitMinutes {
-		if numericValue > maximumFreezeSeconds/60 {
-			return maximumFreezeSeconds
-		}
-		numericValue *= 60
+	// 喵~防御：带倍率的数字先夹紧再换算，避免乘法溢出喵。
+	if multiplier > 1 && numericValue > maximumFreezeSeconds/multiplier {
+		return maximumFreezeSeconds
 	}
-	return clampFreezeSeconds(numericValue, maximumFreezeSeconds)
+	return clampFreezeSeconds(numericValue*multiplier, maximumFreezeSeconds)
+}
+
+// convertDurationMatch 将数字文本与单位词换算为夹紧后的冻结秒数喵。
+func convertDurationMatch(valueText string, unitText string, maximumFreezeSeconds int) int {
+	// 解析浮点数值，解析失败时安全回退为零喵。
+	value, parseError := strconv.ParseFloat(valueText, 64)
+	if parseError != nil {
+		return 0
+	}
+	factor := naturalUnitFactor(unitText)
+	if factor <= 0 {
+		return 0
+	}
+	// 喵~防御：数值超出单日上界时饱和到最大值，避免浮点乘积溢出喵。
+	if value > float64(maximumFreezeSeconds/factor) {
+		return maximumFreezeSeconds
+	}
+	return clampFreezeSeconds(int(value*float64(factor)), maximumFreezeSeconds)
+}
+
+// naturalUnitFactor 返回自然语言单位词的秒数换算系数，未知单位返回零喵。
+func naturalUnitFactor(unit string) int {
+	switch unit {
+	case "s", "sec", "secs", "second", "seconds":
+		return 1
+	case "m", "min", "mins", "minute", "minutes":
+		return 60
+	case "h", "hr", "hrs", "hour", "hours":
+		return 3600
+	}
+	return 0
 }
 
 // clampFreezeSeconds 将冻结秒数夹紧到零到一天的安全区间喵。
@@ -310,11 +397,13 @@ func validateFailureRuleFields(ruleOrder int, httpStatus int, httpStatusMax int,
 	if len(freezeField) > 64 {
 		return errors.New("virtual model failure rule freeze field is too long")
 	}
-	// 喵~防御：配置了响应体字段时必须使用合法单位，未知单位无法安全换算冻结秒数喵。
-	if strings.TrimSpace(freezeField) != "" &&
+	// 喵~防御：配置了单位时必须是合法枚举，未知单位无法安全换算冻结秒数喵。
+	// auto 单位允许字段名为空，用于全文扫描自然语言时间喵。
+	if freezeUnit != "" &&
 		freezeUnit != model.VirtualModelFreezeUnitSeconds &&
 		freezeUnit != model.VirtualModelFreezeUnitMinutes &&
-		freezeUnit != model.VirtualModelFreezeUnitMixed {
+		freezeUnit != model.VirtualModelFreezeUnitMixed &&
+		freezeUnit != model.VirtualModelFreezeUnitAuto {
 		return errors.New("virtual model failure rule freeze unit is invalid")
 	}
 	return nil

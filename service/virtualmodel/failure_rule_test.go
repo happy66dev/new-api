@@ -256,9 +256,9 @@ func TestParseBodyFreezeSecondsDefensive(t *testing.T) {
 	if seconds := parseBodyFreezeSeconds("retry_after", model.VirtualModelFreezeUnitSeconds, `{"retry_after":"later"}`); seconds != 0 {
 		t.Fatalf("non-numeric value parsed to %d, want 0", seconds)
 	}
-	// mixed 单位遇到纯数字应拒绝而不是误读为分钟喵。
-	if seconds := parseBodyFreezeSeconds("retry_after", model.VirtualModelFreezeUnitMixed, `{"retry_after":5}`); seconds != 0 {
-		t.Fatalf("mixed unit with plain number parsed to %d, want 0", seconds)
+	// mixed 单位遇到纯数字时按秒兜底，不会误读为分钟喵。
+	if seconds := parseBodyFreezeSeconds("retry_after", model.VirtualModelFreezeUnitMixed, `{"retry_after":5}`); seconds != 5 {
+		t.Fatalf("mixed unit with plain number parsed to %d, want 5", seconds)
 	}
 	// 负值文本不得解析为负冻结时长喵。
 	if seconds := parseBodyFreezeSeconds("retry_after", model.VirtualModelFreezeUnitSeconds, `{"retry_after":-30}`); seconds != 0 {
@@ -305,5 +305,74 @@ func TestValidateFailureRuleFreezeField(t *testing.T) {
 	longFieldRule.FreezeField = strings.Repeat("x", 65)
 	if validationError := ValidateCandidateFailureRule(&longFieldRule); validationError == nil {
 		t.Fatal("overlong freeze field should be rejected")
+	}
+}
+
+// TestParseBodyFreezeSecondsAuto 验证 auto 单位在响应体全文扫描自然语言时间的语义喵。
+func TestParseBodyFreezeSecondsAuto(t *testing.T) {
+	// 定义响应体、字段名与预期冻结秒数的表格测试，auto 应忽略字段名喵。
+	testCases := []struct {
+		name            string
+		field           string
+		body            string
+		expectedSeconds int
+	}{
+		{name: "user quota sample", field: "ignored", body: `status_code=429, key sk-a2b*** has reached its rolling 1h usage quota; refreshes in 22 minutes`, expectedSeconds: 22 * 60},
+		{name: "try again in minutes", field: "", body: `Try again in 5 minutes.`, expectedSeconds: 5 * 60},
+		{name: "retry after seconds", field: "", body: `Rate limit exceeded. Retry after 30 seconds.`, expectedSeconds: 30},
+		{name: "please wait minutes", field: "", body: `Please wait 2 minutes before trying again.`, expectedSeconds: 2 * 60},
+		{name: "hours unit", field: "", body: `Try again in 1 hour.`, expectedSeconds: 3600},
+		{name: "no trigger word ignores window description", field: "", body: `rolling 1h usage quota exceeded`, expectedSeconds: 0},
+		{name: "status code alone is not a duration", field: "", body: `status_code=429, try again later`, expectedSeconds: 0},
+	}
+	// 逐项断言 auto 全文扫描不会漏掉自然语言或误匹配窗口描述喵。
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if actualSeconds := parseBodyFreezeSeconds(testCase.field, model.VirtualModelFreezeUnitAuto, testCase.body); actualSeconds != testCase.expectedSeconds {
+				t.Fatalf("parseBodyFreezeSeconds(auto) = %d, want %d", actualSeconds, testCase.expectedSeconds)
+			}
+		})
+	}
+}
+
+// TestParseFreezeValueNaturalLanguage 验证值文本自带自然语言单位的换算喵。
+func TestParseFreezeValueNaturalLanguage(t *testing.T) {
+	// 定义值文本、单位与预期秒数的表格测试喵。
+	testCases := []struct {
+		name            string
+		rawValue        string
+		unit            model.VirtualModelFreezeUnit
+		expectedSeconds int
+	}{
+		{name: "minutes word with seconds unit", rawValue: `"22 minutes"`, unit: model.VirtualModelFreezeUnitSeconds, expectedSeconds: 22 * 60},
+		{name: "hour word", rawValue: `1 hour`, unit: model.VirtualModelFreezeUnitSeconds, expectedSeconds: 3600},
+		{name: "fractional hour", rawValue: `1.5 hours`, unit: model.VirtualModelFreezeUnitSeconds, expectedSeconds: 5400},
+		{name: "minutes word with minutes unit", rawValue: `22 minutes`, unit: model.VirtualModelFreezeUnitMinutes, expectedSeconds: 22 * 60},
+		{name: "mixed compound not truncated", rawValue: `1m30s`, unit: model.VirtualModelFreezeUnitMixed, expectedSeconds: 90},
+		{name: "mixed seconds only", rawValue: `45s`, unit: model.VirtualModelFreezeUnitMixed, expectedSeconds: 45},
+		{name: "plain number keeps unit meaning", rawValue: `2`, unit: model.VirtualModelFreezeUnitMinutes, expectedSeconds: 120},
+		{name: "plain number seconds", rawValue: `120`, unit: model.VirtualModelFreezeUnitSeconds, expectedSeconds: 120},
+	}
+	// 逐项断言自然语言单位优先且不会破坏复合格式喵。
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if actualSeconds := parseFreezeValue(testCase.rawValue, testCase.unit); actualSeconds != testCase.expectedSeconds {
+				t.Fatalf("parseFreezeValue(%q, %q) = %d, want %d", testCase.rawValue, testCase.unit, actualSeconds, testCase.expectedSeconds)
+			}
+		})
+	}
+}
+
+// TestValidateFailureRuleAutoUnit 验证 auto 单位在字段名可空场景下的校验语义喵。
+func TestValidateFailureRuleAutoUnit(t *testing.T) {
+	// auto 单位允许字段名为空，用于全文扫描自然语言时间喵。
+	autoRule := &model.VirtualModelFailureRule{CandidateID: 1, RuleOrder: 0, FreezeUnit: model.VirtualModelFreezeUnitAuto, Action: model.VirtualModelActionFreeze}
+	if validationError := ValidateCandidateFailureRule(autoRule); validationError != nil {
+		t.Fatalf("auto unit with empty field rejected: %v", validationError)
+	}
+	// 带字段名的 auto 单位同样合法喵。
+	autoFieldRule := &model.VirtualModelFailureRule{CandidateID: 1, RuleOrder: 0, FreezeField: "retry_after", FreezeUnit: model.VirtualModelFreezeUnitAuto, Action: model.VirtualModelActionFreeze}
+	if validationError := ValidateCandidateFailureRule(autoFieldRule); validationError != nil {
+		t.Fatalf("auto unit with field rejected: %v", validationError)
 	}
 }
