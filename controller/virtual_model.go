@@ -40,7 +40,8 @@ type virtualModelCandidateInput struct {
 	BaseURL        string                         `json:"base_url"`
 	APIKey         string                         `json:"api_key"`
 	AuthStyle      model.VirtualModelAuthStyle    `json:"auth_style"`
-	FailureRules   []virtualModelFailureRuleInput `json:"failure_rules,omitempty"`
+	// 喵~防御：FailureRules 必须使用真实模型类型而不是 DTO，否则 GORM 会按结构体名生成 virtual_model_failure_rule_inputs 表名导致查询报 no such table。
+	FailureRules   []model.VirtualModelFailureRule `json:"failure_rules,omitempty"`
 }
 
 // virtualModelCandidatesReplaceInput 描述带模型版本保护的候选链整体保存请求喵。
