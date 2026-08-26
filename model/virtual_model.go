@@ -672,3 +672,60 @@ func DeleteVirtualModelByOwner(virtualModelID int, ownerUserID int, operatorID i
 	}
 	return DeleteVirtualModelByOwnerWithVersion(virtualModelID, ownerUserID, operatorID, virtualModel.Version)
 }
+
+// DeleteOrphanVirtualModelInternalCandidatesByModel 清理已无任何启用渠道支撑的内部候选喵。
+// 当某 (分组, 真实模型) 在 abilities 表中不再有启用能力时，删除所有引用它的候选及其关联数据喵。
+func DeleteOrphanVirtualModelInternalCandidatesByModel(modelName string) (int, error) {
+	// 喵~防御：空模型名直接跳过，避免生成无条件关联删除喵。
+	if strings.TrimSpace(modelName) == "" {
+		return 0, nil
+	}
+	// 读取所有引用该模型的内部候选快照喵。
+	var internalCandidates []VirtualModelInternalCandidate
+	if err := DB.Where("real_model_name = ?", modelName).Find(&internalCandidates).Error; err != nil {
+		return 0, err
+	}
+	if len(internalCandidates) == 0 {
+		return 0, nil
+	}
+	// 收集已经没有任何启用渠道能力支撑的孤儿候选编号喵。
+	orphanCandidateIDs := make([]int, 0, len(internalCandidates))
+	for _, candidate := range internalCandidates {
+		// 喵~防御：未指定分组的候选无法判定可用性，保守跳过不误删喵。
+		if strings.TrimSpace(candidate.GroupName) == "" {
+			continue
+		}
+		var enabledAbilityCount int64
+		if err := DB.Model(&Ability{}).Where(commonGroupCol+" = ? AND model = ? AND enabled = ?", candidate.GroupName, candidate.RealModelName, true).Count(&enabledAbilityCount).Error; err != nil {
+			return 0, err
+		}
+		if enabledAbilityCount == 0 {
+			orphanCandidateIDs = append(orphanCandidateIDs, candidate.CandidateID)
+		}
+	}
+	if len(orphanCandidateIDs) == 0 {
+		return 0, nil
+	}
+	// 事务内级联删除孤儿候选及其规则、冻结和加密配置，保证一致性喵。
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Unscoped().Where("candidate_id IN ?", orphanCandidateIDs).Delete(&VirtualModelFailureRule{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Unscoped().Where("candidate_id IN ?", orphanCandidateIDs).Delete(&VirtualModelInternalCandidate{}).Error; err != nil {
+			return err
+		}
+		// 喵~防御：自定义候选含加密密文，候选删除时必须硬删除，避免残留可被未来代码误解密喵。
+		if err := tx.Unscoped().Where("candidate_id IN ?", orphanCandidateIDs).Delete(&VirtualModelCustomCandidate{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Unscoped().Where("candidate_id IN ?", orphanCandidateIDs).Delete(&VirtualModelManualFreeze{}).Error; err != nil {
+			return err
+		}
+		// 喵~防御：候选使用硬删除，避免软删除记录占用模型候选顺序唯一索引喵。
+		return tx.Unscoped().Where("id IN ?", orphanCandidateIDs).Delete(&VirtualModelCandidate{}).Error
+	})
+	if err != nil {
+		return 0, err
+	}
+	return len(orphanCandidateIDs), nil
+}

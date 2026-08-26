@@ -153,11 +153,17 @@ func UpdateModelMeta(c *gin.Context) {
 	common.ApiSuccess(c, &m)
 }
 
-// DeleteModelMeta 删除模型
+// DeleteModelMeta 删除模型，并联动清理已无启用渠道支撑的虚拟模型内部候选喵。
 func DeleteModelMeta(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	// 先读取被删模型的名称，供联动清理虚拟模型候选链使用喵。
+	var deletedModel model.Model
+	if err := model.DB.First(&deletedModel, id).Error; err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -166,6 +172,10 @@ func DeleteModelMeta(c *gin.Context) {
 		return
 	}
 	model.RefreshPricing()
+	// 联动清理该模型已无启用渠道支撑的内部候选，清理失败只记日志不影响删除结果喵。
+	if _, cleanupError := model.DeleteOrphanVirtualModelInternalCandidatesByModel(deletedModel.ModelName); cleanupError != nil {
+		common.SysError("failed to clean orphan virtual model candidates: " + cleanupError.Error())
+	}
 	common.ApiSuccess(c, nil)
 }
 

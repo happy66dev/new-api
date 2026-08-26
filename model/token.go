@@ -439,7 +439,16 @@ func DeleteTokenById(id int, userId int) (err error) {
 	if err != nil {
 		return err
 	}
-	return token.Delete()
+	if err := token.Delete(); err != nil {
+		return err
+	}
+	// 喵~防御：同步清理虚拟模型中该 token 的显式授权绑定，避免删除 key 后残留失效授权喵。
+	return deleteVirtualModelTokenBindingsByTokenID(id)
+}
+
+// deleteVirtualModelTokenBindingsByTokenID 删除指定 token 在所有虚拟模型上的授权绑定喵。
+func deleteVirtualModelTokenBindingsByTokenID(tokenID int) error {
+	return DB.Where("token_id = ?", tokenID).Delete(&VirtualModelTokenBinding{}).Error
 }
 
 func IncreaseTokenQuota(tokenId int, key string, quota int) (err error) {
@@ -633,6 +642,11 @@ func BatchDeleteTokens(ids []int, userId int) (int, error) {
 	}
 
 	if err := tx.Where("user_id = ? AND id IN (?)", userId, ids).Delete(&Token{}).Error; err != nil {
+		tx.Rollback()
+		return 0, err
+	}
+	// 喵~防御：事务内联动清理虚拟模型对这些 token 的授权绑定，保持删除与清理原子一致喵。
+	if err := tx.Where("token_id IN (?)", ids).Delete(&VirtualModelTokenBinding{}).Error; err != nil {
 		tx.Rollback()
 		return 0, err
 	}
