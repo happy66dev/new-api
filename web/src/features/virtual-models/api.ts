@@ -129,7 +129,7 @@ export type VirtualModelFailureRule = {
   // freeze_field 是响应体中的冻结时间字段名，非空时启用从响应体解析冻结时间喵。
   freeze_field?: string
   // freeze_unit 标记响应体字段冻结时间的单位，仅在 freeze_field 非空时生效喵。
-  freeze_unit?: 'seconds' | 'minutes' | 'mixed'
+  freeze_unit?: 'seconds' | 'minutes' | 'mixed' | 'auto'
 }
 
 export type VirtualModelFailureRulesReplaceInput = {

@@ -97,6 +97,8 @@ export function toFailureRuleDraft(rule: VirtualModelFailureRule): FailureRuleDr
   const httpStatusValue = rule.http_status ?? 0
   const httpStatusMaxValue = rule.http_status_max ?? 0
   const httpStatusText = httpStatusMaxValue > 0 ? `${httpStatusValue}~${httpStatusMaxValue}` : String(httpStatusValue)
+  // 冻结单位必须是合法枚举，空串或旧数据非法值时回退到秒，避免下拉显示错位喵。
+  const freezeUnit = FREEZE_UNITS.find((unit) => unit.value === rule.freeze_unit)?.value ?? 'seconds'
   return {
     bodyRegex,
     bodyRegexMode,
@@ -105,7 +107,7 @@ export function toFailureRuleDraft(rule: VirtualModelFailureRule): FailureRuleDr
     errorClass: rule.error_class ?? '',
     freezeSeconds: String(rule.freeze_seconds ?? 0),
     freezeField: rule.freeze_field ?? '',
-    freezeUnit: rule.freeze_unit ?? 'seconds',
+    freezeUnit,
     httpStatus: httpStatusText,
     id: rule.id,
     action: rule.action ?? 'next',

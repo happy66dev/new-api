@@ -103,6 +103,18 @@ describe('toFailureRuleDraft', () => {
       action: 'next',
     })
   })
+
+  it('falls back to seconds when the stored freeze unit is an empty string', () => {
+    // 旧规则未配置单位时后端返回空串，必须回退到秒而不是错位成自动识别喵。
+    const draft = toFailureRuleDraft({ http_status: 0, error_class: '', body_regex: '', action: 'freeze', freeze_seconds: 0, freeze_unit: '' as never })
+    expect(draft.freezeUnit).toBe('seconds')
+  })
+
+  it('falls back to seconds for an unknown stored freeze unit', () => {
+    // 非法单位值必须安全回退，避免下拉显示与字段隐藏逻辑错位喵。
+    const draft = toFailureRuleDraft({ http_status: 0, error_class: '', body_regex: '', action: 'freeze', freeze_seconds: 0, freeze_unit: 'light-years' as never })
+    expect(draft.freezeUnit).toBe('seconds')
+  })
 })
 
 // describe createFailureRuleDraft：新规则的默认草稿喵。
