@@ -28,6 +28,16 @@ import {
   sideDrawerFormClassName,
   sideDrawerHeaderClassName,
 } from '@/components/drawer-layout'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -227,6 +237,8 @@ export function VirtualModelCandidatesEditor({
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null)
   // rulesCandidateIndex 记录正在编辑失败规则的候选下标，非空时打开候选级规则抽屉喵。
   const [rulesCandidateIndex, setRulesCandidateIndex] = useState<number | null>(null)
+  // pendingDeleteIndex 记录等待确认删除的候选下标，非空时打开删除确认弹窗喵。
+  const [pendingDeleteIndex, setPendingDeleteIndex] = useState<number | null>(null)
 
   // 当服务端模型版本变化时重新生成草稿，避免对已替换候选链进行过期编辑喵。
   useEffect(() => {
@@ -270,15 +282,18 @@ export function VirtualModelCandidatesEditor({
     })
   }
 
+  // removeCandidate 点击删除按钮：已保存候选打开确认弹窗，新增草稿直接移除喵。
   const removeCandidate = (index: number) => {
     const removedCandidate = draftCandidates[index]
-    // 喵~防御：仅删除服务端已有候选时提示关联规则、冻结与凭据将永久删除，新增草稿可直接移除喵。
-    if (
-      removedCandidate?.id &&
-      !window.confirm(t('Removing this candidate permanently deletes its failure rules, manual freezes, and encrypted credentials. Continue?'))
-    ) {
+    if (removedCandidate?.id) {
+      setPendingDeleteIndex(index)
       return
     }
+    performRemove(index)
+  }
+
+  // performRemove 实际从草稿链移除指定候选，并收起对应展开态喵。
+  const performRemove = (index: number) => {
     setDraftCandidates((currentCandidates) =>
       currentCandidates.filter((_, candidateIndex) => candidateIndex !== index)
     )
@@ -286,6 +301,7 @@ export function VirtualModelCandidatesEditor({
     if (expandedIndex === index) {
       setExpandedIndex(null)
     }
+    setPendingDeleteIndex(null)
   }
 
   const addInternalCandidate = () => {
@@ -495,6 +511,27 @@ export function VirtualModelCandidatesEditor({
           </SheetFooter>
         </SheetContent>
       </Sheet>
+
+      {/* 删除候选确认弹窗：与服务端已有候选的破坏性删除语义对齐喵。 */}
+      <AlertDialog open={pendingDeleteIndex !== null} onOpenChange={(open) => { if (!open) setPendingDeleteIndex(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('Remove candidate')}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('Removing this candidate permanently deletes its failure rules, manual freezes, and encrypted credentials. Continue?')}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {pendingDeleteIndex !== null && draftCandidates[pendingDeleteIndex] && (
+            <Badge variant='secondary'>{candidateDisplayName(draftCandidates[pendingDeleteIndex])}</Badge>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isSaving}>{t('Cancel')}</AlertDialogCancel>
+            <AlertDialogAction variant='destructive' disabled={isSaving} onClick={() => performRemove(pendingDeleteIndex ?? 0)}>
+              {t('Remove')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
