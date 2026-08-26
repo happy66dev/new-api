@@ -87,9 +87,10 @@ new-api 已有**状态检测页面**（`web/src/features/status-check/`）：按
 
 ### 4.4 权限与可见性
 
-- 上游模型、虚拟模型及其节点的状态结果**仅属主可见**（与 CRUD 的 owner 隔离一致）喵。
-- 探测/查询接口必须校验资源归属（复用 `loadOwnedUpstreamModel` / 虚拟模型 owner 校验），防止跨用户枚举喵。
-- 共享上游模型的**共享调用单独统计**，不混入属主自用画像（详见 4.5）喵。
+- **属主视角（完整）**：上游模型、虚拟模型及其节点的状态结果对属主完整可见（自用统计 + 共享调用维度 + 失败受控错误信息），与 CRUD 的 owner 隔离一致喵。
+- **共享使用者视角（聚合）**：共享上游模型的状态对**共享使用者**（其他用户）**可见聚合状态**——共享调用维度的成功率、平均延迟、请求数与"最近一次是否成功"，**不含**属主身份、错误明细、调用者身份喵。
+- 查询接口必须校验资源归属/共享授权（属主校验用 `loadOwnedUpstreamModel`，共享聚合校验用 `GetEnabledSharedUserUpstreamModelByName`），防止越权枚举喵。
+- 虚拟模型的节点/整体状态仅属主可见（虚拟模型无跨用户共享语义）喵。
 
 ### 4.5 共享调用统计（详细设计）
 
@@ -98,14 +99,16 @@ new-api 已有**状态检测页面**（`web/src/features/status-check/`）：按
 **语义**：
 - **属主自用统计**：只统计属主自己发起的调用（`isShared=false`），反映属主视角下该上游配置的健康状况喵。
 - **共享调用统计**：单独维度记录共享调用的总量/成功率/延迟，与自用画像分离，避免他人调用或滥用污染属主看到的"我的模型可用性"喵。
-- 属主的状态卡片默认展示**自用统计**，卡片内提供**"共享调用"切换**查看共享维度的聚合（请求数、成功率、平均延迟；**不展示调用者身份**，只做聚合，保护调用者隐私）喵。
+- 属主的状态卡片默认展示**自用统计**，卡片内提供**"共享调用"切换**查看共享维度的聚合（请求数、成功率、平均延迟；**不展示调用者身份**）喵。
+- **共享使用者视角**：模型广场/游乐场看到该共享模型时，展示**共享调用维度的聚合状态**（成功率、平均延迟、请求数、最近一次成功与否）——与属主看到的"共享调用切换页"数据同源（`group=__entity_probe_shared__`），但不含错误明细喵。
 
 **实现**：共享调用在结算点以 `Group = "__entity_probe_shared__"` 记录，`model` 仍为 `user/<name>`；自用记录 `Group = "__entity_probe__"`。查询按 group 分别聚合，互不混用喵。
 
-### 4.6 成本与安全
+### 4.6 成本、安全与开关
 
 - 纯被动记录**不额外消耗任何上游配额**、不产生新请求喵。
-- 记录失败时只存受控错误信息（错误码/通用文案），**绝不落密钥、密文、完整 URL 或请求正文**喵。
+- 记录失败时只存受控错误信息（错误码/通用文案），**绝不落密钥、密文、完整 URL 或请求正文**；共享使用者视角**不展示任何错误明细**喵。
+- **跟随性能指标开关**：`RecordEntityProbe` 直接复用 `perfmetrics.Record`（内部受 `perf_metrics_setting` 的 `Enabled` 控制）；管理员关闭性能指标后实体状态检测同样无数据（不新增独立开关）喵。
 
 ## 5. 数据模型与存储
 
@@ -148,14 +151,15 @@ type EntityProbeState struct {
 ## 6. 后端 API 设计
 
 ```
-GET    /api/upstream-models/:id/status          // 属主自用统计 + 最近一次；?include_shared=true 附共享维度
+GET    /api/upstream-models/:id/status          // 属主视角：自用统计 + 最近一次；?include_shared=true 附共享维度
+GET    /api/upstream-models/shared/:name/status // 共享使用者视角：共享调用维度聚合（按 user/<name>，模型须共享中）
 GET    /api/virtual-models/:id/status           // 整体统计 + 各节点摘要
 GET    /api/virtual-models/:id/candidates/:cid/status   // 节点统计 + 最近一次
 ```
 
 **无任何 `POST status-check` 探测接口**（不做主动探测）喵。
 
-响应统一结构：
+响应统一结构（属主视角）：
 
 ```json
 {
@@ -173,7 +177,8 @@ GET    /api/virtual-models/:id/candidates/:cid/status   // 节点统计 + 最近
 }
 ```
 
-- 上游模型 `status?include_shared=true` 额外返回 `shared: { availability, avg_latency_ms, request_count, last_at, last_success }` 喵。
+- 上游模型 `status?include_shared=true` 额外返回 `shared: { availability, avg_latency_ms, request_count, last_at, last_success }`（供属主切换查看）喵。
+- 共享聚合接口 `GET /api/upstream-models/shared/:name/status`（共享使用者视角）只返回 `{ availability, avg_latency_ms, request_count, last_at, last_success }`，**不含 `last_error`** 与任何属主/调用者信息；模型不在共享中（`share_enabled=false` 或额度耗尽）按 404 处理喵。
 - 虚拟模型 `status` 额外返回 `candidates: [{ candidate_id, label, availability, avg_latency_ms, last_success }]`，供 Overview 节点摘要展示喵。
 
 ## 7. 前端设计（状态展示交互，详细）
@@ -219,6 +224,15 @@ GET    /api/virtual-models/:id/candidates/:cid/status   // 节点统计 + 最近
 - 复用现有 `AvailabilityBars`、`formatLatency`、`getSuccessRateTextClass` 喵。
 - 指标颜色/文案统一走现有 `getSuccessRateTextClass` 与 i18n keys 喵。
 
+### 7.5 模型广场共享卡片（共享使用者视角）
+
+- 模型广场中**共享模型卡片**（`owner_by === 'user-shared'`）在现有"共享剩余额度"基础上，增加**共享调用聚合状态点**（复用 `EntityStatusIndicator`）喵：
+  - 数据源：`GET /api/upstream-models/shared/<name>/status`（登录用户即可查共享中的模型）喵。
+  - 展示：绿/红/灰状态点 + `xx%` 可用性 + 平均延迟（无错误明细）喵。
+  - 悬停 Tooltip：可用性、平均延迟、请求数、最近一次时间与是否成功喵。
+  - 无共享调用数据时显示灰点 + `—` 喵。
+- 游乐场 `user-shared` 分组模型列表**可选**展示同款状态点（P2 内一并评估）喵。
+
 ## 8. 日志筛选修复
 
 - `routes/_authenticated/usage-logs/$section.tsx:28` 的 `logTypeValues` 追加 `'8'`：
@@ -229,16 +243,16 @@ GET    /api/virtual-models/:id/candidates/:cid/status   // 节点统计 + 最近
 
 ## 9. 分期实施计划（一期一交付）
 
-### P1：日志筛选修复 + 上游模型状态展示
+### P1：日志筛选修复 + 上游模型状态展示（含共享维度与共享使用者视角）
 - 修 `logTypeValues` 加 `'8'` 喵。
-- 后端：`EntityProbeState` 表 + `RecordEntityProbe` + 上游模型 `handleUserUpstreamModelRequest` 结算点记录 + `GET /api/upstream-models/:id/status`（含共享维度）喵。
-- 前端：上游模型行状态指示器（Check 左边）+ Tooltip + 详情 Popover + 共享切换喵。
-- 测试：记录时机（成功/失败/配置态不计入）、共享维度隔离、owner 隔离、24h 聚合、最近一次、失败信息脱敏喵。
+- 后端：`EntityProbeState` 表 + `RecordEntityProbe` + 上游模型 `handleUserUpstreamModelRequest` 结算点记录（自用 `__entity_probe__` / 共享 `__entity_probe_shared__`）+ `GET /api/upstream-models/:id/status`（含共享维度）+ `GET /api/upstream-models/shared/:name/status`（共享聚合）喵。
+- 前端：上游模型行状态指示器（Check 左边）+ Tooltip + 详情 Popover + 共享切换；**模型广场共享卡片聚合状态点**（`user-shared` 条目）喵。
+- 测试：记录时机（成功/失败/配置态不计入）、共享维度隔离、共享聚合无错误明细、owner/共享授权隔离、24h 聚合、最近一次、失败信息脱敏喵。
 
 ### P2：虚拟模型整体 + 候选节点状态展示
 - 后端：internal/custom 候选结算点记录、虚拟模型整体聚合、`GET /api/virtual-models/:id/status` 与 `/candidates/:cid/status` 喵。
-- 前端：Overview 状态卡片（整体 + 节点摘要 + 跳转）+ 候选行状态点（ShieldCheck 旁）喵。
-- 测试：internal 候选成功/失败、custom 候选成功/失败、引用上游模型候选、链耗尽整体失败、任一候选成功整体成功喵。
+- 前端：Overview 状态卡片（整体 + 节点摘要 + 跳转）+ 候选行状态点（ShieldCheck 旁）；游乐场 `user-shared` 分组状态点（可选评估）喵。
+- 测试：internal 候选成功/失败、custom 候选成功/失败、引用上游模型候选（同时计入上游模型与候选两个维度）、链耗尽整体失败、任一候选成功整体成功喵。
 
 ## 10. 验证
 
@@ -246,10 +260,17 @@ GET    /api/virtual-models/:id/candidates/:cid/status   // 节点统计 + 最近
 - 冒烟：创建用户上游模型 → 调用成功/制造上游故障 → 行内状态点/可用性/延迟更新且共享维度独立；设置虚拟模型（internal + custom + 引用上游模型候选）→ Overview 与候选行状态展示正确；日志选"自定上游"只返回 type=8 日志喵。
 - 回归：普通计费、上游模型余额/上限、虚拟模型候选链失败规则、共享调用均不受影响喵。
 
-## 11. 待确认细节（已给推荐值，主人有异议再改）
+## 11. 已确认决策（用户拍板记录）
 
-1. 配置态请求（余额不足、模型停用、模型不存在）**不计入成功率**，但更新"最近一次时间"：是否可接受？喵
-2. 共享调用**单独维度**展示（默认自用，可切换看共享聚合，不含调用者身份）：是否可接受？喵
-3. "最近一次"从 `entity_probe_states` 表提供（小时级 perf_metrics 桶太粗）；表已确认加，OK 喵
-4. 上游模型行状态点**只读**（无探测按钮）；嗅觉按钮 Check 仍保留原功能，状态展示在其左边：是否可接受？喵
-5. 虚拟模型节点摘要由整体 `status.candidates[]` 一次带回（不逐个请求）：是否可接受？喵
+1. **数据来源**：仅被动统计（真实调用记录），**不做手动/定时探测、不发任何探测请求**喵。
+2. **共享模型状态可见性**：共享使用者在模型广场/游乐场可见**聚合状态**（成功率/平均延迟/请求数/最近是否成功），**无错误明细、无属主/调用者身份**；属主看完整（自用 + 共享维度 + 错误明细）喵。
+3. **开关**：实体状态检测**跟随性能指标（perf_metrics）开关**，不新增独立开关；关闭性能指标则实体状态无数据喵。
+4. 配置态请求（余额不足、模型停用、模型不存在）**不计入成功率**，但更新"最近一次时间"喵。
+5. 共享调用**单独维度**（`__entity_probe_shared__`），属主默认看自用、可切换共享聚合喵。
+6. "最近一次"由 `entity_probe_states` 表提供（perf_metrics 小时桶太粗）喵。
+7. 上游模型行状态点**只读**（Check 保留嗅探功能，状态展示在其左边）喵。
+8. 虚拟模型节点摘要由整体 `status.candidates[]` 一次带回（不逐个请求）喵。
+9. **自主决策补充**（实现时遵循）：
+   - internal 候选"分组无渠道/模型不可达"等配置不可用**计入失败**（提示候选配置问题，与上游模型资源级错误不计入区分）喵。
+   - 删除上游模型/虚拟模型时联动清理 `entity_probe_states` 孤儿行；perf_metrics 时序数据自动过期不清理喵。
+   - 虚拟模型整体延迟用**整次请求耗时**（含失败候选尝试，反映用户体验）；各候选记录各自耗时喵。
