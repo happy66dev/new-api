@@ -36,6 +36,18 @@ const (
 	VirtualModelActionPassthrough VirtualModelFailureAction = "passthrough"
 )
 
+// VirtualModelFreezeUnit 标记响应体字段冻结时间的解析单位喵。
+type VirtualModelFreezeUnit string
+
+const (
+	// VirtualModelFreezeUnitSeconds 表示字段值直接是秒数喵。
+	VirtualModelFreezeUnitSeconds VirtualModelFreezeUnit = "seconds"
+	// VirtualModelFreezeUnitMinutes 表示字段值是分钟数，换算为秒时乘以 60 喵。
+	VirtualModelFreezeUnitMinutes VirtualModelFreezeUnit = "minutes"
+	// VirtualModelFreezeUnitMixed 表示字段值是分钟+秒格式（如 1m30s）喵。
+	VirtualModelFreezeUnitMixed VirtualModelFreezeUnit = "mixed"
+)
+
 // VirtualModelAuthStyle 标记自定义上游采用的认证头语义喵。
 type VirtualModelAuthStyle string
 
@@ -120,6 +132,10 @@ type VirtualModelFailureRule struct {
 	BodyRegex     string                    `json:"body_regex" gorm:"type:text"`
 	Action        VirtualModelFailureAction `json:"action" gorm:"type:varchar(16);not null"`
 	FreezeSeconds int                       `json:"freeze_seconds"`
+	// FreezeField 是响应体中的冻结时间字段名，非空时启用从响应体解析冻结时间喵。
+	FreezeField   string                    `json:"freeze_field" gorm:"type:varchar(64)"`
+	// FreezeUnit 标记响应体字段冻结时间的单位，仅在 FreezeField 非空时生效喵。
+	FreezeUnit    VirtualModelFreezeUnit    `json:"freeze_unit" gorm:"type:varchar(16)"`
 	Version       int64                     `json:"version" gorm:"default:1"`
 }
 
@@ -136,6 +152,10 @@ type VirtualModelGlobalFailureRule struct {
 	BodyRegex      string                    `json:"body_regex" gorm:"type:text"`
 	Action         VirtualModelFailureAction `json:"action" gorm:"type:varchar(16);not null"`
 	FreezeSeconds  int                       `json:"freeze_seconds"`
+	// FreezeField 是响应体中的冻结时间字段名，非空时启用从响应体解析冻结时间喵。
+	FreezeField    string                    `json:"freeze_field" gorm:"type:varchar(64)"`
+	// FreezeUnit 标记响应体字段冻结时间的单位，仅在 FreezeField 非空时生效喵。
+	FreezeUnit     VirtualModelFreezeUnit    `json:"freeze_unit" gorm:"type:varchar(16)"`
 	Version        int64                     `json:"version" gorm:"default:1"`
 }
 
@@ -453,7 +473,7 @@ func GetVirtualModelGlobalFailureRulesWithDB(database *gorm.DB, virtualModelID i
 	// 将模型级规则字段复制到候选规则结构，字段语义与候选规则完全一致喵。
 	globalFailureRules := make([]VirtualModelFailureRule, 0, len(storedGlobalRules))
 	for _, storedRule := range storedGlobalRules {
-		globalFailureRules = append(globalFailureRules, VirtualModelFailureRule{ID: storedRule.ID, RuleOrder: storedRule.RuleOrder, HTTPStatus: storedRule.HTTPStatus, HTTPStatusMax: storedRule.HTTPStatusMax, ErrorClass: storedRule.ErrorClass, BodyRegex: storedRule.BodyRegex, Action: storedRule.Action, FreezeSeconds: storedRule.FreezeSeconds})
+		globalFailureRules = append(globalFailureRules, VirtualModelFailureRule{ID: storedRule.ID, RuleOrder: storedRule.RuleOrder, HTTPStatus: storedRule.HTTPStatus, HTTPStatusMax: storedRule.HTTPStatusMax, ErrorClass: storedRule.ErrorClass, BodyRegex: storedRule.BodyRegex, Action: storedRule.Action, FreezeSeconds: storedRule.FreezeSeconds, FreezeField: storedRule.FreezeField, FreezeUnit: storedRule.FreezeUnit})
 	}
 	return globalFailureRules, nil
 }

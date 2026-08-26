@@ -2,6 +2,7 @@ package virtualmodel
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/model"
@@ -182,5 +183,100 @@ func TestValidateCandidateFailureRule(t *testing.T) {
 	invalidRegexRule.BodyRegex = "["
 	if validationError := ValidateCandidateFailureRule(&invalidRegexRule); validationError == nil {
 		t.Fatal("invalid regex should be rejected")
+	}
+}
+
+// TestParseBodyFreezeSeconds 验证从响应体字段解析冻结时间的三种单位与换算边界喵。
+func TestParseBodyFreezeSeconds(t *testing.T) {
+	// 定义字段名、单位、响应体与预期冻结秒数的表格测试喵。
+	testCases := []struct {
+		name            string
+		field           string
+		unit            model.VirtualModelFreezeUnit
+		body            string
+		expectedSeconds int
+	}{
+		{name: "seconds from json number", field: "retry_after", unit: model.VirtualModelFreezeUnitSeconds, body: `{"error":"busy","retry_after":120}`, expectedSeconds: 120},
+		{name: "seconds from quoted string", field: "retry_after", unit: model.VirtualModelFreezeUnitSeconds, body: `{"retry_after":"45"}`, expectedSeconds: 45},
+		{name: "minutes multiply by sixty", field: "wait_minutes", unit: model.VirtualModelFreezeUnitMinutes, body: `{"wait_minutes":2}`, expectedSeconds: 120},
+		{name: "mixed one minute thirty seconds", field: "retry", unit: model.VirtualModelFreezeUnitMixed, body: `{"retry":"1m30s"}`, expectedSeconds: 90},
+		{name: "mixed minutes only", field: "retry", unit: model.VirtualModelFreezeUnitMixed, body: `{"retry":"2m"}`, expectedSeconds: 120},
+		{name: "mixed seconds only", field: "retry", unit: model.VirtualModelFreezeUnitMixed, body: `{"retry":"40s"}`, expectedSeconds: 40},
+		{name: "equals separated query style", field: "cooldown", unit: model.VirtualModelFreezeUnitSeconds, body: `cooldown=30&reason=busy`, expectedSeconds: 30},
+		{name: "caps at one day", field: "retry_after", unit: model.VirtualModelFreezeUnitSeconds, body: `{"retry_after":99999999}`, expectedSeconds: 24 * 60 * 60},
+	}
+	// 逐项断言解析结果与换算单位完全符合预期喵。
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if actualSeconds := parseBodyFreezeSeconds(testCase.field, testCase.unit, testCase.body); actualSeconds != testCase.expectedSeconds {
+				t.Fatalf("parseBodyFreezeSeconds() = %d, want %d", actualSeconds, testCase.expectedSeconds)
+			}
+		})
+	}
+}
+
+// TestParseBodyFreezeSecondsDefensive 验证空字段、缺失字段与畸形值的零值安全回退喵。
+func TestParseBodyFreezeSecondsDefensive(t *testing.T) {
+	// 字段名为空时无法定位值，必须回退为零喵。
+	if seconds := parseBodyFreezeSeconds("", model.VirtualModelFreezeUnitSeconds, `{"retry_after":1}`); seconds != 0 {
+		t.Fatalf("empty field parsed to %d, want 0", seconds)
+	}
+	// 响应体不存在该字段时回退为零喵。
+	if seconds := parseBodyFreezeSeconds("missing", model.VirtualModelFreezeUnitSeconds, `{"retry_after":1}`); seconds != 0 {
+		t.Fatalf("missing field parsed to %d, want 0", seconds)
+	}
+	// 非数字值不能安全换算，必须回退为零喵。
+	if seconds := parseBodyFreezeSeconds("retry_after", model.VirtualModelFreezeUnitSeconds, `{"retry_after":"later"}`); seconds != 0 {
+		t.Fatalf("non-numeric value parsed to %d, want 0", seconds)
+	}
+	// mixed 单位遇到纯数字应拒绝而不是误读为分钟喵。
+	if seconds := parseBodyFreezeSeconds("retry_after", model.VirtualModelFreezeUnitMixed, `{"retry_after":5}`); seconds != 0 {
+		t.Fatalf("mixed unit with plain number parsed to %d, want 0", seconds)
+	}
+	// 负值文本不得解析为负冻结时长喵。
+	if seconds := parseBodyFreezeSeconds("retry_after", model.VirtualModelFreezeUnitSeconds, `{"retry_after":-30}`); seconds != 0 {
+		t.Fatalf("negative value parsed to %d, want 0", seconds)
+	}
+}
+
+// TestCandidateFreezeSecondsBodyField 验证响应体字段冻结与固定时长、Retry-After 的取值优先级喵。
+func TestCandidateFreezeSecondsBodyField(t *testing.T) {
+	// 响应体字段换算值大于固定时长时采用响应体值喵。
+	rule := model.VirtualModelFailureRule{Action: model.VirtualModelActionFreeze, FreezeSeconds: 10, FreezeField: "retry_after", FreezeUnit: model.VirtualModelFreezeUnitMinutes}
+	if seconds := candidateFreezeSeconds(rule, CandidateFailure{BodyPreview: `{"retry_after":3}`}); seconds != 180 {
+		t.Fatalf("body field freeze = %d, want 180", seconds)
+	}
+	// 固定时长大于响应体解析值时保留固定时长喵。
+	if seconds := candidateFreezeSeconds(rule, CandidateFailure{BodyPreview: `{"retry_after":1}`}); seconds != 60 {
+		t.Fatalf("body field freeze = %d, want 60", seconds)
+	}
+	// Retry-After 响应头仍然参与比较，三者取最大值喵。
+	if seconds := candidateFreezeSeconds(rule, CandidateFailure{BodyPreview: `{"retry_after":2}`, RetryAfter: 300}); seconds != 300 {
+		t.Fatalf("retry-after head = %d, want 300", seconds)
+	}
+	// FreezeField 为空时退化为纯固定时长逻辑，不触碰响应体喵。
+	if seconds := candidateFreezeSeconds(model.VirtualModelFailureRule{FreezeSeconds: 5}, CandidateFailure{BodyPreview: `{"retry_after":999}`}); seconds != 5 {
+		t.Fatalf("no field freeze = %d, want 5", seconds)
+	}
+}
+
+// TestValidateFailureRuleFreezeField 验证响应体冻结字段名与单位的控制面校验喵。
+func TestValidateFailureRuleFreezeField(t *testing.T) {
+	// 合法字段名与合法单位必须允许保存喵。
+	validRule := &model.VirtualModelFailureRule{CandidateID: 1, RuleOrder: 0, FreezeField: "retry_after", FreezeUnit: model.VirtualModelFreezeUnitSeconds, Action: model.VirtualModelActionFreeze}
+	if validationError := ValidateCandidateFailureRule(validRule); validationError != nil {
+		t.Fatalf("valid freeze field rejected: %v", validationError)
+	}
+	// 未知单位必须拒绝，避免运行时无法换算冻结秒数喵。
+	invalidUnitRule := *validRule
+	invalidUnitRule.FreezeUnit = "fortnights"
+	if validationError := ValidateCandidateFailureRule(&invalidUnitRule); validationError == nil {
+		t.Fatal("unknown freeze unit should be rejected")
+	}
+	// 超长字段名必须拒绝，避免数据库列截断产生歧义喵。
+	longFieldRule := *validRule
+	longFieldRule.FreezeField = strings.Repeat("x", 65)
+	if validationError := ValidateCandidateFailureRule(&longFieldRule); validationError == nil {
+		t.Fatal("overlong freeze field should be rejected")
 	}
 }
