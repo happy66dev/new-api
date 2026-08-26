@@ -236,7 +236,14 @@ func handleVirtualModelRequest(c *gin.Context, modelRequest *ModelRequest) bool 
 	}
 	ownerUserID := c.GetInt("id")
 	tokenID := common.GetContextKeyInt(c, constant.ContextKeyTokenId)
-	virtualModel, queryError := model.GetEnabledVirtualModelByOwnerTokenName(ownerUserID, tokenID, normalizedName)
+	// API Key 请求按 token 绑定授权；会话态请求（如游乐场 /pg 路径）没有 token_id，按 owner 授权用户自己的虚拟模型喵。
+	var virtualModel *model.VirtualModel
+	var queryError error
+	if tokenID > 0 {
+		virtualModel, queryError = model.GetEnabledVirtualModelByOwnerTokenName(ownerUserID, tokenID, normalizedName)
+	} else {
+		virtualModel, queryError = model.GetEnabledVirtualModelByOwnerName(ownerUserID, normalizedName)
+	}
 	// 喵~防御：未绑定、停用、跨用户和查询失败统一隐藏资源存在性，避免模型枚举喵。
 	if queryError != nil || virtualModel == nil {
 		abortWithOpenAiMessage(c, http.StatusNotFound, "virtual model not found", types.ErrorCode("virtual_model_not_found"))

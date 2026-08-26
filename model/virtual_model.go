@@ -343,6 +343,18 @@ func GetEnabledVirtualModelByOwnerTokenName(ownerUserID int, tokenID int, normal
 	return virtualModel, queryError
 }
 
+// GetEnabledVirtualModelByOwnerName 查询会话态用户自己拥有的单个启用虚拟模型喵。
+// 会话态请求（如游乐场 /pg 路径）没有 API Key 绑定，只需确认模型属于该用户且已启用喵。
+func GetEnabledVirtualModelByOwnerName(ownerUserID int, normalizedName string) (*VirtualModel, error) {
+	// 喵~防御：拒绝无效身份或空模型名称，防止空条件命中资源喵。
+	if ownerUserID <= 0 || normalizedName == "" {
+		return nil, gorm.ErrRecordNotFound
+	}
+	virtualModel := &VirtualModel{}
+	queryError := DB.Where("owner_user_id = ? AND normalized_name = ? AND enabled = ?", ownerUserID, normalizedName, true).First(virtualModel).Error
+	return virtualModel, queryError
+}
+
 // VirtualModelCandidateSnapshot 保存一次虚拟模型请求的候选不可变执行配置喵。
 type VirtualModelCandidateSnapshot struct {
 	CandidateID        int                    // 候选唯一编号，用于冻结、规则和审计关联喵。

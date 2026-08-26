@@ -16,6 +16,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import type { VirtualModel } from '@/features/virtual-models/api'
+
 import type { GroupOption, ModelOption } from '../../types'
 
 export function filterChatGroups(groups: GroupOption[]): GroupOption[] {
@@ -66,4 +68,40 @@ export function getOptionLoadErrorMessage(
   fallbackMessage: string
 ): string {
   return error instanceof Error ? error.message : fallbackMessage
+}
+
+// mergeVirtualModelOptions 把启用状态的虚拟模型转成下拉选项，追加到普通模型列表之后喵。
+export function mergeVirtualModelOptions(
+  models: ModelOption[],
+  // 只依赖虚拟模型的三个展示字段，避免与完整控制面类型强耦合喵。
+  virtualModels: Pick<
+    VirtualModel,
+    'normalized_name' | 'display_name' | 'enabled'
+  >[] | undefined
+): ModelOption[] {
+  // 喵~防御：虚拟模型接口未返回数据时回退为空数组，避免展开 undefined 报错喵。
+  const virtualOptions = (virtualModels ?? [])
+    // 只把启用状态的虚拟模型暴露给游乐场，停用的模型不可选喵。
+    .filter((virtualModel) => virtualModel.enabled)
+    .map((virtualModel) => {
+      // display_name 为空时回退为 virtual/规范名，保证下拉选项始终可辨识喵。
+      const label =
+        virtualModel.display_name.trim() !== ''
+          ? virtualModel.display_name
+          : `virtual/${virtualModel.normalized_name}`
+      return {
+        label,
+        // value 使用 virtual/ 前缀，与后端虚拟模型分发识别规则保持一致喵。
+        value: `virtual/${virtualModel.normalized_name}`,
+      }
+    })
+    // 虚拟模型之间按显示名自然排序，让下拉顺序稳定可预测喵。
+    .sort((a, b) =>
+      a.label.localeCompare(b.label, undefined, {
+        numeric: true,
+        sensitivity: 'base',
+      })
+    )
+
+  return [...models, ...virtualOptions]
 }

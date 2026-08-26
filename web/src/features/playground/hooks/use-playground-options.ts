@@ -39,11 +39,13 @@ import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
+import { getVirtualModels } from '@/features/virtual-models/api'
 import { getUserGroups, getUserModels } from '../api'
 import {
   getGroupFallback,
   getModelFallback,
   getOptionLoadErrorMessage,
+  mergeVirtualModelOptions,
   shouldClearModelForGroup,
 } from '../lib'
 import type { GroupOption, ModelOption, PlaygroundConfig } from '../types'
@@ -77,6 +79,12 @@ export function usePlaygroundOptions({
     queryKey: ['playground-models', currentGroup],
     queryFn: () => getUserModels(currentGroup),
     enabled: currentGroup !== '',
+  })
+
+  // 拉取当前登录用户自己的虚拟模型，虚拟模型不随分组变化，独立缓存喵。
+  const { data: virtualModelsData } = useQuery({
+    queryKey: ['playground-virtual-models'],
+    queryFn: getVirtualModels,
   })
 
   const {
@@ -113,18 +121,24 @@ export function usePlaygroundOptions({
   useEffect(() => {
     if (!modelsData) return
 
-    setModels(modelsData)
-    const fallback = getModelFallback(modelsData, currentModel)
+    // 合并普通模型与启用虚拟模型，虚拟模型始终存在，切换分组不清空已选虚拟模型喵。
+    const mergedModels = mergeVirtualModelOptions(
+      modelsData,
+      virtualModelsData?.data
+    )
+
+    setModels(mergedModels)
+    const fallback = getModelFallback(mergedModels, currentModel)
 
     if (fallback) {
       updateConfig('model', fallback)
       return
     }
 
-    if (shouldClearModelForGroup(modelsData, currentModel)) {
+    if (shouldClearModelForGroup(mergedModels, currentModel)) {
       updateConfig('model', '')
     }
-  }, [modelsData, currentModel, setModels, updateConfig])
+  }, [modelsData, virtualModelsData, currentModel, setModels, updateConfig])
 
   useEffect(() => {
     if (!groupsData) return
