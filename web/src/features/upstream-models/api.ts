@@ -110,3 +110,19 @@ export async function deleteUserUpstreamModel(
   const response = await api.delete(`/api/upstream-models/${id}`, { data: input })
   return response.data
 }
+
+// 嗅探剩余额度：只更新展示字段，不改变可用余额喵。
+export async function checkUserUpstreamModelBalance(
+  id: number
+): Promise<UserUpstreamModelApiResponse<{ upstream_remaining_cents: number; upstream_remaining_at: number }>> {
+  const response = await api.post(`/api/upstream-models/${id}/balance-check`)
+  return response.data
+}
+
+// 一键同步：把嗅探结果写入可用余额喵。
+export async function syncUserUpstreamModelBalance(
+  id: number
+): Promise<UserUpstreamModelApiResponse<{ balance_cents: number; upstream_remaining_cents: number }>> {
+  const response = await api.post(`/api/upstream-models/${id}/balance/sync`)
+  return response.data
+}

@@ -7,7 +7,7 @@
  (at your option) any later version.
 */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Pencil, Plus, Settings2, Trash2 } from 'lucide-react'
+import { Pencil, Plus, RefreshCw, Settings2, Trash2, Wallet } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -37,9 +37,11 @@ import {
 import { Switch } from '@/components/ui/switch'
 
 import {
+  checkUserUpstreamModelBalance,
   createUserUpstreamModel,
   deleteUserUpstreamModel,
   getUserUpstreamModels,
+  syncUserUpstreamModelBalance,
   updateUserUpstreamModel,
 } from './api'
 import type { UserUpstreamModel, UserUpstreamModelInput } from './api'
@@ -381,11 +383,53 @@ export function UpstreamModels() {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false)
   const [editingModel, setEditingModel] = useState<UserUpstreamModel | null>(null)
   const [deletingModel, setDeletingModel] = useState<UserUpstreamModel | null>(null)
+  // 正在执行嗅探或同步操作的模型 id，用于展示按钮加载态喵。
+  const [balanceActionId, setBalanceActionId] = useState<number | null>(null)
   const upstreamModelsQuery = useQuery({
     queryKey: ['upstream-models'],
     queryFn: getUserUpstreamModels,
   })
   const upstreamModels = upstreamModelsQuery.data?.data ?? []
+
+  // handleCheckBalance 嗅探上游剩余额度并刷新列表喵。
+  const handleCheckBalance = async (item: UserUpstreamModel) => {
+    // 喵~防御：同一时间只允许一个嗅探操作，避免并发覆盖展示喵。
+    if (balanceActionId !== null) return
+    setBalanceActionId(item.id)
+    try {
+      const response = await checkUserUpstreamModelBalance(item.id)
+      // 喵~防御：业务失败必须展示后端消息喵。
+      if (!response.success) {
+        throw new Error(response.message || t('Unable to check upstream model balance'))
+      }
+      toast.success(t('Upstream balance checked'))
+      void queryClient.invalidateQueries({ queryKey: ['upstream-models'] })
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('Unable to check upstream model balance'))
+    } finally {
+      setBalanceActionId(null)
+    }
+  }
+
+  // handleSyncBalance 把嗅探结果一键同步为可用余额并刷新列表喵。
+  const handleSyncBalance = async (item: UserUpstreamModel) => {
+    // 喵~防御：同一时间只允许一个同步操作喵。
+    if (balanceActionId !== null) return
+    setBalanceActionId(item.id)
+    try {
+      const response = await syncUserUpstreamModelBalance(item.id)
+      // 喵~防御：业务失败必须展示后端消息喵。
+      if (!response.success) {
+        throw new Error(response.message || t('Unable to sync upstream model balance'))
+      }
+      toast.success(t('Upstream balance synced to available balance'))
+      void queryClient.invalidateQueries({ queryKey: ['upstream-models'] })
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('Unable to sync upstream model balance'))
+    } finally {
+      setBalanceActionId(null)
+    }
+  }
 
   // handleDelete 执行删除并刷新列表喵。
   const handleDelete = async () => {
@@ -443,10 +487,31 @@ export function UpstreamModels() {
                   {item.base_url ? ` · ${item.base_url}` : ''}
                 </div>
                 <div className='text-muted-foreground mt-1 text-xs'>
-                  {t('Balance')}: {centsToYuan(item.balance_cents)} ¥ · {t('Limit')}: {centsToYuan(item.spend_limit_cents)} ¥
+                  {t('Balance')}: {centsToYuan(item.balance_cents)} ¥ · {t('Limit')}: {centsToYuan(item.spend_limit_cents)} ¥ ·{' '}
+                  {t('Remaining')}: {centsToYuan(item.upstream_remaining_cents)} ¥
                 </div>
               </div>
               <div className='flex shrink-0 items-center gap-2'>
+                <Button
+                  size='sm'
+                  variant='outline'
+                  disabled={balanceActionId !== null}
+                  onClick={() => void handleCheckBalance(item)}
+                  title={t('Check remaining quota from upstream')}
+                >
+                  <RefreshCw className={balanceActionId === item.id ? 'size-3.5 animate-spin' : 'size-3.5'} />
+                  {t('Check')}
+                </Button>
+                <Button
+                  size='sm'
+                  variant='outline'
+                  disabled={balanceActionId !== null}
+                  onClick={() => void handleSyncBalance(item)}
+                  title={t('Sync checked remaining quota into available balance')}
+                >
+                  <Wallet className='size-3.5' />
+                  {t('Sync to balance')}
+                </Button>
                 <Button
                   size='sm'
                   variant='outline'

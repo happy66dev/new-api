@@ -2294,7 +2294,7 @@
     "footer.columns.related.links.oneApi": "One API",
     "footer.columns.related.title": "Related Projects",
     "footer.defaultCopyright": "All rights reserved.",
-    "footer.new\u0061pi.projectAttributionSuffix": "All rights reserved. Designed and developed by the project contributors.",
+    "footer.newapi.projectAttributionSuffix": "All rights reserved. Designed and developed by the project contributors.",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment",
     "For example, 5": "For example, 5",
     "For private deployments, format: https://fastgpt.run/api/openapi": "For private deployments, format: https://fastgpt.run/api/openapi",
@@ -6040,6 +6040,14 @@
     "Delete upstream model": "Delete upstream model",
     "Are you sure you want to delete this upstream model?": "Are you sure you want to delete this upstream model?",
     "Unable to delete upstream model": "Unable to delete upstream model",
-    "Upstream model deleted": "Upstream model deleted"
+    "Upstream model deleted": "Upstream model deleted",
+    "Check": "Check",
+    "Sync to balance": "Sync to balance",
+    "Upstream balance checked": "Upstream balance checked",
+    "Upstream balance synced to available balance": "Upstream balance synced to available balance",
+    "Unable to check upstream model balance": "Unable to check upstream model balance",
+    "Unable to sync upstream model balance": "Unable to sync upstream model balance",
+    "Check remaining quota from upstream": "Check remaining quota from upstream",
+    "Sync checked remaining quota into available balance": "Sync checked remaining quota into available balance"
   }
 }

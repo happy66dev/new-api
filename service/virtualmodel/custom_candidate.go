@@ -330,6 +330,11 @@ func copyCustomResponseHeaders(targetHeaders http.Header, sourceHeaders http.Hea
 	}
 }
 
+// StrictCustomHTTPClient 导出严格拨号策略客户端，供同库嗅探余额等场景复用喵。
+func StrictCustomHTTPClient(timeout time.Duration) *http.Client {
+	return strictCustomHTTPClient(timeout)
+}
+
 // strictCustomHTTPClient 创建不信任环境代理、禁止重定向且固定 DNS 校验拨号的专用客户端喵。
 func strictCustomHTTPClient(timeout time.Duration) *http.Client {
 	transport := &http.Transport{

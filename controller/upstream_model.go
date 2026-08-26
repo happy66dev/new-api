@@ -7,6 +7,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	upstreammodelservice "github.com/QuantumNous/new-api/service/upstreammodel"
 	virtualmodelservice "github.com/QuantumNous/new-api/service/virtualmodel"
 	"github.com/gin-gonic/gin"
 )
@@ -356,4 +357,60 @@ func DeleteUserUpstreamModel(c *gin.Context) {
 // upstreamModelDeleteInput 描述带版本保护的删除请求喵。
 type upstreamModelDeleteInput struct {
 	Version int `json:"version"`
+}
+
+// CheckUserUpstreamModelBalance 嗅探上游 key 剩余额度并更新展示字段喵。
+func CheckUserUpstreamModelBalance(c *gin.Context) {
+	upstreamModelID, ok := parseUpstreamModelID(c)
+	if !ok {
+		return
+	}
+	upstreamModel, ok := loadOwnedUpstreamModel(c, upstreamModelID)
+	if !ok {
+		return
+	}
+	remainingCents, checkError := upstreammodelservice.CheckUserUpstreamModelBalanceCents(upstreamModel)
+	if checkError != nil {
+		common.ApiError(c, checkError)
+		return
+	}
+	// 嗅探成功写入剩余额度与时间戳，供广场与详情展示喵。
+	if err := model.UpdateUserUpstreamModelBalanceResult(upstreamModelID, c.GetInt("id"), remainingCents); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{
+		"upstream_remaining_cents": remainingCents,
+		"upstream_remaining_at":    common.GetTimestamp(),
+	})
+}
+
+// SyncUserUpstreamModelBalance 一键把嗅探结果同步为可用余额喵。
+func SyncUserUpstreamModelBalance(c *gin.Context) {
+	upstreamModelID, ok := parseUpstreamModelID(c)
+	if !ok {
+		return
+	}
+	upstreamModel, ok := loadOwnedUpstreamModel(c, upstreamModelID)
+	if !ok {
+		return
+	}
+	remainingCents, checkError := upstreammodelservice.CheckUserUpstreamModelBalanceCents(upstreamModel)
+	if checkError != nil {
+		common.ApiError(c, checkError)
+		return
+	}
+	// 先持久化嗅探结果，再同步余额，保证两个字段一致喵。
+	if err := model.UpdateUserUpstreamModelBalanceResult(upstreamModelID, c.GetInt("id"), remainingCents); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if err := model.SyncUserUpstreamModelBalance(upstreamModelID, c.GetInt("id")); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{
+		"balance_cents":            remainingCents,
+		"upstream_remaining_cents": remainingCents,
+	})
 }

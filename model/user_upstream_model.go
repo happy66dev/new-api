@@ -138,6 +138,40 @@ func DeleteUserUpstreamModelByOwnerWithVersion(upstreamModelID int64, ownerUserI
 	return nil
 }
 
+// UpdateUserUpstreamModelBalanceResult 持久化嗅探到的剩余额度与时间戳喵。
+func UpdateUserUpstreamModelBalanceResult(upstreamModelID int64, ownerUserID int, remainingCents int64) error {
+	// 喵~防御：无效参数直接返回记录不存在，避免空值进入更新喵。
+	if upstreamModelID <= 0 || ownerUserID <= 0 {
+		return gorm.ErrRecordNotFound
+	}
+	// 只更新展示字段，不动版本号，避免嗅探干扰并发配置编辑喵。
+	return DB.Model(&UserUpstreamModel{}).Where("id = ? AND owner_user_id = ?", upstreamModelID, ownerUserID).Updates(map[string]interface{}{
+		"upstream_remaining_cents": remainingCents,
+		"upstream_remaining_at":    time.Now().Unix(),
+	}).Error
+}
+
+// SyncUserUpstreamModelBalance 把嗅探到的剩余额度同步为可用余额喵。
+// 事务加行锁读取最新剩余额度后覆盖余额，保证与嗅探结果一致喵。
+func SyncUserUpstreamModelBalance(upstreamModelID int64, ownerUserID int) error {
+	// 喵~防御：无效参数直接返回记录不存在喵。
+	if upstreamModelID <= 0 || ownerUserID <= 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var upstreamModel UserUpstreamModel
+		// lockForUpdate 在 MySQL/PostgreSQL 加行锁，SQLite 跳过锁语法喵。
+		if err := lockForUpdate(tx).Where("id = ? AND owner_user_id = ?", upstreamModelID, ownerUserID).First(&upstreamModel).Error; err != nil {
+			return err
+		}
+		// 把嗅探结果覆盖余额，同步操作显式接受该结果喵。
+		upstreamModel.BalanceCents = upstreamModel.UpstreamRemainingCents
+		upstreamModel.UpdatedTime = time.Now().Unix()
+		// 只更新余额字段，避免覆盖控制面并发修改的其他配置喵。
+		return tx.Model(&upstreamModel).Select("balance_cents", "updated_time").Updates(upstreamModel).Error
+	})
+}
+
 // DeductUserUpstreamModelCharge 请求后按实际费用扣减余额与累计消耗，事务加行锁防止并发超扣喵。
 // isShared 为 true 时只累加共享消耗（共享调用免费，不扣所有者余额）喵。
 func DeductUserUpstreamModelCharge(upstreamModelID int64, ownerUserID int, costCents int64, isShared bool) error {

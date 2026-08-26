@@ -300,6 +300,8 @@ func SetApiRouter(router *gin.Engine) {
 			upstreamModelRoute.GET("/:id", controller.GetUserUpstreamModel)
 			upstreamModelRoute.PUT("/:id", controller.UpdateUserUpstreamModel)
 			upstreamModelRoute.DELETE("/:id", controller.DeleteUserUpstreamModel)
+			upstreamModelRoute.POST("/:id/balance-check", controller.CheckUserUpstreamModelBalance)
+			upstreamModelRoute.POST("/:id/balance/sync", controller.SyncUserUpstreamModelBalance)
 		}
 
 		tokenRoute := apiRouter.Group("/token")
