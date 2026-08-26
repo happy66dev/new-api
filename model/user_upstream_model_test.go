@@ -206,3 +206,28 @@ func TestSharedUserUpstreamModels(t *testing.T) {
 	_, err = GetEnabledSharedUserUpstreamModelByName("not-shared")
 	require.Error(t, err)
 }
+
+// TestGetSharedUserUpstreamModelByNormalizedName 验证共享命名池查询：共享开启才占用名字喵。
+func TestGetSharedUserUpstreamModelByNormalizedName(t *testing.T) {
+	truncateTables(t)
+	require.NoError(t, DB.AutoMigrate(&UserUpstreamModel{}))
+	require.NoError(t, DB.Exec("DELETE FROM user_upstream_models").Error)
+
+	// 用户7 共享开启名为 pool-a，占用了全局共享池名字喵。
+	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "pool-a", ShareEnabled: true, Version: 1}).Error)
+	// 用户8 的非共享同名模型不占用共享池名字喵。
+	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 8, NormalizedName: "pool-private", ShareEnabled: false, Version: 1}).Error)
+
+	// 共享中的名字可被查找到，属主不限定喵。
+	existing, err := GetSharedUserUpstreamModelByNormalizedName("pool-a")
+	require.NoError(t, err)
+	assert.Equal(t, 7, existing.OwnerUserID)
+
+	// 非共享模型的名字不在共享池中喵。
+	_, err = GetSharedUserUpstreamModelByNormalizedName("pool-private")
+	require.Error(t, err)
+
+	// 空名称直接返回记录不存在喵。
+	_, err = GetSharedUserUpstreamModelByNormalizedName("")
+	require.Error(t, err)
+}

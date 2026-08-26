@@ -4,12 +4,14 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	upstreammodelservice "github.com/QuantumNous/new-api/service/upstreammodel"
 	virtualmodelservice "github.com/QuantumNous/new-api/service/virtualmodel"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // upstreamModelInput 描述用户创建或更新上游模型时可提交的字段喵。
@@ -56,6 +58,33 @@ type upstreamModelResponse struct {
 func upstreamModelNotFound(c *gin.Context) {
 	// 喵~防御：不存在、越权和未授权资源使用完全相同的响应，避免用户枚举资源喵。
 	c.JSON(http.StatusNotFound, gin.H{"success": false, "code": "upstream_model_not_found", "message": "用户上游模型不存在"})
+}
+
+// writeUpstreamModelSharedNameConflict 统一返回共享名称冲突的受控错误喵。
+func writeUpstreamModelSharedNameConflict(c *gin.Context) {
+	c.JSON(http.StatusConflict, gin.H{"success": false, "code": "upstream_model_shared_name_conflict", "message": "共享模型名称已被其他用户占用，请更换名称"})
+}
+
+// validateSharedNameGlobalUniqueness 校验共享模型名称在全局共享命名池中唯一喵。
+// 共享池按 user/<name> 全局命名，两个不同属主共享同名模型会造成调用路由与广场展示歧义喵。
+func validateSharedNameGlobalUniqueness(ownerUserID int, normalizedName string, excludingID int64) error {
+	// 喵~防御：空名称按不冲突处理，真正的空名会在 saveUpstreamModelFields 阶段被拒绝喵。
+	if strings.TrimSpace(normalizedName) == "" {
+		return nil
+	}
+	existing, err := model.GetSharedUserUpstreamModelByNormalizedName(normalizedName)
+	// 喵~防御：查询失败视为无冲突，数据库错误由写入阶段兜底，不阻塞正常创建喵。
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	}
+	// 命中自己名下的模型不算冲突：创建时自己是唯一的候选，更新时排除自身条目喵。
+	if existing.OwnerUserID == ownerUserID && (excludingID == 0 || existing.ID == excludingID) {
+		return nil
+	}
+	return errors.New("upstream_model_shared_name_conflict")
 }
 
 // parseUpstreamModelID 解析并限制路径中的上游模型编号喵。
@@ -246,6 +275,13 @@ func CreateUserUpstreamModel(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	// 全局共享命名池校验：开启共享且名称已被其他用户占用时拒绝创建喵。
+	if upstreamModel.ShareEnabled {
+		if err := validateSharedNameGlobalUniqueness(upstreamModel.OwnerUserID, upstreamModel.NormalizedName, 0); err != nil {
+			writeUpstreamModelSharedNameConflict(c)
+			return
+		}
+	}
 	if err := model.DB.Create(upstreamModel).Error; err != nil {
 		common.ApiError(c, err)
 		return
@@ -305,6 +341,13 @@ func UpdateUserUpstreamModel(c *gin.Context) {
 		}
 		common.ApiError(c, err)
 		return
+	}
+	// 全局共享命名池校验：开启共享且新名称已被其他用户占用时拒绝更新喵。
+	if upstreamModel.ShareEnabled {
+		if err := validateSharedNameGlobalUniqueness(upstreamModel.OwnerUserID, upstreamModel.NormalizedName, upstreamModelID); err != nil {
+			writeUpstreamModelSharedNameConflict(c)
+			return
+		}
 	}
 	// 更新条件绑定旧版本号，保证并发写只有一个请求成功，其余命中零行更新喵。
 	updateResult := model.DB.Model(upstreamModel).Where("id = ? AND owner_user_id = ? AND version = ?", upstreamModelID, c.GetInt("id"), existingVersion).Select("normalized_name", "display_name", "enabled", "encrypted_base_url", "encrypted_api_key", "base_url_fingerprint", "api_key_fingerprint", "credential_version", "real_model_name", "auth_style", "model_ratio", "completion_ratio", "cache_ratio", "cache_creation_ratio", "cache_creation_5m_ratio", "cache_creation_1h_ratio", "image_ratio", "audio_ratio", "audio_completion_ratio", "balance_cents", "spend_limit_cents", "total_spent_cents", "upstream_remaining_cents", "upstream_remaining_at", "balance_check_enabled", "balance_check_path", "share_enabled", "share_limit_cents", "share_spent_cents", "show_balance_enabled", "version", "updated_time").Updates(upstreamModel)

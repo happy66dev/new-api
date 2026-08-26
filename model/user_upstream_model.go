@@ -223,6 +223,20 @@ func GetSharedUserUpstreamModelNames() []string {
 	return names
 }
 
+// GetSharedUserUpstreamModelByNormalizedName 返回共享池中指定名称的模型（任意属主），供全局唯一命名池校验用喵。
+func GetSharedUserUpstreamModelByNormalizedName(normalizedName string) (*UserUpstreamModel, error) {
+	// 喵~防御：空名称直接返回记录不存在喵。
+	if strings.TrimSpace(normalizedName) == "" {
+		return nil, gorm.ErrRecordNotFound
+	}
+	var upstreamModel UserUpstreamModel
+	// 只查共享开启的模型，不限制属主；额度耗尽与否都占用名字（恢复额度后仍会回到共享池）喵。
+	if err := DB.Where("normalized_name = ? AND share_enabled = ?", normalizedName, true).First(&upstreamModel).Error; err != nil {
+		return nil, err
+	}
+	return &upstreamModel, nil
+}
+
 // GetEnabledSharedUserUpstreamModelByName 返回指定名称的共享启用上游模型，供共享调用授权用喵。
 // 不限定属主：任何用户都可调用共享中的模型；额度耗尽时按记录不存在处理喵。
 func GetEnabledSharedUserUpstreamModelByName(normalizedName string) (*UserUpstreamModel, error) {
@@ -232,7 +246,8 @@ func GetEnabledSharedUserUpstreamModelByName(normalizedName string) (*UserUpstre
 	}
 	var upstreamModel UserUpstreamModel
 	// 启用 + 共享开启 + 共享额度未耗尽才算"共享中"喵。
-	if err := DB.Where("normalized_name = ? AND enabled = ? AND share_enabled = ? AND (share_limit_cents = 0 OR share_spent_cents < share_limit_cents)", normalizedName, true, true).First(&upstreamModel).Error; err != nil {
+	// Order("id asc") 保证存量重复命名数据（命名池上线前的历史遗留）下有确定选择，不依赖数据库返回顺序喵。
+	if err := DB.Where("normalized_name = ? AND enabled = ? AND share_enabled = ? AND (share_limit_cents = 0 OR share_spent_cents < share_limit_cents)", normalizedName, true, true).Order("id asc").First(&upstreamModel).Error; err != nil {
 		return nil, err
 	}
 	return &upstreamModel, nil
