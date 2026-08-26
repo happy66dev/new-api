@@ -51,6 +51,8 @@ func GetUserUsableGroups(userGroup string) map[string]string {
 			groupsCopy[userGroup] = "用户分组"
 		}
 	}
+	// 用户共享分组硬编码追加到所有用户可用分组，共享模型归入该分组喵。
+	groupsCopy[constant.GroupUserShared] = "用户共享分组"
 	return groupsCopy
 }
 
@@ -251,6 +253,16 @@ func GetGroupsEnabledModels(groups []string) []string {
 	seen := make(map[string]struct{})
 	models := make([]string, 0)
 	for _, group := range groups {
+		// 用户共享分组直接查询共享中的用户上游模型，不走 abilities 表喵。
+		if group == constant.GroupUserShared {
+			for _, modelName := range model.GetSharedUserUpstreamModelNames() {
+				if _, ok := seen[modelName]; !ok {
+					seen[modelName] = struct{}{}
+					models = append(models, modelName)
+				}
+			}
+			continue
+		}
 		for _, modelName := range model.GetGroupEnabledModels(group) {
 			if _, ok := seen[modelName]; !ok {
 				seen[modelName] = struct{}{}

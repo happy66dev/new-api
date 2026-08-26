@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -47,21 +48,29 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 		abortWithOpenAiMessage(c, http.StatusBadRequest, "invalid user upstream model request", types.ErrorCode("upstream_model_invalid_request"))
 		return false
 	}
-	// 只允许当前登录用户访问自己名下的上游模型，隐藏资源存在性喵。
+	// 授权解析：先查当前用户自己名下的上游模型，再回退查询共享中的同名模型喵。
 	ownerUserID := c.GetInt("id")
 	upstreamModel, queryError := model.GetEnabledUserUpstreamModelByOwnerName(ownerUserID, normalizedName)
+	isShared := false
 	if queryError != nil {
-		abortWithOpenAiMessage(c, http.StatusNotFound, "user upstream model not found", types.ErrorCode("upstream_model_not_found"))
-		return false
+		// 属主名下没有该模型时，查询共享中的同名模型，供其他用户免费共享调用喵。
+		upstreamModel, queryError = model.GetEnabledSharedUserUpstreamModelByName(normalizedName)
+		if queryError != nil {
+			abortWithOpenAiMessage(c, http.StatusNotFound, "user upstream model not found", types.ErrorCode("upstream_model_not_found"))
+			return false
+		}
+		isShared = true
 	}
-	// 请求前硬检查：余额必须大于 0，使用上限未耗尽（P4 再补充共享额度检查）喵。
-	if upstreamModel.BalanceCents <= 0 {
-		abortUpstreamModelQuotaExhausted(c)
-		return false
-	}
-	if upstreamModel.SpendLimitCents > 0 && upstreamModel.TotalSpentCents >= upstreamModel.SpendLimitCents {
-		abortUpstreamModelQuotaExhausted(c)
-		return false
+	// 请求前硬检查：自用调用检查余额与使用上限，共享调用由查询条件保证共享额度未耗尽喵。
+	if !isShared {
+		if upstreamModel.BalanceCents <= 0 {
+			abortUpstreamModelQuotaExhausted(c)
+			return false
+		}
+		if upstreamModel.SpendLimitCents > 0 && upstreamModel.TotalSpentCents >= upstreamModel.SpendLimitCents {
+			abortUpstreamModelQuotaExhausted(c)
+			return false
+		}
 	}
 	baseURL, decryptBaseURLError := virtualmodelservice.DecryptCredential(upstreamModel.EncryptedBaseURL, upstreamModel.CredentialVersion)
 	apiKey, decryptAPIKeyError := virtualmodelservice.DecryptCredential(upstreamModel.EncryptedAPIKey, upstreamModel.CredentialVersion)
@@ -98,14 +107,15 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 		abortWithOpenAiMessage(c, http.StatusBadGateway, "user upstream model is unavailable", types.ErrorCode("upstream_model_unavailable"))
 		return false
 	}
-	// 成功透传后按独立 RMB 计费系统扣费与写日志喵。
-	settleUserUpstreamModelCharge(c, ownerUserID, upstreamModel, executionResult.Usage, modelRequest.Group, isUpstreamModelRequestStreaming(c), int(time.Since(startTime).Seconds()))
+	// 成功透传后按独立 RMB 计费系统扣费与写日志；共享调用免费只累计共享消耗喵。
+	settleUserUpstreamModelCharge(c, upstreamModel.OwnerUserID, upstreamModel, executionResult.Usage, modelRequest.Group, isUpstreamModelRequestStreaming(c), int(time.Since(startTime).Seconds()), isShared)
 	c.Abort()
 	return false
 }
 
 // settleUserUpstreamModelCharge 计算费用、扣减余额与累计消耗，并写入自定上游日志喵。
-func settleUserUpstreamModelCharge(c *gin.Context, ownerUserID int, upstreamModel *model.UserUpstreamModel, usage *dto.Usage, group string, isStream bool, useTimeSeconds int) {
+// isShared 为 true 时表示共享调用：免费、只累计共享消耗、日志归入 user-shared 分组喵。
+func settleUserUpstreamModelCharge(c *gin.Context, ownerUserID int, upstreamModel *model.UserUpstreamModel, usage *dto.Usage, group string, isStream bool, useTimeSeconds int, isShared bool) {
 	// 喵~防御：空上下文或空模型对象直接返回，避免空指针喵。
 	if c == nil || upstreamModel == nil {
 		return
@@ -117,14 +127,21 @@ func settleUserUpstreamModelCharge(c *gin.Context, ownerUserID int, upstreamMode
 		common.SysError("user upstream model cost calculation failed: " + costError.Error())
 		costCents = 0
 	}
-	// 扣减余额与累计消耗，扣费错误只记日志不打断响应喵。
-	if deductError := model.DeductUserUpstreamModelCharge(upstreamModel.ID, ownerUserID, costCents, false); deductError != nil {
+	// 扣减：自用扣余额并累计自用消耗，共享调用免费只累计共享消耗喵。
+	if deductError := model.DeductUserUpstreamModelCharge(upstreamModel.ID, ownerUserID, costCents, isShared); deductError != nil {
 		common.SysError("user upstream model charge deduction failed: " + deductError.Error())
 	}
-	// 分组兜底为空时使用默认分组，保证日志可按分组筛选喵。
+	// 分组：共享调用固定归入 user-shared，自用沿用请求分组并兜底默认值喵。
 	effectiveGroup := strings.TrimSpace(group)
-	if effectiveGroup == "" {
+	if isShared {
+		effectiveGroup = constant.GroupUserShared
+	} else if effectiveGroup == "" {
 		effectiveGroup = defaultUserUpstreamGroupName
+	}
+	// 日志归属：自用归模型属主，共享调用归当前调用者喵。
+	logUserID := ownerUserID
+	if isShared {
+		logUserID = c.GetInt("id")
 	}
 	promptTokens, completionTokens, cachedTokens, cacheCreationTokens, imageTokens, audioTokens, cacheCreation5mTokens, cacheCreation1hTokens := splitUpstreamModelUsage(usage)
 	// Other 记录独立 RMB 计费明细，供日志详情与筛选展示喵。
@@ -148,8 +165,9 @@ func settleUserUpstreamModelCharge(c *gin.Context, ownerUserID int, upstreamMode
 		"image_tokens":             imageTokens,
 		"audio_tokens":             audioTokens,
 		"usage_available":          usage != nil,
+		"is_shared_call":           isShared,
 	}
-	model.RecordUserUpstreamModelLog(c, ownerUserID, model.RecordUserUpstreamModelLogParams{
+	model.RecordUserUpstreamModelLog(c, logUserID, model.RecordUserUpstreamModelLogParams{
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
 		ModelName:        upstreamModel.UserUpstreamModelName(),

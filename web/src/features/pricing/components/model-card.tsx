@@ -258,6 +258,30 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
               {primaryGroup}
             </span>
           )}
+          {/* 用户共享模型：展示共享剩余额度；属主且开启展示时附加余额信息喵。 */}
+          {props.model.owner_by === 'user-shared' && (
+            <>
+              <span className='text-muted-foreground/80 text-xs'>
+                {t('Shared remaining')}:{' '}
+                <span className='font-mono font-semibold'>
+                  ¥{((props.model.share_remaining_cents ?? 0) / 100).toFixed(2)}
+                </span>
+              </span>
+              {props.model.share_limit_cents != null && (
+                <span className='text-muted-foreground/50 text-xs'>
+                  / ¥{(props.model.share_limit_cents / 100).toFixed(2)}
+                </span>
+              )}
+              {props.model.balance_cents != null && (
+                <span className='text-muted-foreground/80 text-xs'>
+                  {t('Balance')}:{' '}
+                  <span className='font-mono font-semibold'>
+                    ¥{(props.model.balance_cents / 100).toFixed(2)}
+                  </span>
+                </span>
+              )}
+            </>
+          )}
           <ModelBillingModeBadge model={props.model} />
         </div>
         <ModelPerfBadge perf={props.perf} className='row-span-2 self-start' />

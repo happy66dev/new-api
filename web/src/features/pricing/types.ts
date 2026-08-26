@@ -47,6 +47,8 @@ export type PricingModel = {
   audio_completion_ratio?: number | null
   enable_groups: string[]
   tags?: string
+  /** 条目来源标记；用户共享模型固定为 "user-shared" 喵。 */
+  owner_by?: string
   supported_endpoint_types?: string[]
   key?: string
   group_ratio?: Record<string, number>
@@ -56,6 +58,16 @@ export type PricingModel = {
   billing_expr?: string
   /** Pricing version returned by backend, useful for cache busting */
   pricing_version?: string
+  /**
+   * 用户共享模型条目专用字段（owner_by === 'user-shared'）喵：
+   * 共享剩余额度与上限对所有查看者可见；余额/上限/剩余 API 额度仅属主可见喵。
+   */
+  share_remaining_cents?: number
+  share_limit_cents?: number
+  share_owner_user_id?: number
+  balance_cents?: number
+  spend_limit_cents?: number
+  upstream_remaining_cents?: number
   /**
    * Optional model metadata fields reserved for backend-provided catalog data.
    * Keep them data-driven; do not synthesize display values on the client.

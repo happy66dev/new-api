@@ -36,6 +36,14 @@ type Pricing struct {
 	BillingMode            string                  `json:"billing_mode,omitempty"`
 	BillingExpr            string                  `json:"billing_expr,omitempty"`
 	PricingVersion         string                  `json:"pricing_version,omitempty"`
+	// 以下字段仅用于用户共享模型条目，普通模型不填充喵。
+	// 共享剩余额度与上限对所有查看者可见；所有者附加的余额字段受展示开关控制喵。
+	ShareRemainingCents *int64 `json:"share_remaining_cents,omitempty"`
+	ShareLimitCents     *int64 `json:"share_limit_cents,omitempty"`
+	ShareOwnerUserID    int    `json:"share_owner_user_id,omitempty"`
+	BalanceCents        *int64 `json:"balance_cents,omitempty"`
+	SpendLimitCents     *int64 `json:"spend_limit_cents,omitempty"`
+	UpstreamRemaining   *int64 `json:"upstream_remaining_cents,omitempty"`
 }
 
 type PricingVendor struct {

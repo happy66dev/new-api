@@ -1,7 +1,10 @@
 package controller
 
 import (
+	"strconv"
+
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
@@ -73,6 +76,8 @@ func GetPricing(c *gin.Context) {
 		}
 	}
 	pricing = filterPricingByUsableGroups(pricing, pricingGroups)
+	// 追加共享中的用户上游模型条目，供模型广场在 user-shared 分组展示喵。
+	pricing = appendSharedUpstreamPricing(pricing, userId)
 	// check groupRatio contains usableGroup
 	for group := range ratio_setting.GetGroupRatioCopy() {
 		if _, ok := pricingGroups[group]; !ok {
@@ -91,6 +96,66 @@ func GetPricing(c *gin.Context) {
 		"auto_groups":         service.GetUserAutoGroupForUser(userID, group),
 		"pricing_version":     "a42d372ccf0b5dd13ecf71203521f9d2",
 	})
+}
+
+// appendSharedUpstreamPricing 把共享中的用户上游模型追加为定价条目喵。
+func appendSharedUpstreamPricing(pricing []model.Pricing, viewerUserID any) []model.Pricing {
+	sharedModels, err := model.GetSharedUserUpstreamModels()
+	// 喵~防御：共享模型查询失败不影响普通定价返回喵。
+	if err != nil {
+		return pricing
+	}
+	viewerID := -1
+	if viewerUserID != nil {
+		if id, ok := viewerUserID.(int); ok {
+			viewerID = id
+		}
+	}
+	for _, sharedModel := range sharedModels {
+		pricing = append(pricing, buildSharedUpstreamPricing(sharedModel, viewerID))
+	}
+	return pricing
+}
+
+// buildSharedUpstreamPricing 把共享模型视图构造为模型广场可展示的定价条目喵。
+// 所有者查看自己的模型时，受展示开关控制附加余额与上限字段喵。
+func buildSharedUpstreamPricing(view model.SharedUserUpstreamModelView, viewerUserID int) model.Pricing {
+	modelRatio, _ := strconv.ParseFloat(view.ModelRatio, 64)
+	completionRatio, _ := strconv.ParseFloat(view.CompletionRatio, 64)
+	item := model.Pricing{
+		ModelName:        "upstream/" + view.NormalizedName,
+		Description:      view.DisplayName,
+		QuotaType:        0,
+		ModelRatio:       modelRatio,
+		CompletionRatio:  completionRatio,
+		OwnerBy:          "user-shared",
+		EnableGroup:      []string{constant.GroupUserShared},
+		ShareOwnerUserID: view.OwnerUserID,
+	}
+	// 有共享上限时展示共享剩余额度；无上限时展示累计消耗作为参考喵。
+	if view.ShareLimitCents > 0 {
+		shareLimit := view.ShareLimitCents
+		remaining := view.ShareLimitCents - view.ShareSpentCents
+		// 喵~防御：剩余额度钳制非负，避免负值展示喵。
+		if remaining < 0 {
+			remaining = 0
+		}
+		item.ShareLimitCents = &shareLimit
+		item.ShareRemainingCents = &remaining
+	} else {
+		spent := view.ShareSpentCents
+		item.ShareRemainingCents = &spent
+	}
+	// 所有者且开启展示开关时附加余额与上限字段喵。
+	if viewerUserID == view.OwnerUserID && view.ShowBalanceEnabled {
+		balance := view.BalanceCents
+		spendLimit := view.SpendLimitCents
+		upstreamRemaining := view.UpstreamRemainingCents
+		item.BalanceCents = &balance
+		item.SpendLimitCents = &spendLimit
+		item.UpstreamRemaining = &upstreamRemaining
+	}
+	return item
 }
 
 func ResetModelRatio(c *gin.Context) {

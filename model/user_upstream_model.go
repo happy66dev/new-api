@@ -15,11 +15,11 @@ var UserUpstreamModelNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 // UserUpstreamModel 表示用户私有的一个上游模型（一模型一上游）喵。
 // 金额字段一律以"分"存储（RMB），前端展示转元，避免浮点误差喵。
 type UserUpstreamModel struct {
-	ID               int64  `json:"id" gorm:"primaryKey"`
-	OwnerUserID      int    `json:"owner_user_id" gorm:"index"`
-	NormalizedName   string `json:"normalized_name" gorm:"type:varchar(96);uniqueIndex:idx_upstream_owner_name"`
-	DisplayName      string `json:"display_name" gorm:"type:varchar(128)"`
-	Enabled          bool   `json:"enabled"`
+	ID             int64  `json:"id" gorm:"primaryKey"`
+	OwnerUserID    int    `json:"owner_user_id" gorm:"index"`
+	NormalizedName string `json:"normalized_name" gorm:"type:varchar(96);uniqueIndex:idx_upstream_owner_name"`
+	DisplayName    string `json:"display_name" gorm:"type:varchar(128)"`
+	Enabled        bool   `json:"enabled"`
 	// 上游连接：凭据一律加密存储，绝不落明文喵。
 	EncryptedBaseURL   string `json:"-" gorm:"type:text"`
 	EncryptedAPIKey    string `json:"-" gorm:"type:text"`
@@ -170,6 +170,65 @@ func SyncUserUpstreamModelBalance(upstreamModelID int64, ownerUserID int) error 
 		// 只更新余额字段，避免覆盖控制面并发修改的其他配置喵。
 		return tx.Model(&upstreamModel).Select("balance_cents", "updated_time").Updates(upstreamModel).Error
 	})
+}
+
+// SharedUserUpstreamModelView 描述共享模型中可对其他用户展示的公开信息喵。
+type SharedUserUpstreamModelView struct {
+	ID                     int64
+	OwnerUserID            int
+	NormalizedName         string
+	DisplayName            string
+	RealModelName          string
+	ModelRatio             string
+	CompletionRatio        string
+	ShareLimitCents        int64
+	ShareSpentCents        int64
+	ShowBalanceEnabled     bool
+	BalanceCents           int64
+	SpendLimitCents        int64
+	UpstreamRemainingCents int64
+}
+
+// GetSharedUserUpstreamModels 返回当前共享中（共享开启且共享额度未耗尽）的全部上游模型喵。
+func GetSharedUserUpstreamModels() ([]SharedUserUpstreamModelView, error) {
+	var views []SharedUserUpstreamModelView
+	// 共享额度为 0 表示不限；达到额度即自动停止共享（从列表消失）喵。
+	if err := DB.Model(&UserUpstreamModel{}).
+		Select("id", "owner_user_id", "normalized_name", "display_name", "real_model_name", "model_ratio", "completion_ratio", "share_limit_cents", "share_spent_cents", "show_balance_enabled", "balance_cents", "spend_limit_cents", "upstream_remaining_cents").
+		Where("share_enabled = ? AND (share_limit_cents = 0 OR share_spent_cents < share_limit_cents)", true).
+		Find(&views).Error; err != nil {
+		return nil, err
+	}
+	return views, nil
+}
+
+// GetSharedUserUpstreamModelNames 返回共享中上游模型的对外调用名称列表喵。
+func GetSharedUserUpstreamModelNames() []string {
+	views, err := GetSharedUserUpstreamModels()
+	// 喵~防御：查询失败按空列表处理，避免把错误泄漏到模型列表接口喵。
+	if err != nil {
+		return []string{}
+	}
+	names := make([]string, 0, len(views))
+	for _, view := range views {
+		names = append(names, "upstream/"+view.NormalizedName)
+	}
+	return names
+}
+
+// GetEnabledSharedUserUpstreamModelByName 返回指定名称的共享启用上游模型，供共享调用授权用喵。
+// 不限定属主：任何用户都可调用共享中的模型；额度耗尽时按记录不存在处理喵。
+func GetEnabledSharedUserUpstreamModelByName(normalizedName string) (*UserUpstreamModel, error) {
+	// 喵~防御：空名称直接返回记录不存在喵。
+	if strings.TrimSpace(normalizedName) == "" {
+		return nil, gorm.ErrRecordNotFound
+	}
+	var upstreamModel UserUpstreamModel
+	// 启用 + 共享开启 + 共享额度未耗尽才算"共享中"喵。
+	if err := DB.Where("normalized_name = ? AND enabled = ? AND share_enabled = ? AND (share_limit_cents = 0 OR share_spent_cents < share_limit_cents)", normalizedName, true, true).First(&upstreamModel).Error; err != nil {
+		return nil, err
+	}
+	return &upstreamModel, nil
 }
 
 // DeductUserUpstreamModelCharge 请求后按实际费用扣减余额与累计消耗，事务加行锁防止并发超扣喵。

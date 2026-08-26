@@ -160,3 +160,44 @@ func TestDeductUserUpstreamModelCharge(t *testing.T) {
 	require.Error(t, DeductUserUpstreamModelCharge(created.ID, 8, 10, false))
 	require.Error(t, DeductUserUpstreamModelCharge(0, 7, 10, false))
 }
+
+// TestSharedUserUpstreamModels 验证共享模型可见性、额度耗尽停止与跨用户调用授权喵。
+func TestSharedUserUpstreamModels(t *testing.T) {
+	truncateTables(t)
+	require.NoError(t, DB.AutoMigrate(&UserUpstreamModel{}))
+	require.NoError(t, DB.Exec("DELETE FROM user_upstream_models").Error)
+
+	// 创建共享中（有额度）、无共享上限、共享额度耗尽与未开启共享的四种模型喵。
+	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "shared-ok", Enabled: true, ShareEnabled: true, ShareLimitCents: 1000, ShareSpentCents: 100}).Error)
+	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "shared-unlimited", Enabled: true, ShareEnabled: true, ShareLimitCents: 0}).Error)
+	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "shared-exhausted", Enabled: true, ShareEnabled: true, ShareLimitCents: 500, ShareSpentCents: 500}).Error)
+	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "not-shared", Enabled: true, ShareEnabled: false}).Error)
+
+	// 共享中的模型名只包含未耗尽的共享模型喵。
+	names := GetSharedUserUpstreamModelNames()
+	assert.Contains(t, names, "upstream/shared-ok")
+	assert.Contains(t, names, "upstream/shared-unlimited")
+	assert.NotContains(t, names, "upstream/shared-exhausted")
+	assert.NotContains(t, names, "upstream/not-shared")
+
+	// 共享额度的剩余视图字段正确喵。
+	views, err := GetSharedUserUpstreamModels()
+	require.NoError(t, err)
+	assert.Len(t, views, 2)
+
+	// 共享耗尽模型按名称查询返回记录不存在（停止共享）喵。
+	_, err = GetEnabledSharedUserUpstreamModelByName("shared-exhausted")
+	require.Error(t, err)
+
+	// 共享中模型可被任意用户按名称查找到喵。
+	shared, err := GetEnabledSharedUserUpstreamModelByName("shared-ok")
+	require.NoError(t, err)
+	assert.Equal(t, 7, shared.OwnerUserID)
+	assert.Equal(t, int64(1000), shared.ShareLimitCents)
+
+	// 空名称与未开启共享的名称都查不到喵。
+	_, err = GetEnabledSharedUserUpstreamModelByName("")
+	require.Error(t, err)
+	_, err = GetEnabledSharedUserUpstreamModelByName("not-shared")
+	require.Error(t, err)
+}

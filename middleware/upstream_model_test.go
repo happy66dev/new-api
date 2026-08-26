@@ -123,3 +123,44 @@ func TestHandleUserUpstreamModelRequestQuota(t *testing.T) {
 	require.False(t, handled)
 	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
 }
+
+// TestHandleUserUpstreamModelRequestShared 验证共享调用的授权回退、额度耗尽停止与属主自用不受影响喵。
+func TestHandleUserUpstreamModelRequestShared(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	// 构造独立测试库，替换全局 DB 并在结束后恢复喵。
+	testDB := newUpstreamModelTestDB(t)
+	oldDB := model.DB
+	model.DB = testDB
+	defer func() { model.DB = oldDB }()
+
+	// 用户 7 拥有一个共享中的模型，余额 100 分、共享额度 1000 分喵。
+	require.NoError(t, testDB.Create(&model.UserUpstreamModel{OwnerUserID: 7, NormalizedName: "shared", Enabled: true, ShareEnabled: true, ShareLimitCents: 1000, ShareSpentCents: 0, BalanceCents: 100, EncryptedBaseURL: "bad-enc", EncryptedAPIKey: "bad-enc", CredentialVersion: 1, RealModelName: "gpt-4o"}).Error)
+
+	// 用户 8 调用共享模型：授权回退到共享路径并放行，密文无效返回 503 而非 404 喵。
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"upstream/shared"}`))
+	ctx.Set("id", 8)
+	handled := handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "upstream/shared"})
+	require.False(t, handled)
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+
+	// 共享额度耗尽后，用户 8 再调用返回 404（共享停止）喵。
+	require.NoError(t, testDB.Model(&model.UserUpstreamModel{}).Where("normalized_name = ?", "shared").Update("share_spent_cents", 1000).Error)
+	recorder = httptest.NewRecorder()
+	ctx, _ = gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"upstream/shared"}`))
+	ctx.Set("id", 8)
+	handled = handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "upstream/shared"})
+	require.False(t, handled)
+	require.Equal(t, http.StatusNotFound, recorder.Code)
+
+	// 属主自己调用同一模型不受共享耗尽影响：属主查询优先，自用仍放行到透传喵。
+	recorder = httptest.NewRecorder()
+	ctx, _ = gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"upstream/shared"}`))
+	ctx.Set("id", 7)
+	handled = handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "upstream/shared"})
+	require.False(t, handled)
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+}
