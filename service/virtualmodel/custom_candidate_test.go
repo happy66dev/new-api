@@ -76,6 +76,15 @@ func TestBuildCustomUpstreamURL(t *testing.T) {
 	if _, nilBuildError := buildCustomUpstreamURL(nil, request.URL); nilBuildError == nil {
 		t.Fatal("nil base URL should be rejected")
 	}
+	// 游乐场 /pg 入口路径必须归一化为 /v1，避免上游 new-api 网关把请求打到其 UserAuth 认证的 /pg 路径喵。
+	pgRequest := httptest.NewRequest(http.MethodPost, "https://gateway.example.test/pg/chat/completions?stream=true", nil)
+	pgUpstreamURL, pgBuildError := buildCustomUpstreamURL(baseURL, pgRequest.URL)
+	if pgBuildError != nil {
+		t.Fatalf("build custom upstream URL from /pg: %v", pgBuildError)
+	}
+	if pgUpstreamURL.String() != "https://api.example.test/prefix/v1/chat/completions?stream=true" {
+		t.Fatalf("pg upstream URL = %s, want /v1/chat/completions", pgUpstreamURL.String())
+	}
 }
 
 // TestCustomHeaderFilteringAndAuthentication 验证客户端认证和 hop-by-hop 头不会穿透到上游喵。

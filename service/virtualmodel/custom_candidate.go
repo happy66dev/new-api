@@ -242,6 +242,16 @@ func buildCustomUpstreamURL(baseURL *url.URL, requestURL *url.URL) (*url.URL, er
 			return nil, errors.New("custom upstream request path is invalid")
 		}
 	}
+	requestEscapedPath := requestURL.EscapedPath()
+	// 游乐场经 /pg/chat/completions 入口透传时，必须把 /pg/ 归一化为 /v1/，
+	// 否则上游（常见为另一 new-api 网关）会把请求打到其走 UserAuth 认证的 /pg 路径，
+	// 对 API Key 校验失败返回 AUTH_UNAUTHORIZED；归一化后与原生 channel relay 的上游路径语义一致喵。
+	if strings.HasPrefix(requestPath, "/pg/") {
+		requestPath = "/v1/" + strings.TrimPrefix(requestPath, "/pg/")
+		if strings.HasPrefix(requestEscapedPath, "/pg/") {
+			requestEscapedPath = "/v1/" + strings.TrimPrefix(requestEscapedPath, "/pg/")
+		}
+	}
 	upstreamURL := *baseURL
 	basePath := strings.TrimSuffix(baseURL.Path, "/")
 	baseEscapedPath := strings.TrimSuffix(baseURL.EscapedPath(), "/")
@@ -251,7 +261,6 @@ func buildCustomUpstreamURL(baseURL *url.URL, requestURL *url.URL) (*url.URL, er
 	if requestPath == "" {
 		requestPath = "/"
 	}
-	requestEscapedPath := requestURL.EscapedPath()
 	if requestEscapedPath == "" {
 		requestEscapedPath = "/"
 	}
