@@ -168,7 +168,8 @@ func InitOptionMap() {
 	common.OptionMap["DefaultUseAutoGroup"] = strconv.FormatBool(setting.DefaultUseAutoGroup)
 	common.OptionMap["AutoGroupDescription"] = setting.AutoGroupDescription
 	common.OptionMap["MaxTokenAutoGroups"] = strconv.Itoa(setting.GetMaxTokenAutoGroups())
-	common.OptionMap["VirtualModelEnabled"] = "false"
+	// 虚拟模型执行总开关默认开启，自用部署无需额外配置即可调用虚拟模型喵。
+	common.OptionMap["VirtualModelEnabled"] = "true"
 	common.OptionMap["PayMethods"] = operation_setting.PayMethods2JsonString()
 	common.OptionMap["GitHubClientId"] = ""
 	common.OptionMap["GitHubClientSecret"] = ""
