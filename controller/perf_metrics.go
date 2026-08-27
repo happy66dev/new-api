@@ -4,9 +4,11 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/middleware"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
@@ -78,6 +80,13 @@ func GetPerfMetrics(c *gin.Context) {
 		if result.Groups[i].Group == perfmetrics.EntityProbeGroupShared {
 			result.Groups[i].Group = constant.GroupUserShared
 		}
+	}
+	// 实时当前处理请求数：user/ 命名空间按上游模型名聚合，普通内部模型按模型名计数喵。
+	trimmedModelName := strings.TrimSpace(modelName)
+	if strings.HasPrefix(trimmedModelName, "user/") {
+		result.CurrentRequests = middleware.GetUpstreamModelActiveCountByName(trimmedModelName)
+	} else {
+		result.CurrentRequests = middleware.GetInternalModelActiveCount(trimmedModelName)
 	}
 
 	c.JSON(http.StatusOK, gin.H{

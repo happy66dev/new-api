@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
-import { AlertTriangle, HeartPulse, Timer } from 'lucide-react'
+import { Activity, AlertTriangle, HeartPulse, Timer } from 'lucide-react'
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -221,7 +221,7 @@ export function ModelDetailsPerformance(props: { model: PricingModel }) {
 
   return (
     <div className='flex flex-col gap-4'>
-      <div className='grid grid-cols-1 gap-2 sm:grid-cols-3'>
+      <div className='grid grid-cols-1 gap-2 sm:grid-cols-4'>
         <StatCard
           icon={Timer}
           label='TPS'
@@ -245,6 +245,13 @@ export function ModelDetailsPerformance(props: { model: PricingModel }) {
               : t('No incidents in the last 24 hours')
           }
           valueClassName={getSuccessRateTextClass(successRate)}
+        />
+        {/* 当前处理中请求数：实时统计，标识正在处理并发请求的量喵。 */}
+        <StatCard
+          icon={Activity}
+          label={t('Current requests')}
+          value={metricsQuery.data?.data.current_requests?.toLocaleString() ?? '0'}
+          hint={t('Requests being processed right now')}
         />
       </div>
 

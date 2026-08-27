@@ -44,7 +44,12 @@ func Distribute() func(c *gin.Context) {
 			return
 		}
 		if shouldSelectChannel && isVirtualModelRequest(modelRequest.Model) {
-			if !handleVirtualModelRequest(c, modelRequest) {
+			handled := handleVirtualModelRequest(c, modelRequest)
+			// 活跃请求退出：请求链完成（含 custom 候选同步结束）后统一清理注册表喵。
+			if executionState, foundState := getVirtualModelExecutionState(c); foundState && executionState.inflightRequestID != "" {
+				defer ExitVirtualModelInflight(int64(executionState.virtualModelID), executionState.inflightRequestID)
+			}
+			if !handled {
 				return
 			}
 		}
@@ -181,6 +186,13 @@ func Distribute() func(c *gin.Context) {
 			}
 		}
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
+		// 内部模型活跃请求计数：virtual/ 与 user/ 命名空间已单独计数，这里只统计普通内部模型喵。
+		// 虚拟模型内部候选会把 modelRequest.Model 改写为真实模型名，因此同样计入对应内部模型的活跃请求喵。
+		relayModelName := strings.TrimSpace(modelRequest.Model)
+		if shouldSelectChannel && relayModelName != "" && !isVirtualModelRequest(relayModelName) && !isUserUpstreamModelRequest(relayModelName) {
+			EnterInternalModelInflight(relayModelName)
+			defer ExitInternalModelInflight(relayModelName)
+		}
 		SetupContextForSelectedChannel(c, channel, modelRequest.Model)
 		if shouldSelectChannel {
 			common.SetContextKey(c, constant.ContextKeySelectedModel, selectedModel)
@@ -226,6 +238,8 @@ type virtualModelExecutionState struct {
 	currentCandidateStartedAt time.Time
 	// overallProbeRecorded 防止整体状态样本重复记录喵。
 	overallProbeRecorded bool
+	// inflightRequestID 活跃请求注册表里的请求唯一标识，首个候选激活时登记喵。
+	inflightRequestID string
 }
 
 // handleVirtualModelRequest 验证虚拟模型授权、构造请求级快照并激活首个可执行候选喵。
@@ -576,6 +590,8 @@ func activateNextVirtualModelCandidate(c *gin.Context, executionState *virtualMo
 		// 候选序号 = 链上位置（1 起），供日志渠道字段展示「候选n」喵。
 		candidateSeq := candidateIndex + 1
 		common.SetContextKey(c, constant.ContextKeyVirtualCandidateSeq, candidateSeq)
+		// 活跃请求注册：首个候选激活时进入注册表，候选切换时更新当前调用链喵。
+		executionState.inflightRequestID = TrackVirtualModelCandidateInflight(int64(executionState.virtualModelID), executionState.virtualModelName, executionState.inflightRequestID, candidateSeq, candidateSnapshot.RealModelName)
 		if candidateSnapshot.SourceType == model.VirtualModelSourceInternal {
 			if restoreVirtualModelOriginalRequest(c, executionState.originalRequestBody) && applyInternalVirtualModelCandidate(c, executionState.modelRequest, executionState.virtualModelName, candidateSnapshot) {
 				// 实体状态检测：候选激活成功，标记该候选延迟起点喵。

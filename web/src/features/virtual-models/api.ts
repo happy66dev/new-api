@@ -101,6 +101,23 @@ export type VirtualModelStatus = {
   last_error: string
   // candidates 是启用候选快照的节点摘要，供 Overview 状态卡片展示喵。
   candidates: VirtualModelCandidateStatus[]
+  // current_requests 当前处理中的客户端请求数，供概览实时统计喵。
+  current_requests: number
+  // active_requests 活跃请求详情列表，展示当前调用链喵。
+  active_requests: VirtualModelActiveRequest[]
+}
+
+// VirtualModelActiveRequest 是单个活跃虚拟模型请求的调用链详情喵。
+export type VirtualModelActiveRequest = {
+  request_id: string
+  model_id: number
+  model_name: string
+  // candidate_index 当前候选在链上的序号，从 1 起喵。
+  candidate_index: number
+  // candidate_label 当前候选展示名，内部候选为真实模型名喵。
+  candidate_label: string
+  // started_at 请求进入活跃状态的时间点（ISO 8601）喵。
+  started_at: string
 }
 
 // VirtualModelCandidateStatus 是单个候选节点的状态摘要，含富系列明细喵。

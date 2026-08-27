@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/gin-gonic/gin"
@@ -84,6 +85,14 @@ func TestGetUserUpstreamModelStatusOwnerView(t *testing.T) {
 	perfmetrics.RecordEntityProbeShared("user/alpha", 300, true, perfmetrics.EntityProbeExtras{})
 	require.NoError(t, model.RecordEntityProbeCounted(model.EntityProbeScopeUpstreamShared, upstreamModel.ID, 0, 7, 3000, true, 300, ""))
 
+	// 活跃请求：进入一个自用与一个共享调用，供 current_requests 断言喵。
+	middleware.EnterUpstreamModelInflight(upstreamModel.ID, "user/alpha", false)
+	middleware.EnterUpstreamModelInflight(upstreamModel.ID, "user/alpha", true)
+	t.Cleanup(func() {
+		middleware.ExitUpstreamModelInflight(upstreamModel.ID, false)
+		middleware.ExitUpstreamModelInflight(upstreamModel.ID, true)
+	})
+
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/upstream-models/"+fmt.Sprintf("%d", upstreamModel.ID)+"/status?include_shared=true", nil)
@@ -109,6 +118,9 @@ func TestGetUserUpstreamModelStatusOwnerView(t *testing.T) {
 	require.InDelta(t, 100.0, resp.Data.Shared.Availability, 0.001)
 	// 共享维度聚合内不携带错误明细喵。
 	require.Empty(t, resp.Data.Shared.LastError)
+	// 实时当前处理请求数：自用与共享维度分别计数喵。
+	require.Equal(t, int64(1), resp.Data.CurrentRequests)
+	require.Equal(t, int64(1), resp.Data.Shared.CurrentRequests)
 }
 
 // TestGetUserUpstreamModelStatusAuth 验证非属主无法查看属主状态喵。
@@ -136,6 +148,11 @@ func TestGetSharedUserUpstreamModelStatus(t *testing.T) {
 	perfmetrics.RecordEntityProbeShared("user/beta", 500, false, perfmetrics.EntityProbeExtras{})
 	require.NoError(t, model.RecordEntityProbeCounted(model.EntityProbeScopeUpstreamShared, upstreamModel.ID, 0, 7, 3000, true, 300, ""))
 	require.NoError(t, model.RecordEntityProbeCounted(model.EntityProbeScopeUpstreamShared, upstreamModel.ID, 0, 7, 4000, false, 500, "rate_limited"))
+	// 活跃请求：进入一个共享调用，供 current_requests 断言喵。
+	middleware.EnterUpstreamModelInflight(upstreamModel.ID, "user/beta", true)
+	t.Cleanup(func() {
+		middleware.ExitUpstreamModelInflight(upstreamModel.ID, true)
+	})
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
@@ -153,6 +170,7 @@ func TestGetSharedUserUpstreamModelStatus(t *testing.T) {
 	require.True(t, resp.Success)
 	// JSON 数字解码为 float64，按数值比较喵。
 	require.Equal(t, float64(2), resp.Data["request_count"])
+	require.Equal(t, float64(1), resp.Data["current_requests"])
 	require.InDelta(t, 50.0, resp.Data["availability"].(float64), 0.001)
 	require.False(t, resp.Data["last_success"].(bool))
 	// 共享聚合响应绝不携带 last_error 喵。

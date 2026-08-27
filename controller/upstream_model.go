@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	upstreammodelservice "github.com/QuantumNous/new-api/service/upstreammodel"
@@ -508,6 +509,8 @@ type upstreamModelStatusPayload struct {
 	LastSuccess    bool                           `json:"last_success"`
 	LastLatencyMs  int64                          `json:"last_latency_ms"`
 	LastError      string                         `json:"last_error"`
+	// CurrentRequests 当前处理中的客户端请求数，属主视角自用与共享维度分别为其计数喵。
+	CurrentRequests int64 `json:"current_requests"`
 	// Shared 共享调用维度的聚合，仅属主 include_shared=true 时携带喵。
 	Shared *upstreamModelStatusPayload `json:"shared,omitempty"`
 }
@@ -602,6 +605,7 @@ func GetSharedUserUpstreamModelStatus(c *gin.Context) {
 		"cache_hit_rate": sharedStatus.CacheHitRate,
 		"total_tokens":   sharedStatus.TotalTokens,
 		"request_count":  sharedStatus.RequestCount,
+		"current_requests": sharedStatus.CurrentRequests,
 		"series":         sharedStatus.Series,
 		"last_at":        sharedStatus.LastAt,
 		"last_success":   sharedStatus.LastSuccess,
@@ -614,6 +618,13 @@ func buildUpstreamModelStatusPayload(upstreamModel *model.UserUpstreamModel, pro
 	// 喵~防御：空模型对象直接返回空载荷喵。
 	if upstreamModel == nil {
 		return payload
+	}
+	// 实时活跃请求：按自用/共享维度读取对应计数喵。
+	selfRequests, sharedRequests := middleware.GetUpstreamModelActiveCount(upstreamModel.ID)
+	if probeGroup == perfmetrics.EntityProbeGroupShared {
+		payload.CurrentRequests = sharedRequests
+	} else {
+		payload.CurrentRequests = selfRequests
 	}
 	status, queryError := perfmetrics.QueryEntityProbeStatus(upstreamModel.UserUpstreamModelName(), probeGroup, entityProbeWindowHours)
 	// 喵~防御：聚合查询失败按空数据返回，不阻塞状态展示喵。

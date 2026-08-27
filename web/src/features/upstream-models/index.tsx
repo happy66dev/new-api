@@ -476,6 +476,7 @@ function mapUpstreamModelStatus(status: UpstreamModelStatus): EntityStatusSummar
     availability: status.availability,
     avg_latency_ms: status.avg_latency_ms,
     request_count: status.request_count,
+    current_requests: status.current_requests,
     availability_24h: status.availability_24h,
     last_at: status.last_at,
     last_success: status.last_success,
@@ -490,6 +491,7 @@ function mapUpstreamModelSharedStatus(status: UpstreamModelSharedStatus): Entity
     availability: status.availability,
     avg_latency_ms: status.avg_latency_ms,
     request_count: status.request_count,
+    current_requests: status.current_requests,
     last_at: status.last_at,
     last_success: status.last_success,
   }

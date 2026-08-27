@@ -113,6 +113,8 @@ export type UpstreamModelStatus = {
   last_success: boolean
   last_latency_ms: number
   last_error: string
+  // current_requests 当前处理中的客户端请求数（自用维度）喵。
+  current_requests: number
   // shared 是共享调用维度的聚合，仅属主请求 include_shared=true 且共享有数据时携带喵。
   shared?: UpstreamModelSharedStatus
 }
@@ -141,6 +143,8 @@ export type UpstreamModelSharedStatus = {
   cache_hit_rate: number
   total_tokens: number
   request_count: number
+  // current_requests 当前处理中的共享调用请求数喵。
+  current_requests: number
   // series 是共享调用维度的逐小时桶明细喵。
   series: EntityProbeBucket[]
   last_at: number

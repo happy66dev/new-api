@@ -99,6 +99,54 @@ export function VirtualModelOverviewStatus(
         <p className='text-muted-foreground'>{t('No status data yet')}</p>
       )}
 
+      {/* 实时运行区：当前处理中的客户端请求数与当前调用链列表（overview 变体）喵。 */}
+      {variant === 'overview' && !props.loading && !props.error && (
+        <div className='space-y-2 rounded-md border border-dashed p-2'>
+          <div className='flex items-center justify-between gap-2'>
+            <span className='text-muted-foreground text-xs'>
+              {t('Current requests')}
+            </span>
+            <span className='font-mono text-sm tabular-nums'>
+              {props.status?.current_requests ?? 0}
+            </span>
+          </div>
+          {(props.status?.active_requests?.length ?? 0) > 0 ? (
+            <div className='space-y-1'>
+              <div className='text-muted-foreground text-xs'>
+                {t('Active requests')}
+              </div>
+              {props.status?.active_requests.map((request) => (
+                <div
+                  key={request.request_id}
+                  className='hover:bg-muted/50 flex flex-wrap items-center justify-between gap-2 rounded-md border px-2 py-1'
+                >
+                  <span className='font-mono text-xs'>{request.request_id}</span>
+                  <span className='flex items-center gap-2 text-xs'>
+                    {request.candidate_label ? (
+                      <span className='inline-flex items-center gap-1'>
+                        {t('Candidate')} {request.candidate_index}:{' '}
+                        {request.candidate_label}
+                      </span>
+                    ) : (
+                      <span className='text-muted-foreground'>
+                        {t('Selecting candidate')}
+                      </span>
+                    )}
+                    <span className='text-muted-foreground'>
+                      {formatElapsedSeconds(request.started_at)}
+                    </span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className='text-muted-foreground text-xs'>
+              {t('No active requests right now')}
+            </p>
+          )}
+        </div>
+      )}
+
       {hasData && (
         <>
           {/* 六项核心指标：可用性 / 平均延迟 / 平均 TTFT / 缓存命中率 / 请求数 / 总 token 喵。 */}
@@ -297,4 +345,15 @@ export function VirtualModelOverviewStatus(
       />
     </div>
   )
+}
+
+// formatElapsedSeconds 把活跃请求的启动时间格式化为已耗时文本喵。
+// 小于一分钟显示秒数，否则以「分 秒」呈现，便于概览快速判断请求滞留时长喵。
+function formatElapsedSeconds(startedAt: string): string {
+  const started = new Date(startedAt).getTime()
+  // 喵~防御：无法解析的时间戳回退为零秒，避免展示 NaN 喵。
+  if (!Number.isFinite(started)) return '0s'
+  const totalSeconds = Math.max(0, Math.floor((Date.now() - started) / 1000))
+  if (totalSeconds < 60) return `${totalSeconds}s`
+  return `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`
 }

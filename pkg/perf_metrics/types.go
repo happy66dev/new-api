@@ -80,6 +80,8 @@ type QueryResult struct {
 	ModelName    string        `json:"model_name"`
 	SeriesSchema string        `json:"series_schema"`
 	Groups       []GroupResult `json:"groups"`
+	// CurrentRequests 当前处理中的请求数，由中间件活跃注册表在控制器层填充喵。
+	CurrentRequests int64 `json:"current_requests"`
 }
 
 type ModelSummary struct {

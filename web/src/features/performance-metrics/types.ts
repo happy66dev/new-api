@@ -40,6 +40,8 @@ export type PerformanceMetricsData = {
     model_name: string
     series_schema?: string
     groups: PerformanceGroup[]
+    // current_requests 当前处理中的请求数，模型广场性能页展示喵。
+    current_requests?: number
   }
 }
 

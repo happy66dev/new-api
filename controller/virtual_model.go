@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	virtualmodelservice "github.com/QuantumNous/new-api/service/virtualmodel"
@@ -1142,9 +1143,13 @@ type virtualModelStatusPayload struct {
 	Series            []perfmetrics.EntityProbeBucket  `json:"series"`
 	LastAt            int64                            `json:"last_at"`
 	LastSuccess       bool                             `json:"last_success"`
-	LastLatencyMs     int64                            `json:"last_latency_ms"`
-	LastError         string                           `json:"last_error"`
+	LastLatencyMs     int64                              `json:"last_latency_ms"`
+	LastError         string                             `json:"last_error"`
 	Candidates        []virtualModelCandidateStatusPayload `json:"candidates"`
+	// CurrentRequests 当前处理中的客户端请求数喵。
+	CurrentRequests int64 `json:"current_requests"`
+	// ActiveRequests 活跃请求详情列表，展示当前调用链喵。
+	ActiveRequests []middleware.ActiveRequestInfo `json:"active_requests"`
 }
 
 // virtualModelCandidateStatusPayload 虚拟模型候选节点状态摘要喵。
@@ -1184,6 +1189,8 @@ func buildVirtualModelStatusPayload(virtualModel *model.VirtualModel, snapshot *
 	if virtualModel == nil {
 		return payload
 	}
+	// 实时活跃请求：从内存注册表读取当前处理请求数与当前调用链详情喵。
+	payload.CurrentRequests, payload.ActiveRequests = middleware.GetVirtualModelActiveRequests(int64(virtualModel.ID))
 	status, queryError := perfmetrics.QueryEntityProbeStatus(virtualModel.VirtualModelName(), perfmetrics.EntityProbeGroupSelf, entityProbeWindowHours)
 	// 喵~防御：聚合查询失败按空数据返回，不阻塞状态展示喵。
 	if queryError != nil {

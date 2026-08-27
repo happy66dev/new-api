@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/gin-gonic/gin"
@@ -80,6 +81,12 @@ func TestGetVirtualModelStatusOwnerView(t *testing.T) {
 	perfmetrics.RecordEntityProbe("virtual/vm-alpha", 400, false, perfmetrics.EntityProbeExtras{})
 	require.NoError(t, model.RecordEntityProbeCounted(model.EntityProbeScopeVirtual, int64(virtualModel.ID), 0, 7, 1000, true, 200, ""))
 	require.NoError(t, model.RecordEntityProbeCounted(model.EntityProbeScopeVirtual, int64(virtualModel.ID), 0, 7, 2000, false, 400, "rate_limited"))
+	// 活跃请求：登记一个请求并推进到候选 1，供实时概览字段断言喵。
+	requestID := middleware.EnterVirtualModelInflight(int64(virtualModel.ID), "virtual/vm-alpha")
+	middleware.UpdateVirtualModelInflightCandidate(int64(virtualModel.ID), requestID, 1, "gpt-probe")
+	t.Cleanup(func() {
+		middleware.ExitVirtualModelInflight(int64(virtualModel.ID), requestID)
+	})
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
@@ -105,6 +112,12 @@ func TestGetVirtualModelStatusOwnerView(t *testing.T) {
 	require.Len(t, resp.Data.Candidates, 1)
 	require.Positive(t, resp.Data.Candidates[0].CandidateID)
 	require.Equal(t, "gpt-probe", resp.Data.Candidates[0].Label)
+	// 实时概览：当前请求数与活跃调用链详情喵。
+	require.Equal(t, int64(1), resp.Data.CurrentRequests)
+	require.Len(t, resp.Data.ActiveRequests, 1)
+	require.Equal(t, requestID, resp.Data.ActiveRequests[0].RequestID)
+	require.Equal(t, 1, resp.Data.ActiveRequests[0].CandidateIndex)
+	require.Equal(t, "gpt-probe", resp.Data.ActiveRequests[0].CandidateLabel)
 }
 
 // TestGetVirtualModelStatusAuth 验证非属主无法查看状态喵。

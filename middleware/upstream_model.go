@@ -78,6 +78,9 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 			return false
 		}
 	}
+	// 活跃请求注册：进入上游模型活跃计数，函数返回（含错误路径）时统一退出喵。
+	EnterUpstreamModelInflight(upstreamModel.ID, upstreamModel.UserUpstreamModelName(), isShared)
+	defer ExitUpstreamModelInflight(upstreamModel.ID, isShared)
 	baseURL, decryptBaseURLError := virtualmodelservice.DecryptCredential(upstreamModel.EncryptedBaseURL, upstreamModel.CredentialVersion)
 	apiKey, decryptAPIKeyError := virtualmodelservice.DecryptCredential(upstreamModel.EncryptedAPIKey, upstreamModel.CredentialVersion)
 	// 喵~防御：凭据密文篡改、主密钥缺失或解密失败均只返回受控不可用错误，不泄露秘密或密文状态喵。

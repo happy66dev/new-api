@@ -47,6 +47,11 @@ export function VirtualModels() {
     queryKey: ['virtual-models', selectedModel?.id, 'status'],
     queryFn: () => getVirtualModelStatus(selectedModel!.id),
     enabled: Boolean(selectedModel),
+    // 实时概览：Overview / Runtime Status 选项卡打开时每 3 秒轮询当前请求数与调用链喵。
+    refetchInterval:
+      selectedModel && (activeTab === 'overview' || activeTab === 'status')
+        ? 3000
+        : false,
   })
   const virtualModelStatus = virtualModelStatusQuery.data?.data
 

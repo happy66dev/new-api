@@ -93,6 +93,9 @@ function makeStatus(
     last_success: true,
     last_latency_ms: 120,
     last_error: '',
+    // 实时概览字段：默认无活跃请求喵。
+    current_requests: 0,
+    active_requests: [],
     candidates: [
       {
         candidate_id: 42,
@@ -167,6 +170,48 @@ describe('VirtualModelOverviewStatus', () => {
     expect(screen.getAllByText('95.00%').length).toBeGreaterThanOrEqual(1)
     // 最近一次调用行喵。
     expect(screen.getByText(/Last call/)).toBeInTheDocument()
+  })
+
+  test('overview variant shows the current request count and active call chain', () => {
+    // 带两个活跃请求的实时状态载荷喵。
+    renderOverview({
+      status: makeStatus({
+        current_requests: 2,
+        active_requests: [
+          {
+            request_id: '7-1',
+            model_id: 1,
+            model_name: 'virtual/research-route',
+            candidate_index: 1,
+            candidate_label: 'gpt-4.1',
+            started_at: new Date(Date.now() - 5_000).toISOString(),
+          },
+          {
+            request_id: '7-2',
+            model_id: 1,
+            model_name: 'virtual/research-route',
+            candidate_index: 2,
+            candidate_label: 'claude-4-sonnet',
+            started_at: new Date(Date.now() - 30_000).toISOString(),
+          },
+        ],
+      }),
+      variant: 'overview',
+    })
+    // 当前请求数出现在实时区喵。
+    expect(screen.getByText('2')).toBeInTheDocument()
+    // 活跃请求列表展示调用链：候选序号、候选名与已耗时喵。
+    expect(screen.getByText(/gpt-4\.1/)).toBeInTheDocument()
+    expect(screen.getByText(/claude-4-sonnet/)).toBeInTheDocument()
+    expect(screen.getByText(/Candidate 1/)).toBeInTheDocument()
+    expect(screen.getByText(/Candidate 2/)).toBeInTheDocument()
+    expect(screen.getByText(/5s/)).toBeInTheDocument()
+  })
+
+  test('overview variant shows an empty hint when no request is active', () => {
+    // 无活跃请求时展示空态提示而不是空列表喵。
+    renderOverview({ status: makeStatus(), variant: 'overview' })
+    expect(screen.getByText('No active requests right now')).toBeInTheDocument()
   })
 
   test('runtime variant renders charts and candidate summary rows', () => {

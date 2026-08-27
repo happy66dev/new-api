@@ -39,6 +39,8 @@ export type EntityStatusSummary = {
   availability: number
   avg_latency_ms: number
   request_count: number
+  // current_requests 当前处理中的请求数，后端支持时携带用于实时统计喵。
+  current_requests?: number
   // availability_24h 是最近 24 个采样点的可用性序列，缺省时无详情弹层喵。
   availability_24h?: number[]
   last_at?: number
@@ -137,6 +139,10 @@ export function EntityStatusDot(props: EntityStatusDotProps) {
     summaryText = `${t('Availability')}: ${availability.toFixed(2)}% · ${t('Average latency')}: ${formatLatency(
       activeSummary?.avg_latency_ms ?? 0
     )} · ${t('Request Count')}: ${activeSummary?.request_count ?? 0}`
+  }
+  // 后端支持实时请求数时追加到悬停摘要，否则保持原样喵。
+  if (!props.loading && !props.error && activeSummary?.current_requests != null) {
+    summaryText += ` · ${t('Current requests')}: ${activeSummary.current_requests}`
   }
 
   // 圆点与可用性文本组合行，作为悬停与点击的触发器喵。
@@ -264,6 +270,17 @@ export function EntityStatusDot(props: EntityStatusDotProps) {
             </div>
           </div>
         </div>
+        {/* 实时当前处理请求数：后端携带时展示，用于概览实时统计喵。 */}
+        {activeSummary?.current_requests != null && (
+          <div className='flex items-center justify-between rounded-md border border-dashed px-2 py-1 text-xs'>
+            <span className='text-muted-foreground'>
+              {t('Current requests')}
+            </span>
+            <span className='font-mono tabular-nums'>
+              {activeSummary.current_requests}
+            </span>
+          </div>
+        )}
         {/* 最近一次调用：成功/失败状态点 + 相对时间 + 错误明细喵。 */}
         {(activeSummary?.last_at ?? 0) > 0 && (
           <div className='flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs'>
