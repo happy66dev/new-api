@@ -52,6 +52,13 @@ func Distribute() func(c *gin.Context) {
 			if !handled {
 				return
 			}
+			// 虚拟模型 user/xxx 内部候选：上游失败按失败规则推进候选链时循环重分发，
+			// 直到新候选不再是 user/xxx（交给下方普通 channel 选择）或请求已终结喵。
+			for shouldSelectChannel && isUserUpstreamModelRequest(modelRequest.Model) {
+				if !handleUserUpstreamModelRequest(c, modelRequest) {
+					return
+				}
+			}
 		}
 		// 用户上游模型直接调用：透传后终止，不进入普通 channel 选择喵。
 		if shouldSelectChannel && isUserUpstreamModelRequest(modelRequest.Model) {

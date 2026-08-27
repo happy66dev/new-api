@@ -126,6 +126,12 @@ export function VirtualModelGlobalFailureRulesEditor({
         </Button>
       </div>
 
+      {/* 常驻展示全局兜底默认动作：任何规则都未命中时按此动作处理候选失败喵 */}
+      <div className='flex items-center gap-2 rounded-md border border-border bg-muted/50 px-3 py-2 text-sm'>
+        <span className='text-muted-foreground'>{t('Default action when no rule matches')}:</span>
+        <span className='font-medium'>{t('Use next candidate')}</span>
+      </div>
+
       {draftRules.map((rule, index) => (
         <FailureRuleEditorRow
           key={rule.id ?? `new-rule-${index}`}

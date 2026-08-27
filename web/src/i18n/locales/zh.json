@@ -6182,6 +6182,7 @@
     "Failure rule {{index}} timeout must be between 0 and 600 seconds": "失败规则 {{index}} 超时时间必须在 0 到 600 秒之间",
     "0 = default 60 seconds": "0 = 默认 60 秒",
     "Seconds before an upstream request is judged timed out": "上游请求被判定超时前的秒数",
-    "Timeout must be between 0 and 600 seconds": "超时必须在 0 到 600 秒之间"
+    "Timeout must be between 0 and 600 seconds": "超时必须在 0 到 600 秒之间",
+    "Default action when no rule matches": "无规则命中时的默认动作"
   }
 }

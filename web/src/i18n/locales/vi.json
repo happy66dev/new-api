@@ -6182,6 +6182,7 @@
     "Failure rule {{index}} timeout must be between 0 and 600 seconds": "Failure rule {{index}} timeout must be between 0 and 600 seconds",
     "0 = default 60 seconds": "0 = default 60 seconds",
     "Seconds before an upstream request is judged timed out": "Seconds before an upstream request is judged timed out",
-    "Timeout must be between 0 and 600 seconds": "Timeout must be between 0 and 600 seconds"
+    "Timeout must be between 0 and 600 seconds": "Timeout must be between 0 and 600 seconds",
+    "Default action when no rule matches": "Hành động mặc định khi không có quy tắc nào khớp"
   }
 }

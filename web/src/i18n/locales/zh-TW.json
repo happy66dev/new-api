@@ -6182,6 +6182,7 @@
     "Failure rule {{index}} timeout must be between 0 and 600 seconds": "失敗規則 {{index}} 逾時時間必須在 0 到 600 秒之間",
     "0 = default 60 seconds": "0 = 預設 60 秒",
     "Seconds before an upstream request is judged timed out": "上游請求被判定逾時前的秒數",
-    "Timeout must be between 0 and 600 seconds": "逾時必須在 0 到 600 秒之間"
+    "Timeout must be between 0 and 600 seconds": "逾時必須在 0 到 600 秒之間",
+    "Default action when no rule matches": "無規則命中時的預設動作"
   }
 }

@@ -99,8 +99,8 @@ export function VirtualModelOverviewStatus(
         <p className='text-muted-foreground'>{t('No status data yet')}</p>
       )}
 
-      {/* 实时运行区：当前处理中的客户端请求数与当前调用链列表（overview 变体）喵。 */}
-      {variant === 'overview' && !props.loading && !props.error && (
+      {/* 实时运行区：当前处理中的客户端请求数与当前调用链列表（overview 与 runtime 变体均展示，配合刷新按钮轮询最新值喵）。 */}
+      {!props.loading && !props.error && (
         <div className='space-y-2 rounded-md border border-dashed p-2'>
           <div className='flex items-center justify-between gap-2'>
             <span className='text-muted-foreground text-xs'>

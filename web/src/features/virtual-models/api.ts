@@ -265,24 +265,27 @@ export async function deleteVirtualModel(
 
 // getVirtualModelStatus 读取运行状态；失败时由页面内联展示而非全局 toast，
 // 避免模型删除后 in-flight 状态请求返回 404 触发"虚拟模型不存在"弹窗喵。
+// disableDuplicate 关闭 GET 在途去重，让概览「刷新」按钮与轮询都能真正命中后端拿最新值喵。
 export async function getVirtualModelStatus(
   id: number
 ): Promise<VirtualModelApiResponse<VirtualModelStatus>> {
   const response = await api.get(`/api/virtual-models/${id}/status`, {
     skipErrorHandler: true,
+    disableDuplicate: true,
   })
   return response.data
 }
 
 // getVirtualModelCandidateStatus 读取单个候选节点的状态摘要；
 // 候选被删除后 in-flight 请求会返回 404，因此同样跳过全局错误弹窗喵。
+// disableDuplicate 保证打开候选性能抽屉时总能拉到最新样本喵。
 export async function getVirtualModelCandidateStatus(
   modelID: number,
   candidateID: number
 ): Promise<VirtualModelApiResponse<VirtualModelCandidateStatus>> {
   const response = await api.get(
     `/api/virtual-models/${modelID}/candidates/${candidateID}/status`,
-    { skipErrorHandler: true }
+    { skipErrorHandler: true, disableDuplicate: true }
   )
   return response.data
 }
