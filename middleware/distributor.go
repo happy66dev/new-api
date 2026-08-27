@@ -1064,9 +1064,9 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 				Label:       buildVirtualModelAttemptLabel(candidate, candidateRealModelName),
 				Success:     true,
 				StatusCode:  http.StatusOK,
-				// 请求级首字与总耗时，与虚拟模型日志口径一致喵。
-				TtftMs:     requestFirstByteMs,
-				ElapsedMs:  requestElapsedMs,
+				// 候选尝试序列展示该候选自己的耗时（模型级口径）：首字取上游响应头到达，总耗时取候选启动到当前喵。
+				TtftMs:     executionResult.TtftMs,
+				ElapsedMs:  time.Since(startTime).Milliseconds(),
 				RetryCount: retryIndex,
 			})
 			// 引用上游模型成功时结算独立 RMB 计费并写虚拟模型日志（上下文已把类型覆盖为 9）喵。

@@ -271,6 +271,21 @@ func TestHandleUserUpstreamModelRequestRequestLevelTiming(t *testing.T) {
 	require.GreaterOrEqual(t, int64(frtMs), int64(4000))
 	// 首字不超过总耗时；UseTime 为秒级向下取整，容忍一秒舍入误差喵。
 	require.LessOrEqual(t, int64(frtMs), int64(logRecord.UseTime)*1000+1000)
+
+	// 候选尝试序列的成功候选耗时必须是模型级（该候选自己），而非请求级（约 5 秒）喵。
+	candidatesValue, foundCandidates := other["candidates"]
+	require.True(t, foundCandidates, "日志必须携带候选尝试序列 candidates 喵")
+	candidates, validCandidates := candidatesValue.([]interface{})
+	require.True(t, validCandidates, "candidates 必须是数组喵")
+	require.NotEmpty(t, candidates, "候选尝试序列不得为空喵")
+	successAttempt, validAttempt := candidates[0].(map[string]interface{})
+	require.True(t, validAttempt, "候选尝试必须是对象喵")
+	attemptElapsedMs, validElapsed := successAttempt["elapsed_ms"].(float64)
+	require.True(t, validElapsed, "候选尝试必须带 elapsed_ms 喵")
+	require.Less(t, attemptElapsedMs, float64(1000), "成功候选总耗时应为模型级（该候选自己，小于 1 秒），而非请求级（约 5 秒）喵")
+	attemptTtftMs, validTtft := successAttempt["ttft_ms"].(float64)
+	require.True(t, validTtft, "候选尝试必须带 ttft_ms 喵")
+	require.Less(t, attemptTtftMs, float64(1000), "成功候选首字应为模型级上游 TTFT（小于 1 秒），而非请求级（约 5 秒）喵")
 }
 
 // TestHandleUserUpstreamModelRequestPassthroughUpstreamError 验证直调 user/xxx 时上游 HTTP 错误原样透传喵。

@@ -205,9 +205,9 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 				Label:        buildVirtualModelAttemptLabel(&currentCandidate, currentCandidate.RealModelName),
 				Success:      true,
 				StatusCode:   http.StatusOK,
-				// 请求级首字与总耗时，与虚拟模型日志口径一致喵。
-				TtftMs:    requestFirstByteMs,
-				ElapsedMs: requestElapsedMs,
+				// 候选尝试序列展示该候选自己的耗时（模型级口径）：首字取上游响应头到达，总耗时取候选启动到当前喵。
+				TtftMs:    executionResult.TtftMs,
+				ElapsedMs: time.Since(startTime).Milliseconds(),
 			})
 		}
 	}

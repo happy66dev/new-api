@@ -556,19 +556,17 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	// 虚拟模型内部候选成功：把结算 usage 写入 context，供状态探测填充 token 喵。
 	recordVirtualModelSuccessUsage(ctx, billingUsage)
 
-	// 请求级首字耗时（毫秒），未测到首字（流式未回包或非流式）时保持为零喵。
+	// 候选级首字耗时（毫秒），候选尝试序列展示该成功候选自己的首字（模型级口径）喵。
 	firstByteMs := int64(0)
 	if relayInfo.HasSendResponse() {
 		firstByteMs = relayInfo.FirstResponseTime.Sub(relayInfo.StartTime).Milliseconds()
 	}
-	// 请求级总耗时（毫秒）默认取候选级，虚拟模型 internal 候选成功时覆盖为请求级（所有候选时间总和）喵。
-	useTimeMs := time.Since(relayInfo.StartTime).Milliseconds()
+	// 候选级总耗时（毫秒），候选尝试序列展示该成功候选自己的耗时（模型级口径）喵。
+	candidateUseTimeMs := time.Since(relayInfo.StartTime).Milliseconds()
+	// 虚拟模型 internal 候选成功：日志主字段（总耗时列与首字列）改请求级（所有候选时间总和），候选尝试序列保持模型级喵。
 	if timingFound, virtualElapsedMs, virtualFirstByteMs := virtualModelRequestLevelTiming(ctx, relayInfo); timingFound {
-		// 虚拟模型日志耗时改请求级口径：总耗时与首字都从请求入口起算，而非成功候选的 relay 起点喵。
-		useTimeMs = virtualElapsedMs
-		summary.UseTimeSeconds = int64(useTimeMs / 1000)
-		firstByteMs = virtualFirstByteMs
-		other["frt"] = float64(firstByteMs)
+		summary.UseTimeSeconds = int64(virtualElapsedMs / 1000)
+		other["frt"] = float64(virtualFirstByteMs)
 	}
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,
@@ -580,8 +578,8 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		Content:          logContent,
 		TokenId:          relayInfo.TokenId,
 		UseTimeSeconds:   int(summary.UseTimeSeconds),
-		// 请求级毫秒耗时与首字耗时供虚拟模型 internal 候选尝试序列展示喵。
-		UseTimeMs:   useTimeMs,
+		// 候选级毫秒耗时与首字耗时供虚拟模型 internal 候选尝试序列展示该候选自己的耗时喵。
+		UseTimeMs:   candidateUseTimeMs,
 		FirstByteMs: firstByteMs,
 		IsStream:         relayInfo.IsStream,
 		Group:            relayInfo.UsingGroup,
