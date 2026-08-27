@@ -165,7 +165,8 @@ func TestCustomStreamingPrecommitProbe(t *testing.T) {
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
 			responseReader := bufio.NewReader(bytes.NewBufferString(testCase.stream))
-			precommitBytes, probeError := probeCustomStreamingResponse(responseReader)
+			// 探测参数门槛设为 3，使单行 hello 内容（5 字符）即可放流喵。
+			precommitBytes, probeError := probeCustomStreamingResponse(responseReader, ProbeParameters{StallTimeoutSeconds: 60, MinContentChars: 3, ProbeTotalTimeoutSeconds: 60})
 			if (probeError != nil) != testCase.expectError {
 				t.Fatalf("probeCustomStreamingResponse() error=%v wantError=%v", probeError, testCase.expectError)
 			}

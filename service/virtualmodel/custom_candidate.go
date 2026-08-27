@@ -17,6 +17,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	relaykitypes "github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -84,15 +85,36 @@ func isStreamingCustomRequest(c *gin.Context) bool {
 	return gjson.GetBytes(requestBody, "stream").Type == gjson.True
 }
 
-// probeCustomStreamingResponse 在同一响应 reader 上缓冲至首个有效 SSE 业务事件喵。
-func probeCustomStreamingResponse(responseReader *bufio.Reader) ([]byte, error) {
+// probeCustomStreamingResponse 在同一响应 reader 上缓冲至内容字符达到门槛喵。
+// 静默超过 stall 秒数判定卡流、探测总预算耗尽判定超时，均不向客户端写任何字节喵。
+func probeCustomStreamingResponse(responseReader *bufio.Reader, params ProbeParameters) ([]byte, error) {
 	// 喵~防御：空 reader 不能安全探测，直接返回结构化候选失败喵。
 	if responseReader == nil {
 		return nil, errors.New("custom upstream streaming response is unavailable")
 	}
+	// 参数非法或为零时回退内置默认值，保证探测永远有界喵。
+	stallTimeout := time.Duration(DefaultProbeStallTimeoutSeconds) * time.Second
+	if params.StallTimeoutSeconds > 0 {
+		stallTimeout = time.Duration(params.StallTimeoutSeconds) * time.Second
+	}
+	probeTotalTimeout := time.Duration(DefaultProbeTotalTimeoutSeconds) * time.Second
+	if params.ProbeTotalTimeoutSeconds > 0 {
+		probeTotalTimeout = time.Duration(params.ProbeTotalTimeoutSeconds) * time.Second
+	}
+	minContentChars := DefaultProbeMinContentChars
+	if params.MinContentChars > 0 {
+		minContentChars = params.MinContentChars
+	}
+	probeStartTime := time.Now()
 	bufferedBytes := make([]byte, 0, 4096)
+	// 已累积的内容字符数，达到门槛才判定上游健康喵。
+	bufferedContentChars := 0
 	for len(bufferedBytes) < customCandidatePrecommitBufferLimit {
-		lineBytes, readError := responseReader.ReadBytes('\n')
+		// 喵~防御：探测总预算耗尽时终止，避免上游一直发无内容心跳拖死候选链喵。
+		if time.Since(probeStartTime) >= probeTotalTimeout {
+			return nil, fmt.Errorf("%w: probe phase exceeded total budget", relaykitypes.ErrStalledStream)
+		}
+		lineBytes, readError := readProbeLineWithTimeout(responseReader, stallTimeout)
 		if len(lineBytes) > 0 {
 			if len(bufferedBytes)+len(lineBytes) > customCandidatePrecommitBufferLimit {
 				return nil, errors.New("custom upstream stream precommit buffer limit exceeded")
@@ -101,10 +123,11 @@ func probeCustomStreamingResponse(responseReader *bufio.Reader) ([]byte, error) 
 			trimmedLine := strings.TrimSpace(string(lineBytes))
 			if strings.HasPrefix(trimmedLine, "data:") {
 				dataPayload := strings.TrimSpace(strings.TrimPrefix(trimmedLine, "data:"))
-				// 喵~防御：上游明确 error 事件在提交前转为候选失败，允许后备候选接管喵。
+				// 喵~防御：空事件与 [DONE] 不构成业务内容，继续等待喵。
 				if dataPayload == "" || strings.EqualFold(dataPayload, "[DONE]") {
 					continue
 				}
+				// 喵~防御：上游明确 error 事件在提交前转为候选失败，允许后备候选接管喵。
 				if strings.Contains(strings.ToLower(dataPayload), "\"error\"") || strings.Contains(strings.ToLower(dataPayload), "\"type\":\"error\"") {
 					return nil, errors.New("custom upstream stream reported an error before business content")
 				}
@@ -112,17 +135,47 @@ func probeCustomStreamingResponse(responseReader *bufio.Reader) ([]byte, error) 
 				if strings.EqualFold(dataPayload, "ping") || strings.EqualFold(dataPayload, "pong") {
 					continue
 				}
-				return bufferedBytes, nil
+				// 累积内容字符，达到门槛才判定健康并放流喵。
+				bufferedContentChars += common.StreamProbeContentChars(dataPayload)
+				if bufferedContentChars >= minContentChars {
+					return bufferedBytes, nil
+				}
 			}
 		}
 		if readError != nil {
 			if errors.Is(readError, io.EOF) {
+				// 喵~防御：流在达到内容门槛前结束视为空流，不提交给客户端喵。
 				return nil, errors.New("custom upstream returned an empty streaming response")
 			}
 			return nil, readError
 		}
 	}
 	return nil, errors.New("custom upstream stream precommit buffer limit exceeded")
+}
+
+// readProbeLineWithTimeout 读取一行 SSE 数据，超过静默秒数未读到新行则返回卡流哨兵喵。
+func readProbeLineWithTimeout(reader *bufio.Reader, stallTimeout time.Duration) ([]byte, error) {
+	// 喵~防御：非法超时或空 reader 时直接按卡流处理，避免无限阻塞喵。
+	if reader == nil || stallTimeout <= 0 {
+		return nil, relaykitypes.ErrStalledStream
+	}
+	type lineReadResult struct {
+		lineBytes []byte
+		readError error
+	}
+	// 每次读行启动一个 goroutine，配合 select 实现“距上次读到字节”的静默计时喵。
+	resultChannel := make(chan lineReadResult, 1)
+	go func() {
+		lineBytes, readError := reader.ReadBytes('\n')
+		resultChannel <- lineReadResult{lineBytes: lineBytes, readError: readError}
+	}()
+	select {
+	case result := <-resultChannel:
+		return result.lineBytes, result.readError
+	case <-time.After(stallTimeout):
+		// 超时后调用方关闭响应体会解除阻塞读，goroutine 写入有缓冲的 channel 后自然退出，不泄漏喵。
+		return nil, fmt.Errorf("%w: upstream stream silent for %s", relaykitypes.ErrStalledStream, stallTimeout)
+	}
 }
 
 // ExecuteCustomCandidate 尝试当前自定义候选并仅在成功响应写入时向客户端提交内容喵。
@@ -181,7 +234,11 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 	// 喵~防御：2xx 响应在确认存在有效业务内容前不得提交，避免空流或 SSE 错误阻断候选故障转移喵。
 	responseReader := bufio.NewReader(response.Body)
 	if isStreamingCustomRequest(c) {
-		precommitBuffer, precommitError := probeCustomStreamingResponse(responseReader)
+		precommitBuffer, precommitError := probeCustomStreamingResponse(responseReader, ProbeParameters{
+			StallTimeoutSeconds:      input.StallTimeoutSeconds,
+			MinContentChars:          input.MinContentChars,
+			ProbeTotalTimeoutSeconds: input.ProbeTotalTimeoutSeconds,
+		})
 		if precommitError != nil {
 			return customCandidatePrecommitFailure(precommitError)
 		}

@@ -96,7 +96,11 @@ func ExecuteUserUpstreamModel(c *gin.Context, input CustomCandidateExecutionInpu
 	responseReader := bufio.NewReader(response.Body)
 	// 流式请求逐事件转发并累积最后的 usage 事件喵。
 	if isStreamingCustomRequest(c) {
-		precommitBuffer, precommitError := probeCustomStreamingResponse(responseReader)
+		precommitBuffer, precommitError := probeCustomStreamingResponse(responseReader, ProbeParameters{
+			StallTimeoutSeconds:      input.StallTimeoutSeconds,
+			MinContentChars:          input.MinContentChars,
+			ProbeTotalTimeoutSeconds: input.ProbeTotalTimeoutSeconds,
+		})
 		if precommitError != nil {
 			return &UserUpstreamModelExecutionResult{Err: customCandidatePrecommitFailure(precommitError), TtftMs: ttftMs}
 		}
