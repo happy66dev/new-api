@@ -1147,3 +1147,42 @@ func TestAppendToolSurchargeLogInfoWritesOnlyStructuredFields(t *testing.T) {
 	assert.NotContains(t, other, "image_generation_call")
 	assert.NotContains(t, other, "image_generation_call_price")
 }
+
+// TestVirtualModelRequestLevelTiming 验证虚拟模型 internal 候选日志的请求级耗时口径喵。
+// 非虚拟上下文必须保持候选级（返回 false）；虚拟上下文总耗时取请求入口到当前、首字取首次写响应减请求入口喵。
+func TestVirtualModelRequestLevelTiming(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+	// 统一时间基准：请求入口 5 秒前、候选 relay 起点 2 秒前、首次写响应 1 秒前喵。
+	now := time.Now()
+	virtualStart := now.Add(-5 * time.Second)
+	candidateStart := now.Add(-2 * time.Second)
+	firstResponseAt := now.Add(-1 * time.Second)
+
+	// 非虚拟上下文（未写入请求入口时刻）：返回 false，调用方保持候选级口径喵。
+	found, elapsedMs, firstByteMs := virtualModelRequestLevelTiming(ctx, &relaycommon.RelayInfo{StartTime: candidateStart})
+	require.False(t, found, "非虚拟上下文不得触发请求级覆盖喵")
+	require.Zero(t, elapsedMs)
+	require.Zero(t, firstByteMs)
+
+	// 虚拟上下文 + 已写响应：总耗时约 5 秒、首字约 4 秒（首次写响应减请求入口）喵。
+	common.SetContextKey(ctx, constant.ContextKeyVirtualModelStartTime, virtualStart)
+	relayInfo := &relaycommon.RelayInfo{
+		StartTime:         candidateStart,
+		FirstResponseTime: firstResponseAt,
+	}
+	found, elapsedMs, firstByteMs = virtualModelRequestLevelTiming(ctx, relayInfo)
+	require.True(t, found, "虚拟上下文必须触发请求级覆盖喵")
+	// 总耗时从请求入口起算（约 5 秒），而非候选 relay 起点（约 2 秒）喵。
+	require.InDelta(t, 5000, elapsedMs, 300, "总耗时应为请求级（约 5 秒）喵")
+	// 首字从请求入口到首次写响应（约 4 秒），而非候选级（约 1 秒）喵。
+	require.InDelta(t, 4000, firstByteMs, 300, "首字应为请求级（约 4 秒）喵")
+
+	// 虚拟上下文 + 未写响应：总耗时仍请求级，首字保持零喵。
+	noResponseRelayInfo := &relaycommon.RelayInfo{StartTime: candidateStart}
+	found, elapsedMs, firstByteMs = virtualModelRequestLevelTiming(ctx, noResponseRelayInfo)
+	require.True(t, found, "虚拟上下文必须触发请求级覆盖喵")
+	require.InDelta(t, 5000, elapsedMs, 300, "总耗时应为请求级（约 5 秒）喵")
+	require.Zero(t, firstByteMs, "未写响应时首字必须为零喵")
+}

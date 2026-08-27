@@ -366,6 +366,8 @@ func handleVirtualModelRequest(c *gin.Context, modelRequest *ModelRequest) bool 
 		currentCandidateStartedAt: time.Now(),
 	}
 	common.SetContextKey(c, constant.ContextKeyVirtualModelExecutionState, executionState)
+	// 虚拟模型请求进入虚拟层的时刻写入 context，供日志/候选序列耗时改请求级口径（所有候选时间总和）喵。
+	common.SetContextKey(c, constant.ContextKeyVirtualModelStartTime, executionState.startTime)
 	// 虚拟模型请求日志统一归入「虚拟模型」类型（internal 候选走消费日志时覆盖 type 为 9）喵。
 	common.SetContextKey(c, constant.ContextKeyVirtualLogType, model.LogTypeVirtualModel)
 	// 初始化候选尝试记录切片，供请求生命周期内各候选追加，最终随日志落库喵。

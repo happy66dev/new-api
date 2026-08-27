@@ -242,6 +242,18 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 		InjectTieredBillingInfo(other, relayInfo, tieredResult)
 	}
 	attachQuotaSaturation(ctx, relayInfo, other)
+	// 请求级总耗时（毫秒）默认取候选级，虚拟模型内部候选成功时覆盖为请求级（所有候选时间总和）喵。
+	useTimeMs := time.Since(relayInfo.StartTime).Milliseconds()
+	firstByteMs := int64(0)
+	if timingFound, virtualElapsedMs, virtualFirstByteMs := virtualModelRequestLevelTiming(ctx, relayInfo); timingFound {
+		// 虚拟模型日志耗时改请求级口径：总耗时与首字都从请求入口起算喵。
+		useTimeMs = virtualElapsedMs
+		useTimeSeconds = int64(useTimeMs / 1000)
+		firstByteMs = virtualFirstByteMs
+		if firstByteMs > 0 {
+			other["frt"] = float64(firstByteMs)
+		}
+	}
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,
 		PromptTokens:     usage.InputTokens,
@@ -252,6 +264,9 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 		Content:          logContent,
 		TokenId:          relayInfo.TokenId,
 		UseTimeSeconds:   int(useTimeSeconds),
+		// 请求级毫秒耗时与首字耗时供虚拟模型 internal 候选尝试序列展示喵。
+		UseTimeMs:   useTimeMs,
+		FirstByteMs: firstByteMs,
 		IsStream:         relayInfo.IsStream,
 		Group:            relayInfo.UsingGroup,
 		Other:            other,
@@ -365,6 +380,18 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		InjectTieredBillingInfo(other, relayInfo, tieredResult)
 	}
 	attachQuotaSaturation(ctx, relayInfo, other)
+	// 请求级总耗时（毫秒）默认取候选级，虚拟模型内部候选成功时覆盖为请求级（所有候选时间总和）喵。
+	useTimeMs := time.Since(relayInfo.StartTime).Milliseconds()
+	firstByteMs := int64(0)
+	if timingFound, virtualElapsedMs, virtualFirstByteMs := virtualModelRequestLevelTiming(ctx, relayInfo); timingFound {
+		// 虚拟模型日志耗时改请求级口径：总耗时与首字都从请求入口起算喵。
+		useTimeMs = virtualElapsedMs
+		useTimeSeconds = int64(useTimeMs / 1000)
+		firstByteMs = virtualFirstByteMs
+		if firstByteMs > 0 {
+			other["frt"] = float64(firstByteMs)
+		}
+	}
 	// 虚拟模型内部候选成功：把结算 usage 写入 context，供状态探测填充 token 喵。
 	recordVirtualModelSuccessUsage(ctx, usage)
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
@@ -377,6 +404,9 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		Content:          logContent,
 		TokenId:          relayInfo.TokenId,
 		UseTimeSeconds:   int(useTimeSeconds),
+		// 请求级毫秒耗时与首字耗时供虚拟模型 internal 候选尝试序列展示喵。
+		UseTimeMs:   useTimeMs,
+		FirstByteMs: firstByteMs,
 		IsStream:         relayInfo.IsStream,
 		Group:            relayInfo.UsingGroup,
 		Other:            other,

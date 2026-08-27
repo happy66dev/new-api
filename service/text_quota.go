@@ -31,6 +31,36 @@ type ToolSurchargeItem struct {
 	Price float64 `json:"price"`
 }
 
+// virtualModelRequestLevelTiming 计算虚拟模型内部候选成功时日志的请求级耗时口径喵。
+// 返回 (是否存在请求级基准, 请求级总耗时毫秒, 请求级首字毫秒)；非虚拟上下文时返回 false 由调用方保持候选级口径喵。
+func virtualModelRequestLevelTiming(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) (bool, int64, int64) {
+	// 喵~防御：空上下文或空 relayInfo 时按非虚拟上下文处理，避免空指针喵。
+	if ctx == nil || relayInfo == nil {
+		return false, 0, 0
+	}
+	virtualStartTime := common.GetContextKeyTime(ctx, constant.ContextKeyVirtualModelStartTime)
+	// 喵~防御：缺少虚拟模型请求入口时刻时保持候选级口径，不影响普通请求日志喵。
+	if virtualStartTime.IsZero() {
+		return false, 0, 0
+	}
+	// 请求级总耗时：从请求进入虚拟层到当前（所有候选尝试时间总和）喵。
+	elapsedMs := time.Since(virtualStartTime).Milliseconds()
+	// 喵~防御：时钟异常导致的负值按零处理喵。
+	if elapsedMs < 0 {
+		elapsedMs = 0
+	}
+	// 请求级首字：首次向客户端写响应的绝对时刻减请求入口，internal 候选成功时即为本次响应喵。
+	firstByteMs := int64(0)
+	if relayInfo.HasSendResponse() {
+		firstByteMs = relayInfo.FirstResponseTime.Sub(virtualStartTime).Milliseconds()
+		// 喵~防御：时钟异常导致的负值按零处理喵。
+		if firstByteMs < 0 {
+			firstByteMs = 0
+		}
+	}
+	return true, elapsedMs, firstByteMs
+}
+
 func appendToolSurchargeLogInfo(other map[string]interface{}, items []ToolSurchargeItem) {
 	if len(items) == 0 {
 		return
@@ -531,6 +561,15 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	if relayInfo.HasSendResponse() {
 		firstByteMs = relayInfo.FirstResponseTime.Sub(relayInfo.StartTime).Milliseconds()
 	}
+	// 请求级总耗时（毫秒）默认取候选级，虚拟模型 internal 候选成功时覆盖为请求级（所有候选时间总和）喵。
+	useTimeMs := time.Since(relayInfo.StartTime).Milliseconds()
+	if timingFound, virtualElapsedMs, virtualFirstByteMs := virtualModelRequestLevelTiming(ctx, relayInfo); timingFound {
+		// 虚拟模型日志耗时改请求级口径：总耗时与首字都从请求入口起算，而非成功候选的 relay 起点喵。
+		useTimeMs = virtualElapsedMs
+		summary.UseTimeSeconds = int64(useTimeMs / 1000)
+		firstByteMs = virtualFirstByteMs
+		other["frt"] = float64(firstByteMs)
+	}
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,
 		PromptTokens:     summary.PromptTokens,
@@ -542,7 +581,7 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		TokenId:          relayInfo.TokenId,
 		UseTimeSeconds:   int(summary.UseTimeSeconds),
 		// 请求级毫秒耗时与首字耗时供虚拟模型 internal 候选尝试序列展示喵。
-		UseTimeMs:   time.Since(relayInfo.StartTime).Milliseconds(),
+		UseTimeMs:   useTimeMs,
 		FirstByteMs: firstByteMs,
 		IsStream:         relayInfo.IsStream,
 		Group:            relayInfo.UsingGroup,

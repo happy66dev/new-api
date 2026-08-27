@@ -30,6 +30,8 @@ const (
 	ContextKeyVirtualModelSuccessUsage ContextKey = "virtual_model_success_usage"
 	// ContextKeyVirtualModelFirstWriteAt 记录虚拟模型 custom/user-xxx 候选首次向客户端写响应的时刻，供请求级首字统计喵。
 	ContextKeyVirtualModelFirstWriteAt ContextKey = "virtual_model_first_write_at"
+	// ContextKeyVirtualModelStartTime 记录虚拟模型请求进入虚拟层的时刻（所有候选尝试时间总和的基准），供日志与候选序列改请求级口径喵。
+	ContextKeyVirtualModelStartTime ContextKey = "virtual_model_start_time"
 
 	/* token related keys */
 	ContextKeyTokenUnlimited         ContextKey = "token_unlimited_quota"
