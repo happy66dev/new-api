@@ -338,6 +338,10 @@ type RecordConsumeLogParams struct {
 	Content          string                 `json:"content"`
 	TokenId          int                    `json:"token_id"`
 	UseTimeSeconds   int                    `json:"use_time_seconds"`
+	// UseTimeMs 请求级总耗时的毫秒精确值，仅虚拟模型 internal 候选注入候选尝试序列使用，普通请求为零喵。
+	UseTimeMs int64 `json:"-"`
+	// FirstByteMs 请求级首字耗时（毫秒），仅虚拟模型 internal 候选注入候选尝试序列使用，普通请求为零喵。
+	FirstByteMs int64 `json:"-"`
 	IsStream         bool                   `json:"is_stream"`
 	Group            string                 `json:"group"`
 	Other            map[string]interface{} `json:"other"`
@@ -359,7 +363,8 @@ func InjectVirtualModelAttempts(c *gin.Context, other map[string]interface{}) {
 }
 
 // appendVirtualModelSuccessAttempt 在 internal 候选成功结算时把成功尝试追加到候选尝试切片喵。
-func appendVirtualModelSuccessAttempt(c *gin.Context, candidateModelName string) {
+// elapsedMs 与 ttftMs 分别为请求级总耗时与首字耗时（毫秒），由调用点按 relayInfo 计算喵。
+func appendVirtualModelSuccessAttempt(c *gin.Context, candidateModelName string, elapsedMs int64, ttftMs int64) {
 	// 喵~防御：空上下文时直接返回喵。
 	if c == nil {
 		return
@@ -375,6 +380,8 @@ func appendVirtualModelSuccessAttempt(c *gin.Context, candidateModelName string)
 		Label:      candidateModelName,
 		Success:    true,
 		StatusCode: 200,
+		ElapsedMs:  elapsedMs,
+		TtftMs:     ttftMs,
 	})
 }
 
@@ -393,7 +400,7 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	if virtualLogType := common.GetContextKeyInt(c, constant.ContextKeyVirtualLogType); virtualLogType > 0 {
 		logType = virtualLogType
 		// 虚拟模型 internal 候选成功：先追加成功尝试，再注入全部候选尝试序列到 Other 喵。
-		appendVirtualModelSuccessAttempt(c, params.ModelName)
+		appendVirtualModelSuccessAttempt(c, params.ModelName, params.UseTimeMs, params.FirstByteMs)
 		InjectVirtualModelAttempts(c, params.Other)
 	}
 	channelId := params.ChannelId

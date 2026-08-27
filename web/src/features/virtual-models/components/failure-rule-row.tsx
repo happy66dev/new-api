@@ -120,14 +120,20 @@ export function FailureRuleEditorRow({
             </span>
           </label>
         )}
-        {/* 超时条件：无状态码可配置，展示固定说明喵。 */}
+        {/* 超时条件：无状态码可配置，展示固定说明并可配置超时判定阈值喵。 */}
         {rule.conditionType === 'timeout' && (
-          <label className='grid gap-1 text-sm font-medium'>
-            {t('Error class (fixed)')}
-            <div className='flex h-9 items-center rounded-md border px-3 text-sm text-muted-foreground'>
-              {t('Matches timeout failures')}
-            </div>
-          </label>
+          <>
+            <label className='grid gap-1 text-sm font-medium'>
+              {t('Error class (fixed)')}
+              <div className='flex h-9 items-center rounded-md border px-3 text-sm text-muted-foreground'>
+                {t('Matches timeout failures')}
+              </div>
+            </label>
+            <label className='grid gap-1 text-sm font-medium'>
+              {t('Timeout seconds')}
+              <Input inputMode='numeric' value={rule.timeoutSeconds} disabled={isSaving} placeholder={t('Seconds before a candidate is judged timed out (default: candidate timeout)')} onChange={(event) => onChange({ timeoutSeconds: event.target.value })} />
+            </label>
+          </>
         )}
         {/* 卡流条件：展示固定说明，并可配置流式探测参数（静默秒数、内容字符门槛、探测总预算）喵。 */}
         {rule.conditionType === 'stalled' && (

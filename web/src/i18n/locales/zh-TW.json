@@ -6177,6 +6177,8 @@
     "Output tokens per second per hour": "Output tokens per second per hour",
     "Candidate performance over the last 24 hours": "Candidate performance over the last 24 hours",
     "Upstream model performance over the last 24 hours": "Upstream model performance over the last 24 hours",
-    "No token usage data available": "No token usage data available"
+    "No token usage data available": "No token usage data available",
+    "Seconds before a candidate is judged timed out (default: candidate timeout)": "候選被判定逾時前的秒數（預設：候選逾時）",
+    "Failure rule {{index}} timeout must be between 0 and 600 seconds": "失敗規則 {{index}} 逾時時間必須在 0 到 600 秒之間"
   }
 }

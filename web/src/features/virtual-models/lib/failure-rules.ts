@@ -61,6 +61,8 @@ export type FailureRuleDraft = {
   minContentChars: string
   // probeTotalTimeoutSeconds 探测阶段总预算，单位：秒；空串表示默认 300 喵。
   probeTotalTimeoutSeconds: string
+  // timeoutSeconds 超时条件判定阈值，单位：秒；空串表示沿用候选级执行超时喵。
+  timeoutSeconds: string
   id?: number
   action: VirtualModelFailureRule['action']
 }
@@ -135,6 +137,8 @@ export function toFailureRuleDraft(rule: VirtualModelFailureRule): FailureRuleDr
     stallTimeoutSeconds: String(rule.stall_timeout_seconds ?? 0),
     minContentChars: String(rule.min_content_chars ?? 0),
     probeTotalTimeoutSeconds: String(rule.probe_total_timeout_seconds ?? 0),
+    // 超时条件判定阈值原样回填，零表示沿用候选级执行超时喵。
+    timeoutSeconds: String(rule.timeout_seconds ?? 0),
     id: rule.id,
     action: rule.action ?? 'next',
   }
@@ -157,6 +161,8 @@ export function createFailureRuleDraft(): FailureRuleDraft {
     stallTimeoutSeconds: '0',
     minContentChars: '0',
     probeTotalTimeoutSeconds: '0',
+    // 超时条件判定阈值默认零，表示沿用候选级执行超时喵。
+    timeoutSeconds: '0',
     action: 'next',
   }
 }
@@ -244,6 +250,11 @@ export function validateFailureRuleDraft(
     minContentChars = parseProbeNumber(rule.minContentChars, 1024, t, index, 'Failure rule {{index}} min content chars must be between 0 and 1024')
     probeTotalTimeoutSeconds = parseProbeNumber(rule.probeTotalTimeoutSeconds, 3600, t, index, 'Failure rule {{index}} probe total timeout must be between 0 and 3600 seconds')
   }
+  // 超时条件判定阈值解析：仅在 timeout 条件时可配置，其他条件写 0 沿用候选级执行超时喵。
+  let timeoutSeconds = 0
+  if (rule.conditionType === 'timeout') {
+    timeoutSeconds = parseProbeNumber(rule.timeoutSeconds, 600, t, index, 'Failure rule {{index}} timeout must be between 0 and 600 seconds')
+  }
   // 将冻结秒数文本转换为数值，零表示不追加固定冻结时间喵。
   const freezeSeconds = Number(rule.freezeSeconds)
   // 喵~防御：冻结时长必须处于零到一天，防止意外长期冻结候选喵。
@@ -273,6 +284,8 @@ export function validateFailureRuleDraft(
     stall_timeout_seconds: stallTimeoutSeconds,
     min_content_chars: minContentChars,
     probe_total_timeout_seconds: probeTotalTimeoutSeconds,
+    // timeout 条件写入用户配置的超时判定阈值，其他条件写 0 沿用候选级执行超时喵。
+    timeout_seconds: timeoutSeconds,
   }
 }
 

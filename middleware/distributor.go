@@ -420,9 +420,15 @@ func AdvanceVirtualModelAfterNativeFailure(c *gin.Context, nativeError *types.Ne
 	if errors.Is(nativeError, types.ErrStalledStream) || errors.Is(nativeError, types.ErrStreamCut) {
 		probeExecutionError = nativeError
 	}
-	// 规范化为失败规则可匹配的受限结果，候选未配置规则时自动回退模型级全局兜底规则喵。
+	// 规范化失败规则可匹配的受限结果，候选未配置规则时自动回退模型级全局兜底规则喵。
 	nativeFailure := virtualmodelservice.NormalizeCandidateFailure(nativeError.StatusCode, nil, nil, probeExecutionError)
 	// 记录该 internal 候选的失败尝试摘要，供最终日志展示候选链故障转移过程喵。
+	// 喵~防御：错误消息需受限截断，避免恶意超长消息撑大日志喵。
+	internalErrorBody := nativeError.Error()
+	const maxInternalErrorBodyBytes = 4096
+	if len(internalErrorBody) > maxInternalErrorBodyBytes {
+		internalErrorBody = internalErrorBody[:maxInternalErrorBodyBytes]
+	}
 	appendVirtualModelCandidateAttempt(c, model.VirtualModelCandidateAttemptRecord{
 		Seq:          currentVirtualModelCandidateSeq(c),
 		CandidateID:  currentCandidate.CandidateID,
@@ -432,7 +438,10 @@ func AdvanceVirtualModelAfterNativeFailure(c *gin.Context, nativeError *types.Ne
 		StatusCode:   nativeFailure.HTTPStatus,
 		ErrorClass:   nativeFailure.ErrorClass,
 		ErrorMessage: nativeFailure.ErrorClass,
-		RetryCount:   executionState.ruleRetryCounts[currentCandidate.CandidateID],
+		// internal 候选错误返回体取错误对象消息（受限），原生 relay 不保留完整上游响应体喵。
+		ErrorBody:  internalErrorBody,
+		ElapsedMs:  time.Since(executionState.currentCandidateStartedAt).Milliseconds(),
+		RetryCount: executionState.ruleRetryCounts[currentCandidate.CandidateID],
 	})
 	// 流转伪流断流：开启伪流且配置了断流处理措施时，直接按断流措施决策，跳过常规失败规则喵。
 	isStreamCut := nativeFailure.ErrorClass == "stream_cut" && executionState.streamCutAction != ""
@@ -700,7 +709,8 @@ func currentVirtualModelCandidateSeq(c *gin.Context) int {
 
 // recordVirtualModelCustomSuccess 纯直填 custom 候选成功时写虚拟模型日志喵。
 // usage 为候选透传解析出的上游计费信息（可能为 nil），token 计真实值喵。
-func recordVirtualModelCustomSuccess(c *gin.Context, useTimeSeconds int, usage *dto.Usage) {
+// requestFirstByteMs 为请求级首字耗时（毫秒），供日志 Timing 展示，未测到时为零喵。
+func recordVirtualModelCustomSuccess(c *gin.Context, useTimeSeconds int, usage *dto.Usage, requestFirstByteMs int64) {
 	// 喵~防御：缺少上下文时跳过日志，避免空指针喵。
 	if c == nil {
 		return
@@ -722,6 +732,14 @@ func recordVirtualModelCustomSuccess(c *gin.Context, useTimeSeconds int, usage *
 		completionTokens = usage.CompletionTokens
 	}
 	// 纯直填 custom 候选以解析出的 usage 填 token；候选尝试序列由日志 Other 承载喵。
+	other := map[string]interface{}{
+		"virtual_model": executionState.virtualModelName,
+		"final_success": true,
+	}
+	// 请求级首字耗时写入日志 Timing 展示，纯直填 custom 候选此前未记录首字喵。
+	if requestFirstByteMs > 0 {
+		other["frt"] = requestFirstByteMs
+	}
 	model.RecordVirtualModelLog(c, c.GetInt("id"), model.RecordVirtualModelLogParams{
 		ModelName:        executionState.virtualModelName,
 		PromptTokens:     promptTokens,
@@ -729,10 +747,7 @@ func recordVirtualModelCustomSuccess(c *gin.Context, useTimeSeconds int, usage *
 		UseTimeSeconds:   useTimeSeconds,
 		IsStream:         isUpstreamModelRequestStreaming(c),
 		Group:            group,
-		Other: map[string]interface{}{
-			"virtual_model": executionState.virtualModelName,
-			"final_success": true,
-		},
+		Other:            other,
 	})
 }
 
@@ -859,6 +874,8 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 	startTime := time.Now()
 	// 从候选级与模型级全局失败规则解析流式探测参数，供候选透传的放流前探测使用喵。
 	probeParameters := virtualmodelservice.ResolveProbeParameters(executionSnapshot.FailureRulesByCandidateID[candidate.CandidateID], executionSnapshot.GlobalFailureRules)
+	// 从失败规则解析超时条件判定阈值，非零时覆盖候选级执行超时，让「超过 N 秒判定超时」真正生效喵。
+	ruleTimeoutSeconds := virtualmodelservice.ResolveFailureTimeoutSeconds(executionSnapshot.FailureRulesByCandidateID[candidate.CandidateID], executionSnapshot.GlobalFailureRules, candidate.TimeoutSeconds)
 	// 解析候选执行来源：引用用户上游模型条目或直填凭据喵。
 	hasUpstreamReference := candidate.UpstreamModelID != nil && *candidate.UpstreamModelID > 0
 	var referencedUpstreamModel *model.UserUpstreamModel
@@ -962,7 +979,7 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 				APIKey:         apiKey,
 				RealModelName:  candidateRealModelName,
 				AuthStyle:      candidateAuthStyle,
-				TimeoutSeconds: candidate.TimeoutSeconds,
+				TimeoutSeconds: ruleTimeoutSeconds,
 				// 流式探测参数随候选执行传入，供放流前健康探测使用喵。
 				StallTimeoutSeconds:      probeParameters.StallTimeoutSeconds,
 				MinContentChars:          probeParameters.MinContentChars,
@@ -987,7 +1004,7 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 				APIKey:         apiKey,
 				RealModelName:  candidateRealModelName,
 				AuthStyle:      candidateAuthStyle,
-				TimeoutSeconds: candidate.TimeoutSeconds,
+				TimeoutSeconds: ruleTimeoutSeconds,
 				// 流式探测参数随候选执行传入，供放流前健康探测使用喵。
 				StallTimeoutSeconds:      probeParameters.StallTimeoutSeconds,
 				MinContentChars:          probeParameters.MinContentChars,
@@ -1008,23 +1025,33 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 				Label:       buildVirtualModelAttemptLabel(candidate, candidateRealModelName),
 				Success:     true,
 				StatusCode:  http.StatusOK,
-				ElapsedMs:   time.Since(startTime).Milliseconds(),
-				RetryCount:  retryIndex,
+				// 模型级首字耗时取上游 TTFT（毫秒），纯直填与引用上游候选都测到了喵。
+				TtftMs:     executionResult.TtftMs,
+				ElapsedMs:  time.Since(startTime).Milliseconds(),
+				RetryCount: retryIndex,
 			})
+			// 请求级耗时基准：虚拟模型请求入口 startTime，供日志总耗时与首字展示喵。
+			// 喵~防御：缺少执行状态时回退候选级计时，保证任何情况下都能写日志喵。
+			requestExecutionState, foundRequestState := getVirtualModelExecutionState(c)
+			requestElapsedMs := time.Since(startTime).Milliseconds()
+			if foundRequestState && requestExecutionState != nil {
+				requestElapsedMs = time.Since(requestExecutionState.startTime).Milliseconds()
+			}
 			// 引用上游模型成功时结算独立 RMB 计费并写虚拟模型日志（上下文已把类型覆盖为 9）喵。
 			if hasUpstreamReference && referencedUpstreamModel != nil {
 				requestGroup := ""
 				if executionState, foundState := getVirtualModelExecutionState(c); foundState && executionState.modelRequest != nil {
 					requestGroup = executionState.modelRequest.Group
 				}
-				settleUserUpstreamModelCharge(c, referencedUpstreamModel.OwnerUserID, referencedUpstreamModel, executionUsage, requestGroup, isUpstreamModelRequestStreaming(c), int(time.Since(startTime).Seconds()), false, executionResult.TtftMs, preConsumedCents)
+				// 结算耗时与首字都改为请求级：总耗时取请求入口到当前，首字近似同一时刻（毫秒）喵。
+				settleUserUpstreamModelCharge(c, referencedUpstreamModel.OwnerUserID, referencedUpstreamModel, executionUsage, requestGroup, isUpstreamModelRequestStreaming(c), int(requestElapsedMs/1000), false, requestElapsedMs, preConsumedCents)
 				// 已按差额结算完毕，defer 不再退还预扣喵。
 				settled = true
 				// 实体状态检测：引用上游模型成功，同时记录上游模型自用维度成功喵。
 				recordUpstreamModelProbeState(referencedUpstreamModel, false, true, true, "", startTime, buildUpstreamProbeExtras(executionResult))
 			} else {
-				// 纯直填 custom 候选成功：写虚拟模型日志（携带解析出的 usage，token 计真实值）喵。
-				recordVirtualModelCustomSuccess(c, int(time.Since(startTime).Seconds()), executionUsage)
+				// 纯直填 custom 候选成功：写虚拟模型日志（携带解析出的 usage 与请求级首字，token 计真实值）喵。
+				recordVirtualModelCustomSuccess(c, int(requestElapsedMs/1000), executionUsage, requestElapsedMs)
 			}
 			// 实体状态检测：自定义候选成功，记录候选成功与虚拟模型整体成功（携带 usage/TTFT）喵。
 			executionState, _ := getVirtualModelExecutionState(c)
@@ -1083,8 +1110,10 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 			StatusCode:   customFailure.Failure.HTTPStatus,
 			ErrorClass:   customFailure.Failure.ErrorClass,
 			ErrorMessage: customFailure.Failure.ErrorClass,
-			ElapsedMs:    time.Since(startTime).Milliseconds(),
-			RetryCount:   retryIndex,
+			// 模型级错误返回体取上游响应体受限摘要（最多 64 KiB），供详情点击复制喵。
+			ErrorBody:  customFailure.Failure.BodyPreview,
+			ElapsedMs:  time.Since(startTime).Milliseconds(),
+			RetryCount: retryIndex,
 		})
 		// 断流 retry 用断流重试次数，其余按候选最大重试次数喵。
 		maxCustomRetries := maximumRetries

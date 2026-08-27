@@ -240,7 +240,12 @@ export interface LogOtherData {
     status_code?: number
     error_class?: string
     error_message?: string
+    // ttft_ms 该候选尝试的首字耗时（毫秒），成功流式尝试才有喵。
+    ttft_ms?: number
+    // elapsed_ms 该候选尝试的总耗时（毫秒）喵。
     elapsed_ms?: number
+    // error_body 该候选尝试的错误返回体受限摘要，供详情点击复制喵。
+    error_body?: string
     retry_count?: number
   }>
   // Violation fee fields

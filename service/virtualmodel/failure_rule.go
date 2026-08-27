@@ -427,6 +427,24 @@ func resolveProbeParameter(candidateRules []model.VirtualModelFailureRule, globa
 	return fallback
 }
 
+// ResolveFailureTimeoutSeconds 从候选级与模型级全局失败规则中解析超时条件判定阈值喵。
+// 候选规则优先于全局规则，取第一条非零值；全部未配置时回退到调用方传入的候选级执行超时喵。
+func ResolveFailureTimeoutSeconds(candidateRules []model.VirtualModelFailureRule, globalRules []model.VirtualModelFailureRule, fallback int) int {
+	// 候选级超时阈值优先，用户可按候选差异配置判定阈值喵。
+	for _, rule := range candidateRules {
+		if rule.TimeoutSeconds > 0 {
+			return rule.TimeoutSeconds
+		}
+	}
+	// 候选未配置时回退模型级全局兜底规则喵。
+	for _, rule := range globalRules {
+		if rule.TimeoutSeconds > 0 {
+			return rule.TimeoutSeconds
+		}
+	}
+	return fallback
+}
+
 // ValidateCandidateFailureRule 校验控制面写入的候选级失败规则边界喵。
 func ValidateCandidateFailureRule(rule *model.VirtualModelFailureRule) error {
 	// 喵~防御：空规则或非法候选编号必须拒绝持久化喵。
@@ -434,7 +452,7 @@ func ValidateCandidateFailureRule(rule *model.VirtualModelFailureRule) error {
 		return errors.New("virtual model failure rule is invalid")
 	}
 	// 规则字段边界由共享校验函数统一把关喵。
-	return validateFailureRuleFields(rule.RuleOrder, rule.HTTPStatus, rule.HTTPStatusMax, rule.FreezeSeconds, rule.ErrorClass, rule.BodyRegex, rule.Action, rule.FreezeField, rule.FreezeUnit, rule.StallTimeoutSeconds, rule.MinContentChars, rule.ProbeTotalTimeoutSeconds)
+	return validateFailureRuleFields(rule.RuleOrder, rule.HTTPStatus, rule.HTTPStatusMax, rule.FreezeSeconds, rule.ErrorClass, rule.BodyRegex, rule.Action, rule.FreezeField, rule.FreezeUnit, rule.StallTimeoutSeconds, rule.MinContentChars, rule.ProbeTotalTimeoutSeconds, rule.TimeoutSeconds)
 }
 
 // ValidateGlobalFailureRule 校验控制面写入的模型级全局兜底失败规则边界喵。
@@ -444,11 +462,11 @@ func ValidateGlobalFailureRule(rule *model.VirtualModelGlobalFailureRule) error 
 		return errors.New("virtual model failure rule is invalid")
 	}
 	// 模型级与候选级规则的字段约束一致，直接复用共享校验喵。
-	return validateFailureRuleFields(rule.RuleOrder, rule.HTTPStatus, rule.HTTPStatusMax, rule.FreezeSeconds, rule.ErrorClass, rule.BodyRegex, rule.Action, rule.FreezeField, rule.FreezeUnit, rule.StallTimeoutSeconds, rule.MinContentChars, rule.ProbeTotalTimeoutSeconds)
+	return validateFailureRuleFields(rule.RuleOrder, rule.HTTPStatus, rule.HTTPStatusMax, rule.FreezeSeconds, rule.ErrorClass, rule.BodyRegex, rule.Action, rule.FreezeField, rule.FreezeUnit, rule.StallTimeoutSeconds, rule.MinContentChars, rule.ProbeTotalTimeoutSeconds, rule.TimeoutSeconds)
 }
 
 // validateFailureRuleFields 校验失败规则字段的通用边界喵。
-func validateFailureRuleFields(ruleOrder int, httpStatus int, httpStatusMax int, freezeSeconds int, errorClass string, bodyRegex string, action model.VirtualModelFailureAction, freezeField string, freezeUnit model.VirtualModelFreezeUnit, stallTimeoutSeconds int, minContentChars int, probeTotalTimeoutSeconds int) error {
+func validateFailureRuleFields(ruleOrder int, httpStatus int, httpStatusMax int, freezeSeconds int, errorClass string, bodyRegex string, action model.VirtualModelFailureAction, freezeField string, freezeUnit model.VirtualModelFreezeUnit, stallTimeoutSeconds int, minContentChars int, probeTotalTimeoutSeconds int, timeoutSeconds int) error {
 	// 喵~防御：非法序号、越界状态码、范围上界越界和超长冻结配置必须拒绝持久化喵。
 	if ruleOrder < 0 || httpStatus < 0 || httpStatus > 599 || httpStatusMax < 0 || httpStatusMax > 599 || freezeSeconds < 0 || freezeSeconds > 24*60*60 {
 		return errors.New("virtual model failure rule is invalid")
@@ -456,6 +474,10 @@ func validateFailureRuleFields(ruleOrder int, httpStatus int, httpStatusMax int,
 	// 喵~防御：流式探测参数必须在安全范围内，零表示未配置使用默认值喵。
 	if stallTimeoutSeconds < 0 || stallTimeoutSeconds > 600 || minContentChars < 0 || minContentChars > 1024 || probeTotalTimeoutSeconds < 0 || probeTotalTimeoutSeconds > 3600 {
 		return errors.New("virtual model failure rule probe parameters are invalid")
+	}
+	// 喵~防御：超时条件判定阈值必须在候选超时安全范围内，零表示沿用候选级执行超时喵。
+	if timeoutSeconds < 0 || timeoutSeconds > 600 {
+		return errors.New("virtual model failure rule timeout is invalid")
 	}
 	// 喵~防御：范围上界非零时不得小于下界，否则产生永远无法命中的空范围喵。
 	if httpStatusMax > 0 && httpStatusMax < httpStatus {

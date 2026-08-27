@@ -217,6 +217,8 @@ export type VirtualModelFailureRule = {
   min_content_chars?: number
   // probe_total_timeout_seconds 探测阶段总预算，单位：秒；零或省略表示默认 300 喵。
   probe_total_timeout_seconds?: number
+  // timeout_seconds 超时条件判定阈值，单位：秒；零或省略表示沿用候选级执行超时喵。
+  timeout_seconds?: number
 }
 
 export type VirtualModelFailureRulesReplaceInput = {

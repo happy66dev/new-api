@@ -44,6 +44,8 @@ function makeDraft(overrides: Partial<FailureRuleDraft> = {}): FailureRuleDraft 
     stallTimeoutSeconds: '0',
     minContentChars: '0',
     probeTotalTimeoutSeconds: '0',
+    // 超时条件判定阈值默认零，表示沿用候选级执行超时喵。
+    timeoutSeconds: '0',
     action: 'next',
     ...overrides,
   }
@@ -76,6 +78,7 @@ describe('toFailureRuleDraft', () => {
       stallTimeoutSeconds: '0',
       minContentChars: '0',
       probeTotalTimeoutSeconds: '0',
+      timeoutSeconds: '0',
       id: 7,
       action: 'freeze',
     })
@@ -112,6 +115,7 @@ describe('toFailureRuleDraft', () => {
       stallTimeoutSeconds: '0',
       minContentChars: '0',
       probeTotalTimeoutSeconds: '0',
+      timeoutSeconds: '0',
       id: undefined,
       action: 'next',
     })
@@ -149,6 +153,7 @@ describe('createFailureRuleDraft', () => {
       stallTimeoutSeconds: '0',
       minContentChars: '0',
       probeTotalTimeoutSeconds: '0',
+      timeoutSeconds: '0',
       action: 'next',
     })
   })
@@ -271,6 +276,8 @@ describe('validateFailureRuleDraft', () => {
       stall_timeout_seconds: 0,
       min_content_chars: 0,
       probe_total_timeout_seconds: 0,
+      // HTTP 条件不写超时阈值，保持默认沿用候选级超时喵。
+      timeout_seconds: 0,
     })
   })
 
@@ -279,6 +286,34 @@ describe('validateFailureRuleDraft', () => {
     const timeoutPayload = validateFailureRuleDraft(makeDraft({ conditionType: 'timeout' }), 0, identityTranslator)
     expect(timeoutPayload.error_class).toBe('timeout')
     expect(timeoutPayload.http_status).toBe(0)
+  })
+
+  it('writes a configured timeout threshold for the timeout condition', () => {
+    // 超时条件配置 120 秒判定阈值，运行时覆盖候选级执行超时喵。
+    const payload = validateFailureRuleDraft(makeDraft({ conditionType: 'timeout', timeoutSeconds: '120' }), 0, identityTranslator)
+    expect(payload.timeout_seconds).toBe(120)
+  })
+
+  it('keeps zero timeout threshold when the timeout seconds are unset', () => {
+    // 超时秒数为零表示沿用候选级执行超时喵。
+    const payload = validateFailureRuleDraft(makeDraft({ conditionType: 'timeout' }), 0, identityTranslator)
+    expect(payload.timeout_seconds).toBe(0)
+  })
+
+  it('ignores a timeout threshold for non-timeout conditions', () => {
+    // 非超时条件即使填了秒数也写零，避免语义混淆喵。
+    const httpPayload = validateFailureRuleDraft(makeDraft({ conditionType: 'http', timeoutSeconds: '99', httpStatus: '503' }), 0, identityTranslator)
+    expect(httpPayload.timeout_seconds).toBe(0)
+  })
+
+  it('rejects a timeout threshold above 600 seconds', () => {
+    // 判定阈值超过候选超时上界必须拒绝喵。
+    expect(() => validateFailureRuleDraft(makeDraft({ conditionType: 'timeout', timeoutSeconds: '601' }), 0, identityTranslator)).toThrow()
+  })
+
+  it('rejects a non-integer timeout threshold', () => {
+    // 非整数阈值无法安全判定超时，必须拒绝喵。
+    expect(() => validateFailureRuleDraft(makeDraft({ conditionType: 'timeout', timeoutSeconds: '60.5' }), 0, identityTranslator)).toThrow()
   })
 
   it('clears the error class for the http condition', () => {

@@ -546,3 +546,40 @@ func TestResolveProbeParameters(t *testing.T) {
 	require.Equal(t, 5, secondResolved.StallTimeoutSeconds)
 	require.Equal(t, 8, secondResolved.MinContentChars)
 }
+
+// TestResolveFailureTimeoutSeconds 验证超时判定阈值按候选再到全局取首个非零并回退调用方超时喵。
+func TestResolveFailureTimeoutSeconds(t *testing.T) {
+	// 无规则配置时回退候选级执行超时喵。
+	require.Equal(t, 30, ResolveFailureTimeoutSeconds(nil, nil, 30))
+	// 候选规则优先于全局规则喵。
+	candidateRules := []model.VirtualModelFailureRule{{ErrorClass: "timeout", TimeoutSeconds: 120}}
+	globalRules := []model.VirtualModelFailureRule{{TimeoutSeconds: 300}}
+	require.Equal(t, 120, ResolveFailureTimeoutSeconds(candidateRules, globalRules, 60))
+	// 候选未配置时回退全局规则喵。
+	require.Equal(t, 300, ResolveFailureTimeoutSeconds(nil, globalRules, 60))
+	// 零值表示未配置，跳过后继续找非零值喵。
+	zeroFirstRules := []model.VirtualModelFailureRule{{TimeoutSeconds: 0}, {TimeoutSeconds: 90}}
+	require.Equal(t, 90, ResolveFailureTimeoutSeconds(zeroFirstRules, nil, 60))
+}
+
+// TestValidateFailureRuleTimeoutSeconds 验证超时判定阈值的范围边界喵。
+func TestValidateFailureRuleTimeoutSeconds(t *testing.T) {
+	baseRule := &model.VirtualModelFailureRule{CandidateID: 1, RuleOrder: 0, ErrorClass: "timeout", Action: model.VirtualModelActionNext}
+	// 零值表示沿用候选级执行超时，必须允许保存喵。
+	require.NoError(t, ValidateCandidateFailureRule(baseRule))
+	// 合法上界内的判定阈值允许保存喵。
+	configuredRule := *baseRule
+	configuredRule.TimeoutSeconds = 600
+	require.NoError(t, ValidateCandidateFailureRule(&configuredRule))
+	// 喵~防御：超过候选超时上界的阈值必须拒绝，避免永不触发的判定喵。
+	oversizeRule := *baseRule
+	oversizeRule.TimeoutSeconds = 601
+	require.Error(t, ValidateCandidateFailureRule(&oversizeRule))
+	// 喵~防御：负数阈值必须拒绝喵。
+	negativeRule := *baseRule
+	negativeRule.TimeoutSeconds = -1
+	require.Error(t, ValidateCandidateFailureRule(&negativeRule))
+	// 模型级全局规则同样校验超时阈值喵。
+	globalRule := &model.VirtualModelGlobalFailureRule{VirtualModelID: 1, RuleOrder: 0, ErrorClass: "timeout", Action: model.VirtualModelActionRetry, TimeoutSeconds: 120}
+	require.NoError(t, ValidateGlobalFailureRule(globalRule))
+}

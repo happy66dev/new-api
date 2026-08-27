@@ -466,7 +466,8 @@ func TokenAuth() func(c *gin.Context) {
 			}
 			// check group in common.GroupRatio
 			if !ratio_setting.ContainsGroupRatio(tokenGroup) {
-				if tokenGroup != "auto" {
+				// 内置虚拟分组不需要配置倍率：auto 走自动分组，user-shared 是共享模型专用分组（所有用户可用）喵。
+				if tokenGroupRequiresGroupRatio(tokenGroup) {
 					abortWithOpenAiMessage(c, http.StatusForbidden, fmt.Sprintf("分组 %s 已被弃用", tokenGroup))
 					return
 				}
@@ -481,6 +482,13 @@ func TokenAuth() func(c *gin.Context) {
 		}
 		c.Next()
 	}
+}
+
+// tokenGroupRequiresGroupRatio 判断 token 分组是否必须配置 GroupRatio 倍率才可使用喵。
+// 内置虚拟分组不依赖倍率配置：auto 走自动分组重定向，user-shared 是共享模型专用分组（所有用户可用）喵。
+// 其余分组必须配置倍率，否则视为已被弃用、拒绝访问喵。
+func tokenGroupRequiresGroupRatio(tokenGroup string) bool {
+	return tokenGroup != "auto" && tokenGroup != constant.GroupUserShared
 }
 
 func SetupContextForToken(c *gin.Context, token *model.Token, parts ...string) error {

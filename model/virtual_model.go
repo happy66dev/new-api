@@ -33,8 +33,13 @@ type VirtualModelCandidateAttemptRecord struct {
 	StatusCode   int    `json:"status_code"`   // 上游 HTTP 状态码，网络错误时为零喵。
 	ErrorClass   string `json:"error_class"`   // 稳定错误分类，供失败规则匹配喵。
 	ErrorMessage string `json:"error_message"` // 受控错误信息（受限于安全词表，不含密钥/URL/正文）喵。
-	ElapsedMs    int64  `json:"elapsed_ms"`    // 本次尝试耗时，单位：毫秒喵。
-	RetryCount   int    `json:"retry_count"`   // 失败规则对该候选的重试次数喵。
+	// TtftMs 本次尝试的首字耗时（毫秒），成功流式尝试才有，零表示未测到喵。
+	TtftMs int64 `json:"ttft_ms"`
+	// ElapsedMs 本次尝试的总耗时，单位：毫秒喵。
+	ElapsedMs int64 `json:"elapsed_ms"`
+	// ErrorBody 本次尝试的错误返回体（受限摘要），custom 候选填上游真实响应体，internal 填错误消息喵。
+	ErrorBody string `json:"error_body,omitempty"`
+	RetryCount int    `json:"retry_count"`   // 失败规则对该候选的重试次数喵。
 }
 
 // VirtualModelFailureAction 描述候选失败后的编排动作喵。
@@ -167,6 +172,8 @@ type VirtualModelFailureRule struct {
 	MinContentChars int `json:"min_content_chars"`
 	// ProbeTotalTimeoutSeconds 探测阶段总预算，单位：秒；零表示默认 300 喵。
 	ProbeTotalTimeoutSeconds int `json:"probe_total_timeout_seconds"`
+	// TimeoutSeconds 超时条件判定阈值，单位：秒；零表示沿用候选级执行超时喵。
+	TimeoutSeconds int `json:"timeout_seconds"`
 	Version    int64                  `json:"version" gorm:"default:1"`
 }
 
@@ -193,6 +200,8 @@ type VirtualModelGlobalFailureRule struct {
 	MinContentChars int `json:"min_content_chars"`
 	// ProbeTotalTimeoutSeconds 探测阶段总预算，单位：秒；零表示默认 300 喵。
 	ProbeTotalTimeoutSeconds int `json:"probe_total_timeout_seconds"`
+	// TimeoutSeconds 超时条件判定阈值，单位：秒；零表示沿用候选级执行超时喵。
+	TimeoutSeconds int `json:"timeout_seconds"`
 	Version    int64                  `json:"version" gorm:"default:1"`
 }
 

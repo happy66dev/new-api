@@ -1294,12 +1294,43 @@ export function DetailsDialog(props: DetailsDialogProps) {
                             {formatUseTime(candidate.elapsed_ms / 1000)}
                           </span>
                         )}
+                      {candidate.ttft_ms != null && candidate.ttft_ms > 0 && (
+                        <span className='text-muted-foreground'>
+                          {t('First token')}:{' '}
+                          {formatUseTime(candidate.ttft_ms / 1000)}
+                        </span>
+                      )}
                     </div>
                     {!candidate.success &&
                       (candidate.error_class || candidate.error_message) && (
                         <p className='text-red-600 dark:text-red-400'>
                           {candidate.error_message || candidate.error_class}
                         </p>
+                      )}
+                    {/* 错误返回体：custom 候选填上游真实响应体，internal 填错误消息，均可点击复制喵。 */}
+                    {candidate.error_body != null &&
+                      candidate.error_body !== '' && (
+                        <div className='bg-background/60 relative mt-1 rounded border p-1.5 pr-8 font-mono text-[11px] leading-relaxed break-all whitespace-pre-wrap'>
+                          <Button
+                            variant='ghost'
+                            size='sm'
+                            className='absolute top-1 right-1 h-5 w-5 p-0'
+                            onClick={() =>
+                              copyToClipboard(candidate.error_body ?? '')
+                            }
+                            title={t('Copy to clipboard')}
+                            aria-label={t('Copy to clipboard')}
+                          >
+                            {copiedText === candidate.error_body ? (
+                              <Check className='size-3 text-green-600' />
+                            ) : (
+                              <Copy className='size-3' />
+                            )}
+                          </Button>
+                          <span className='max-h-24 overflow-y-auto block'>
+                            {candidate.error_body}
+                          </span>
+                        </div>
                       )}
                     {candidate.retry_count != null &&
                       candidate.retry_count > 0 && (

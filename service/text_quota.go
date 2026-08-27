@@ -526,6 +526,11 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	// 虚拟模型内部候选成功：把结算 usage 写入 context，供状态探测填充 token 喵。
 	recordVirtualModelSuccessUsage(ctx, billingUsage)
 
+	// 请求级首字耗时（毫秒），未测到首字（流式未回包或非流式）时保持为零喵。
+	firstByteMs := int64(0)
+	if relayInfo.HasSendResponse() {
+		firstByteMs = relayInfo.FirstResponseTime.Sub(relayInfo.StartTime).Milliseconds()
+	}
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,
 		PromptTokens:     summary.PromptTokens,
@@ -536,6 +541,9 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		Content:          logContent,
 		TokenId:          relayInfo.TokenId,
 		UseTimeSeconds:   int(summary.UseTimeSeconds),
+		// 请求级毫秒耗时与首字耗时供虚拟模型 internal 候选尝试序列展示喵。
+		UseTimeMs:   time.Since(relayInfo.StartTime).Milliseconds(),
+		FirstByteMs: firstByteMs,
 		IsStream:         relayInfo.IsStream,
 		Group:            relayInfo.UsingGroup,
 		Other:            other,

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
@@ -248,4 +249,28 @@ func TestTryUserAuthCredentialClassification(t *testing.T) {
 	router.ServeHTTP(databaseFailureResponse, databaseFailureRequest)
 	assert.Equal(t, http.StatusInternalServerError, databaseFailureResponse.Code)
 	assert.Contains(t, databaseFailureResponse.Body.String(), "AUTH_INTERNAL_ERROR")
+}
+
+// TestTokenGroupRequiresGroupRatio 验证内置虚拟分组不需要 GroupRatio 倍率配置喵。
+// auto 与 user-shared 是硬编码虚拟分组，若被 ContainsGroupRatio 拦截会误报「已被弃用」喵。
+func TestTokenGroupRequiresGroupRatio(t *testing.T) {
+	tests := []struct {
+		name      string
+		tokenGroup string
+		want      bool
+	}{
+		// auto 自动分组重定向，不依赖倍率喵。
+		{name: "auto group never requires ratio", tokenGroup: "auto", want: false},
+		// user-shared 共享模型专用分组（所有用户可用），不依赖倍率喵。
+		{name: "user-shared group never requires ratio", tokenGroup: constant.GroupUserShared, want: false},
+		// 常规分组必须配置倍率，未配置即视为弃用喵。
+		{name: "regular group requires ratio", tokenGroup: "default", want: true},
+		// 空分组在非空分支外处理，helper 保守要求倍率喵。
+		{name: "empty group conservatively requires ratio", tokenGroup: "", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, tokenGroupRequiresGroupRatio(tt.tokenGroup))
+		})
+	}
 }

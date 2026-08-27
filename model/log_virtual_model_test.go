@@ -48,6 +48,9 @@ func TestRecordConsumeLogVirtualModelType(t *testing.T) {
 		Quota:            300,
 		Group:            "default",
 		Other:            map[string]interface{}{"prompt_tokens": 10},
+		// 请求级毫秒耗时与首字耗时随 internal 成功尝试写入候选序列喵。
+		UseTimeMs:   1234,
+		FirstByteMs: 300,
 	})
 
 	var log Log
@@ -61,6 +64,11 @@ func TestRecordConsumeLogVirtualModelType(t *testing.T) {
 	candidates, hasCandidates := parsedOther["candidates"].([]interface{})
 	require.True(t, hasCandidates, "candidates should be injected into other")
 	require.Len(t, candidates, 2)
+	// internal 成功尝试携带请求级总耗时与首字耗时，供详情展示模型级耗时喵。
+	internalSuccess := candidates[1].(map[string]interface{})
+	require.Equal(t, true, internalSuccess["success"])
+	require.Equal(t, float64(1234), internalSuccess["elapsed_ms"])
+	require.Equal(t, float64(300), internalSuccess["ttft_ms"])
 }
 
 // TestRecordVirtualModelLogType 验证 RecordVirtualModelLog 固定写 type=9 喵。
