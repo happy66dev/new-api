@@ -93,6 +93,9 @@ function makeStatus(
     last_success: true,
     last_latency_ms: 120,
     last_error: '',
+    // 最近一次失败调用独立保留，即使最近一次调用成功也展示失败历史喵。
+    last_failure_at: 0,
+    last_failure_error: '',
     // 实时概览字段：默认无活跃请求喵。
     current_requests: 0,
     active_requests: [],
@@ -110,6 +113,9 @@ function makeStatus(
         last_at: Math.floor(Date.now() / 1000) - 60,
         last_success: true,
         last_error: '',
+        // 最近一次失败调用独立保留喵。
+        last_failure_at: 0,
+        last_failure_error: '',
       },
     ],
     ...overrides,

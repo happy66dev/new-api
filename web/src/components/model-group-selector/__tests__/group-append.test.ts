@@ -20,6 +20,8 @@ import { describe, expect, test } from 'vitest'
 
 import {
   appendVirtualGroupIfEnabled,
+  appendUserUpstreamGroupIfEnabled,
+  USER_UPSTREAM_GROUP_VALUE,
   VIRTUAL_GROUP_VALUE,
 } from '../../model-group-selector'
 
@@ -58,5 +60,48 @@ describe('appendVirtualGroupIfEnabled', () => {
     appendVirtualGroupIfEnabled(groups, true, 'Virtual Models')
 
     expect(groups).toEqual(snapshot)
+  })
+})
+
+describe('appendUserUpstreamGroupIfEnabled', () => {
+  // 普通分组数据，与后端 getUserGroups 返回形状一致喵。
+  const groups = [
+    { label: 'Default', value: 'default', ratio: 1 },
+    { label: 'Premium', value: 'premium', ratio: 1 },
+  ]
+
+  test('keeps groups unchanged when showUserUpstreamModels is false', () => {
+    // 默认 false 时（非游乐场页面）不出现自定上游分类喵。
+    expect(appendUserUpstreamGroupIfEnabled(groups, false, 'User Upstream Models')).toEqual(
+      groups
+    )
+  })
+
+  test('appends the user upstream group at the end when enabled', () => {
+    // 仅游乐场生效：自定上游分类追加到分组列表末尾喵。
+    const result = appendUserUpstreamGroupIfEnabled(
+      groups,
+      true,
+      'User Upstream Models'
+    )
+
+    expect(result).toEqual([
+      { label: 'Default', value: 'default', ratio: 1 },
+      { label: 'Premium', value: 'premium', ratio: 1 },
+      { label: 'User Upstream Models', value: USER_UPSTREAM_GROUP_VALUE },
+    ])
+  })
+
+  test('appends virtual then user upstream when both are enabled', () => {
+    // 游乐场同时启用两个追加分类时，虚拟模型在前、自定上游在最后喵。
+    const withVirtual = appendVirtualGroupIfEnabled(groups, true, 'Virtual Models')
+    const result = appendUserUpstreamGroupIfEnabled(withVirtual, true, 'User Upstream Models')
+
+    expect(result).toEqual([
+      { label: 'Default', value: 'default', ratio: 1 },
+      { label: 'Premium', value: 'premium', ratio: 1 },
+      { label: 'Virtual Models', value: VIRTUAL_GROUP_VALUE },
+      { label: 'User Upstream Models', value: USER_UPSTREAM_GROUP_VALUE },
+    ])
   })
 })

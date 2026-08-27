@@ -7,7 +7,7 @@
  (at your option) any later version.
 */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Pencil, Plus, RefreshCw, Settings2, Target, Trash2, Users, Wand2, Wallet } from 'lucide-react'
+import { Pencil, Plus, Settings2, Target, Trash2, Users, Wand2, Wallet } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -42,7 +42,6 @@ import { EntityStatusDot, type EntityStatusSummary } from '@/features/status-che
 import { EntityPerformanceDrawer } from '@/features/status-check/entity-performance-drawer'
 
 import {
-  checkUserUpstreamModelBalance,
   clearUpstreamModelUserUsage,
   createUserUpstreamModel,
   deleteUserUpstreamModel,
@@ -797,26 +796,6 @@ export function UpstreamModels() {
   })
   const upstreamModels = upstreamModelsQuery.data?.data ?? []
 
-  // handleCheckBalance 嗅探上游剩余额度并刷新列表喵。
-  const handleCheckBalance = async (item: UserUpstreamModel) => {
-    // 喵~防御：同一时间只允许一个嗅探操作，避免并发覆盖展示喵。
-    if (balanceActionId !== null) return
-    setBalanceActionId(item.id)
-    try {
-      const response = await checkUserUpstreamModelBalance(item.id)
-      // 喵~防御：业务失败必须展示后端消息喵。
-      if (!response.success) {
-        throw new Error(response.message || t('Unable to check upstream model balance'))
-      }
-      toast.success(t('Upstream balance checked'))
-      void queryClient.invalidateQueries({ queryKey: ['upstream-models'] })
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : t('Unable to check upstream model balance'))
-    } finally {
-      setBalanceActionId(null)
-    }
-  }
-
   // handleSyncBalance 把嗅探结果一键同步为余额并刷新列表喵。
   const handleSyncBalance = async (item: UserUpstreamModel) => {
     // 喵~防御：同一时间只允许一个同步操作喵。
@@ -918,18 +897,8 @@ export function UpstreamModels() {
                 </div>
               </div>
               <div className='flex shrink-0 items-center gap-2'>
-                {/* 行状态指示器：Check 按钮左侧展示健康圆点喵。 */}
+                {/* 行状态指示器：余额操作按钮左侧展示健康圆点喵。 */}
                 <UpstreamModelStatusIndicator model={item} />
-                <Button
-                  size='sm'
-                  variant='outline'
-                  disabled={balanceActionId !== null}
-                  onClick={() => void handleCheckBalance(item)}
-                  title={t('Check remaining quota from upstream')}
-                >
-                  <RefreshCw className={balanceActionId === item.id ? 'size-3.5 animate-spin' : 'size-3.5'} />
-                  {t('Check')}
-                </Button>
                 <Button
                   size='sm'
                   variant='outline'

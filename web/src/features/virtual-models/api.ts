@@ -77,10 +77,11 @@ export type VirtualModelInput = {
   loop_enabled: boolean
   total_timeout_seconds: number
   max_loop_rounds: number
-  // 流转伪流配置：断流处理措施与重试次数喵。
+  // 流转伪流配置：开启后上游流式全量缓存到 [DONE] 再一次性伪流发出喵。
   fake_stream_enabled: boolean
-  stream_cut_action: 'retry' | 'next' | 'freeze' | 'passthrough' | ''
-  stream_cut_retries: number
+  // 目标模式断流处理措施已由全局兜底失败规则代替，保留可选字段仅兼容旧数据喵。
+  stream_cut_action?: 'retry' | 'next' | 'freeze' | 'passthrough' | ''
+  stream_cut_retries?: number
   version?: number
 }
 
@@ -109,6 +110,10 @@ export type VirtualModelStatus = {
   last_success: boolean
   last_latency_ms: number
   last_error: string
+  // last_failure_at 最近一次失败调用时间戳，即使最近一次调用成功也保留喵。
+  last_failure_at: number
+  // last_failure_error 最近一次失败调用错误分类，即使最近一次调用成功也保留喵。
+  last_failure_error: string
   // candidates 是启用候选快照的节点摘要，供 Overview 状态卡片展示喵。
   candidates: VirtualModelCandidateStatus[]
   // current_requests 当前处理中的客户端请求数，供概览实时统计喵。
@@ -145,6 +150,10 @@ export type VirtualModelCandidateStatus = {
   last_at: number
   last_success: boolean
   last_error: string
+  // last_failure_at 最近一次失败调用时间戳，即使最近一次调用成功也保留喵。
+  last_failure_at: number
+  // last_failure_error 最近一次失败调用错误分类，即使最近一次调用成功也保留喵。
+  last_failure_error: string
 }
 
 // EntityProbeBucket 是实体被动统计的单个小时桶明细，与后端 series 字段对应喵。
@@ -219,6 +228,8 @@ export type VirtualModelFailureRule = {
   probe_total_timeout_seconds?: number
   // timeout_seconds 超时条件判定阈值，单位：秒；零或省略表示沿用候选级执行超时喵。
   timeout_seconds?: number
+  // retry_count 规则重试当前候选的最大重试次数，零或省略表示未配置时沿用候选 MaxRetries 喵。
+  retry_count?: number
 }
 
 export type VirtualModelFailureRulesReplaceInput = {

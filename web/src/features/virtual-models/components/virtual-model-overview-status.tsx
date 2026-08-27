@@ -304,6 +304,24 @@ export function VirtualModelOverviewStatus(
             </div>
           )}
 
+          {/* overview 变体：最近一次失败调用，即使最近一次调用成功也保留展示喵。 */}
+          {variant === 'overview' && (props.status?.last_failure_at ?? 0) > 0 && (
+            <div className='flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs'>
+              <span className='inline-block size-2 rounded-full bg-red-500' aria-hidden='true' />
+              <span className='text-muted-foreground'>
+                {t('Last failed call')}: {formatTimestampToDate(props.status?.last_failure_at ?? 0)}
+              </span>
+              {props.status?.last_failure_error ? (
+                <span
+                  className='text-muted-foreground truncate'
+                  title={props.status.last_failure_error}
+                >
+                  {props.status.last_failure_error}
+                </span>
+              ) : null}
+            </div>
+          )}
+
           {/* runtime 变体：候选节点摘要，点击行打开该候选的性能抽屉喵。 */}
           {variant === 'runtime' && (props.status?.candidates?.length ?? 0) > 0 && (
             <div className='space-y-1'>

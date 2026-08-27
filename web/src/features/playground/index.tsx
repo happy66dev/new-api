@@ -20,7 +20,7 @@ import { Box, ImageIcon, MessageSquare, Volume2 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { VIRTUAL_GROUP_VALUE } from '@/components/model-group-selector'
+import { USER_UPSTREAM_GROUP_VALUE, VIRTUAL_GROUP_VALUE } from '@/components/model-group-selector'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useStatus } from '@/hooks/use-status'
 
@@ -137,8 +137,8 @@ export function Playground() {
 
   useEffect(() => {
     if (activeFeature !== 'chat') return
-    // 虚拟分组是前端追加的分类，不在后端分组数据里，跳过回退避免被重置喵。
-    if (config.group === VIRTUAL_GROUP_VALUE) return
+    // 虚拟分组与自定上游分组都是前端追加的分类，不在后端分组数据里，跳过回退避免被重置喵。
+    if (config.group === VIRTUAL_GROUP_VALUE || config.group === USER_UPSTREAM_GROUP_VALUE) return
     const fallback = getGroupFallback(chatGroups, config.group)
     if (fallback) {
       updateConfig('group', fallback)

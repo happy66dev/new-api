@@ -57,12 +57,8 @@ export function VirtualModelDrawer({
   const [loopEnabled, setLoopEnabled] = useState(false)
   const [totalTimeoutSeconds, setTotalTimeoutSeconds] = useState('120')
   const [maxLoopRounds, setMaxLoopRounds] = useState('1')
-  // 流转伪流配置：全量缓存到 [DONE] 后一次性伪流发出，断流按处理措施决策喵。
+  // 流转伪流配置：全量缓存到 [DONE] 后一次性伪流发出，断流失败由全局兜底失败规则统一决策喵。
   const [fakeStreamEnabled, setFakeStreamEnabled] = useState(false)
-  const [streamCutAction, setStreamCutAction] = useState<
-    'retry' | 'next' | 'freeze' | 'passthrough' | ''
-  >('')
-  const [streamCutRetries, setStreamCutRetries] = useState('0')
   const [isSavingBasics, setIsSavingBasics] = useState(false)
 
   // 打开状态或编辑对象变化时重置本地草稿，避免把上一次模型字段带入新模型喵。
@@ -75,8 +71,6 @@ export function VirtualModelDrawer({
     setTotalTimeoutSeconds(String(model?.total_timeout_seconds ?? 120))
     setMaxLoopRounds(String(model?.max_loop_rounds ?? 1))
     setFakeStreamEnabled(model?.fake_stream_enabled ?? false)
-    setStreamCutAction(model?.stream_cut_action ?? '')
-    setStreamCutRetries(String(model?.stream_cut_retries ?? 0))
   }, [model, open])
 
   // saveBasics 保存或创建模型基本信息，成功后刷新列表让选项卡展示最新配置喵。
@@ -104,12 +98,6 @@ export function VirtualModelDrawer({
       toast.error(t('Maximum loop rounds must be between 1 and 100'))
       return
     }
-    // 喵~防御：流转伪流断流重试次数必须是 0 到 20 的整数喵。
-    const cutRetries = Number(streamCutRetries)
-    if (!Number.isInteger(cutRetries) || cutRetries < 0 || cutRetries > 20) {
-      toast.error(t('Stream cut retries must be between 0 and 20'))
-      return
-    }
     // 组装创建或更新请求载荷，编辑模式携带版本号做乐观并发控制喵。
     const input: VirtualModelInput = {
       normalized_name: trimmedNormalizedName,
@@ -119,8 +107,6 @@ export function VirtualModelDrawer({
       total_timeout_seconds: totalTimeout,
       max_loop_rounds: maxRounds,
       fake_stream_enabled: fakeStreamEnabled,
-      stream_cut_action: streamCutAction,
-      stream_cut_retries: cutRetries,
       ...(model ? { version: model.version } : {}),
     }
     try {
@@ -219,41 +205,8 @@ export function VirtualModelDrawer({
                     <Switch checked={fakeStreamEnabled} onCheckedChange={setFakeStreamEnabled} disabled={isSavingBasics} />
                   </label>
                   <p className='text-muted-foreground text-xs'>
-                    {t('When enabled, upstream streaming is fully buffered until [DONE] then replayed to the client at once, resisting network fluctuation cut-offs. Logs still record streaming.')}
+                    {t('When enabled, upstream streaming is fully buffered until [DONE] then replayed to the client at once, resisting network fluctuation cut-offs. Logs still record streaming. Stream cut failures are handled by the global fallback failure rules.')}
                   </p>
-                  {/* 开启流转伪流后展示断流处理措施，参考失败规则的动作语义喵。 */}
-                  {fakeStreamEnabled && (
-                    <>
-                      <label className='grid gap-1 text-sm font-medium'>
-                        {t('Stream cut handling')}
-                        <select
-                          className='h-9 rounded-md border border-input bg-background px-3 text-sm'
-                          value={streamCutAction}
-                          onChange={(event) =>
-                            setStreamCutAction(
-                              event.target.value as
-                                | 'retry'
-                                | 'next'
-                                | 'freeze'
-                                | 'passthrough'
-                                | ''
-                            )
-                          }
-                          disabled={isSavingBasics}
-                        >
-                          <option value=''>{t('Follow failure rules')}</option>
-                          <option value='retry'>{t('Retry')}</option>
-                          <option value='next'>{t('Next candidate')}</option>
-                          <option value='freeze'>{t('Freeze candidate')}</option>
-                          <option value='passthrough'>{t('Passthrough')}</option>
-                        </select>
-                      </label>
-                      <label className='grid gap-1 text-sm font-medium'>
-                        {t('Stream cut retries')}
-                        <Input inputMode='numeric' value={streamCutRetries} onChange={(event) => setStreamCutRetries(event.target.value)} disabled={isSavingBasics} />
-                      </label>
-                    </>
-                  )}
                 </div>
               </SideDrawerSection>
             </TabsContent>

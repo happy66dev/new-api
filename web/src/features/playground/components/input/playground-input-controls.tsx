@@ -81,8 +81,9 @@ export function PlaygroundInputControls({
       groups={groups}
       onGroupChange={onGroupChange}
       disabled={isSelectorDisabled}
-      // 仅游乐场聊天输入启用「虚拟模型」分组分类，其余页面不显示喵。
+      // 仅游乐场聊天输入启用「虚拟模型」与「自定上游」分组分类，其余页面不显示喵。
       showVirtualModels
+      showUserUpstreamModels
     />
   )
 

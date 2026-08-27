@@ -74,6 +74,8 @@ export function FailureRuleEditorRow({
             <option value='stalled'>{t('Stalled stream')}</option>
             <option value='stream-cut'>{t('Stream cut')}</option>
           </select>
+          {/* 断流条件仅在目标模式开启流转伪流时才会出现，需提示用户避免困惑喵。 */}
+          {rule.conditionType === 'stream-cut' && <span className='text-xs text-muted-foreground'>{t('Only effective when fake stream is enabled in Target Mode')}</span>}
         </label>
         {/* HTTP 条件：展示状态码输入与常用预设喵。 */}
         {rule.conditionType === 'http' && (
@@ -166,7 +168,18 @@ export function FailureRuleEditorRow({
             <option value='freeze'>{t('Freeze candidate')}</option>
             <option value='passthrough'>{t('Return upstream error')}</option>
           </select>
+          {/* 重试次数只在 retry 动作时展示，表示本规则最多重试当前候选的次数喵。 */}
+          {rule.action === 'retry' && (
+            <span className='text-xs text-muted-foreground'>{t('Capped at the rule retry count, otherwise the candidate default')}</span>
+          )}
         </label>
+        {/* 重试动作的最大重试次数输入：零表示未配置时沿用候选 MaxRetries 喵。 */}
+        {rule.action === 'retry' && (
+          <label className='grid gap-1 text-sm font-medium'>
+            {t('Max retries')}
+            <Input inputMode='numeric' value={rule.retryCount} disabled={isSaving} placeholder={t('0 = candidate default, up to 20')} onChange={(event) => onChange({ retryCount: event.target.value })} />
+          </label>
+        )}
         {/* 冻结秒数只在冻结动作时展示，避免其它动作暴露无意义的冻结配置喵。 */}
         {rule.action === 'freeze' && (
           <>

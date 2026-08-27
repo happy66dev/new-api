@@ -94,16 +94,40 @@ export interface GroupOption {
 // 虚拟模型分组的 value，仅游乐场在分组下拉追加此分类，其余位置一律不显示喵。
 export const VIRTUAL_GROUP_VALUE = 'virtual'
 
+// 自定上游（user/xxx）分组的 value，仅游乐场在分组下拉追加此分类，其余位置一律不显示喵。
+export const USER_UPSTREAM_GROUP_VALUE = 'user-upstream'
+
+// appendGroupIfEnabled 当 show 为 true 时在分组列表末尾追加指定 value 的分类喵。
+export function appendGroupIfEnabled(
+  groups: GroupOption[],
+  show: boolean,
+  value: string,
+  label: string
+): GroupOption[] {
+  // 喵~防御：默认 false 时原样返回，保证渠道测试、模型测试等页面不出现追加分类喵。
+  if (!show) return groups
+  // 追加的分类项 value 固定，选中后由外部（游乐场）切换模型列表喵。
+  return [...groups, { value, label }]
+}
+
 // appendVirtualGroupIfEnabled 仅当 showVirtualModels 为 true 时在分组列表末尾追加「虚拟模型」分类喵。
 export function appendVirtualGroupIfEnabled(
   groups: GroupOption[],
   showVirtualModels: boolean,
   virtualLabel: string
 ): GroupOption[] {
-  // 喵~防御：默认 false 时原样返回，保证渠道测试、模型测试等页面不出现虚拟模型分类喵。
-  if (!showVirtualModels) return groups
-  // 追加的分类项 value 固定为 'virtual'，选中后由外部（游乐场）切换模型列表为虚拟模型喵。
-  return [...groups, { value: VIRTUAL_GROUP_VALUE, label: virtualLabel }]
+  // 复用通用追加逻辑，分类 value 固定为虚拟模型喵。
+  return appendGroupIfEnabled(groups, showVirtualModels, VIRTUAL_GROUP_VALUE, virtualLabel)
+}
+
+// appendUserUpstreamGroupIfEnabled 仅当 showUserUpstreamModels 为 true 时追加「自定上游」分类喵。
+export function appendUserUpstreamGroupIfEnabled(
+  groups: GroupOption[],
+  showUserUpstreamModels: boolean,
+  userUpstreamLabel: string
+): GroupOption[] {
+  // 复用通用追加逻辑，分类 value 固定为自定上游喵。
+  return appendGroupIfEnabled(groups, showUserUpstreamModels, USER_UPSTREAM_GROUP_VALUE, userUpstreamLabel)
 }
 
 interface ModelSelectorProps {
@@ -594,6 +618,8 @@ export interface ModelGroupSelectorProps {
   disabled?: boolean
   // showVirtualModels 为 true 时在分组下拉追加「虚拟模型」分类，仅游乐场使用喵。
   showVirtualModels?: boolean
+  // showUserUpstreamModels 为 true 时在分组下拉追加「自定上游」分类，仅游乐场使用喵。
+  showUserUpstreamModels?: boolean
 }
 
 /**
@@ -610,6 +636,7 @@ export const ModelGroupSelector: React.FC<ModelGroupSelectorProps> = ({
   className,
   disabled = false,
   showVirtualModels = false,
+  showUserUpstreamModels = false,
 }) => {
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
@@ -619,11 +646,11 @@ export const ModelGroupSelector: React.FC<ModelGroupSelectorProps> = ({
   const selectedGroupOptionRef = useRef<HTMLButtonElement | null>(null)
   const selectedModelOptionRef = useRef<HTMLDivElement | null>(null)
 
-  // 仅游乐场生效：分组列表末尾追加「虚拟模型」分类，选中后由外部切换模型列表为虚拟模型喵。
-  const effectiveGroups = useMemo(
-    () => appendVirtualGroupIfEnabled(groups, showVirtualModels, t('Virtual Models')),
-    [groups, showVirtualModels, t]
-  )
+  // 仅游乐场生效：分组列表末尾追加「虚拟模型」与「自定上游」分类，选中后由外部切换模型列表喵。
+  const effectiveGroups = useMemo(() => {
+    const withVirtual = appendVirtualGroupIfEnabled(groups, showVirtualModels, t('Virtual Models'))
+    return appendUserUpstreamGroupIfEnabled(withVirtual, showUserUpstreamModels, t('User Upstream Models'))
+  }, [groups, showVirtualModels, showUserUpstreamModels, t])
 
   const currentModel = useMemo(
     () => models.find((model) => model.value === selectedModel),

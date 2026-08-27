@@ -46,6 +46,8 @@ function makeDraft(overrides: Partial<FailureRuleDraft> = {}): FailureRuleDraft 
     probeTotalTimeoutSeconds: '0',
     // 超时条件判定阈值默认零，表示沿用候选级执行超时喵。
     timeoutSeconds: '0',
+    // 规则级重试次数默认零，表示未配置时沿用候选 MaxRetries 喵。
+    retryCount: '0',
     action: 'next',
     ...overrides,
   }
@@ -79,6 +81,8 @@ describe('toFailureRuleDraft', () => {
       minContentChars: '0',
       probeTotalTimeoutSeconds: '0',
       timeoutSeconds: '0',
+      // 规则级重试次数未配置时草稿默认零，表示沿用候选 MaxRetries 喵。
+      retryCount: '0',
       id: 7,
       action: 'freeze',
     })
@@ -116,6 +120,8 @@ describe('toFailureRuleDraft', () => {
       minContentChars: '0',
       probeTotalTimeoutSeconds: '0',
       timeoutSeconds: '0',
+      // 规则级重试次数未配置时草稿默认零，表示沿用候选 MaxRetries 喵。
+      retryCount: '0',
       id: undefined,
       action: 'next',
     })
@@ -154,6 +160,8 @@ describe('createFailureRuleDraft', () => {
       minContentChars: '0',
       probeTotalTimeoutSeconds: '0',
       timeoutSeconds: '0',
+      // 规则级重试次数未配置时草稿默认零，表示沿用候选 MaxRetries 喵。
+      retryCount: '0',
       action: 'next',
     })
   })
@@ -278,7 +286,15 @@ describe('validateFailureRuleDraft', () => {
       probe_total_timeout_seconds: 0,
       // HTTP 条件不写超时阈值，保持默认沿用候选级超时喵。
       timeout_seconds: 0,
+      // retry 动作未配置规则级重试次数时写零，表示沿用候选 MaxRetries 喵。
+      retry_count: 0,
     })
+  })
+
+  it('writes a configured retry count for the retry action', () => {
+    // retry 动作配置 3 次规则级重试，运行时覆盖候选 MaxRetries 喵。
+    const payload = validateFailureRuleDraft(makeDraft({ action: 'retry', retryCount: '3' }), 0, identityTranslator)
+    expect(payload.retry_count).toBe(3)
   })
 
   it('maps the timeout condition to its stable error class', () => {
