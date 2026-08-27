@@ -230,3 +230,27 @@ func (b *atomicBucket) addCounters(c counters) {
 		b.inputTokens.Add(c.inputTokens)
 	}
 }
+
+// EntityProbeBucket 单个小时桶的实体被动统计明细，供图表系列展示喵。
+type EntityProbeBucket struct {
+	Ts           int64   `json:"ts"`
+	RequestCount int64   `json:"request_count"`
+	SuccessRate  float64 `json:"success_rate"`
+	AvgLatencyMs int64   `json:"avg_latency_ms"`
+	AvgTtftMs    int64   `json:"avg_ttft_ms"`
+	CacheHitRate float64 `json:"cache_hit_rate"`
+	InputTokens  int64   `json:"input_tokens"`
+	OutputTokens int64   `json:"output_tokens"`
+	CachedTokens int64   `json:"cached_tokens"`
+}
+
+// EntityProbeDetailed 单个实体在窗口内的被动统计聚合与逐桶系列喵。
+type EntityProbeDetailed struct {
+	Availability float64             `json:"availability"`
+	AvgLatencyMs int64               `json:"avg_latency_ms"`
+	AvgTtftMs    int64               `json:"avg_ttft_ms"`
+	CacheHitRate float64             `json:"cache_hit_rate"`
+	RequestCount int64               `json:"request_count"`
+	TotalTokens  int64               `json:"total_tokens"`
+	Series       []EntityProbeBucket `json:"series"`
+}

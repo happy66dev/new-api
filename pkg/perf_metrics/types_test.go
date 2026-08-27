@@ -33,14 +33,14 @@ func TestAtomicBucketTracksCacheTokenTotals(t *testing.T) {
 }
 
 func TestHasCacheHitSupportsChatAndResponsesUsage(t *testing.T) {
-	assert.True(t, hasCacheHit(&dto.Usage{
+	assert.True(t, HasCacheHit(&dto.Usage{
 		PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 10},
 	}))
-	assert.True(t, hasCacheHit(&dto.Usage{
+	assert.True(t, HasCacheHit(&dto.Usage{
 		InputTokensDetails: &dto.InputTokenDetails{CachedTokens: 10},
 	}))
-	assert.False(t, hasCacheHit(&dto.Usage{}))
-	assert.False(t, hasCacheHit(nil))
+	assert.False(t, HasCacheHit(&dto.Usage{}))
+	assert.False(t, HasCacheHit(nil))
 }
 
 func TestCacheTokenUsageUsesCanonicalInputTokens(t *testing.T) {
@@ -105,7 +105,7 @@ func TestCacheTokenUsageUsesCanonicalInputTokens(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cachedTokens, inputTokens := cacheTokenUsage(tt.usage)
+			cachedTokens, inputTokens := CacheTokenUsage(tt.usage)
 			assert.Equal(t, tt.wantCached, cachedTokens)
 			assert.Equal(t, tt.wantInput, inputTokens)
 		})

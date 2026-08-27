@@ -91,9 +91,14 @@ export type UpstreamModelStatus = {
   // 可用性是 0-100 的百分比喵。
   availability: number
   avg_latency_ms: number
+  avg_ttft_ms: number
+  cache_hit_rate: number
+  total_tokens: number
   request_count: number
   // availability_24h 是最近 24 个采样点的可用性序列，供 AvailabilityBars 展示喵。
   availability_24h: number[]
+  // series 是逐小时桶明细，供性能抽屉图表喵。
+  series: EntityProbeBucket[]
   last_at: number
   last_success: boolean
   last_latency_ms: number
@@ -102,11 +107,29 @@ export type UpstreamModelStatus = {
   shared?: UpstreamModelSharedStatus
 }
 
+// EntityProbeBucket 是实体被动统计的单个小时桶明细，与后端 series 字段对应喵。
+export type EntityProbeBucket = {
+  ts: number
+  request_count: number
+  success_rate: number
+  avg_latency_ms: number
+  avg_ttft_ms: number
+  cache_hit_rate: number
+  input_tokens: number
+  output_tokens: number
+  cached_tokens: number
+}
+
 // UpstreamModelSharedStatus 是共享使用者视角的状态，不含错误明细与 24h 序列喵。
 export type UpstreamModelSharedStatus = {
   availability: number
   avg_latency_ms: number
+  avg_ttft_ms: number
+  cache_hit_rate: number
+  total_tokens: number
   request_count: number
+  // series 是共享调用维度的逐小时桶明细喵。
+  series: EntityProbeBucket[]
   last_at: number
   last_success: boolean
 }

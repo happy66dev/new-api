@@ -6089,6 +6089,17 @@
     "Describe what this model is about": "Describe what this model is about",
     "Direct fill upstream URL and API Key": "Direct fill upstream URL and API Key",
     "Credentials and real model name are resolved from the selected user upstream model.": "Credentials and real model name are resolved from the selected user upstream model.",
-    "Referenced upstream model": "Referenced upstream model"
+    "Referenced upstream model": "Referenced upstream model",
+    "Token usage": "Token usage",
+    "Request volume": "Request volume",
+    "Time to first token over the last 24 hours": "Time to first token over the last 24 hours",
+    "Request success rate over the last 24 hours": "Request success rate over the last 24 hours",
+    "Cached tokens over input tokens per hour": "Cached tokens over input tokens per hour",
+    "Input, cached, and output tokens per hour": "Input, cached, and output tokens per hour",
+    "Requests per hour": "Requests per hour",
+    "Output tokens per second per hour": "Output tokens per second per hour",
+    "Candidate performance over the last 24 hours": "Candidate performance over the last 24 hours",
+    "Upstream model performance over the last 24 hours": "Upstream model performance over the last 24 hours",
+    "No token usage data available": "No token usage data available"
   }
 }

@@ -138,10 +138,10 @@ export function VirtualModels() {
                   {/* 基本信息下方的整体状态卡片：指标 + 24h 柱状图 + 候选摘要喵。 */}
                   <div className='mt-4'>
                     <VirtualModelOverviewStatus
+                      modelID={selectedModel.id}
                       status={virtualModelStatus}
                       loading={virtualModelStatusQuery.isLoading}
                       error={virtualModelStatusQuery.isError}
-                      onNavigateToCandidates={() => setActiveTab('candidates')}
                       onRefresh={() => void virtualModelStatusQuery.refetch()}
                     />
                   </div>

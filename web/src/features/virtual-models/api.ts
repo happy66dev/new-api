@@ -88,8 +88,13 @@ export type VirtualModelStatus = {
   // 以下为实体状态检测新增字段：整体可用性/延迟/请求数/24h 序列/最近一次喵。
   availability: number
   avg_latency_ms: number
+  avg_ttft_ms: number
+  cache_hit_rate: number
+  total_tokens: number
   request_count: number
   availability_24h: number[]
+  // series 是逐小时桶明细，供 Overview 图表与性能抽屉展示喵。
+  series: EntityProbeBucket[]
   last_at: number
   last_success: boolean
   last_latency_ms: number
@@ -98,16 +103,34 @@ export type VirtualModelStatus = {
   candidates: VirtualModelCandidateStatus[]
 }
 
-// VirtualModelCandidateStatus 是单个候选节点的状态摘要，不含 24h 序列喵。
+// VirtualModelCandidateStatus 是单个候选节点的状态摘要，含富系列明细喵。
 export type VirtualModelCandidateStatus = {
   candidate_id: number
   label: string
   availability: number
   avg_latency_ms: number
+  avg_ttft_ms: number
+  cache_hit_rate: number
+  total_tokens: number
   request_count: number
+  // series 是候选节点的逐小时桶明细，供性能抽屉图表喵。
+  series: EntityProbeBucket[]
   last_at: number
   last_success: boolean
   last_error: string
+}
+
+// EntityProbeBucket 是实体被动统计的单个小时桶明细，与后端 series 字段对应喵。
+export type EntityProbeBucket = {
+  ts: number
+  request_count: number
+  success_rate: number
+  avg_latency_ms: number
+  avg_ttft_ms: number
+  cache_hit_rate: number
+  input_tokens: number
+  output_tokens: number
+  cached_tokens: number
 }
 
 export type VirtualModelApiResponse<T> = {

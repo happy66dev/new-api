@@ -54,6 +54,7 @@ import { Switch } from '@/components/ui/switch'
 import { getUserGroups, getUserModels } from '@/features/playground/api'
 import { shouldClearModelForGroup } from '@/features/playground/lib/options/playground-option-utils'
 import { EntityStatusDot, type EntityStatusSummary } from '@/features/status-check/entity-status-dot'
+import { EntityPerformanceDrawer } from '@/features/status-check/entity-performance-drawer'
 import { getUserUpstreamModels } from '@/features/upstream-models/api'
 
 import {
@@ -242,8 +243,11 @@ function validateCandidateDraft(
 }
 
 // CandidateStatusDot 为单个候选节点拉取状态并渲染健康圆点喵。
-// 候选状态载荷不含 24h 序列，因此只展示圆点与悬停摘要喵。
+// 候选状态载荷含富系列，点击圆点打开该候选的性能抽屉喵。
 function CandidateStatusDot({ modelID, candidateID }: { modelID: number; candidateID: number }) {
+  const { t } = useTranslation()
+  // isDrawerOpen 记录候选性能抽屉的开关喵。
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false)
   const statusQuery = useQuery({
     queryKey: ['virtual-model-candidate-status', modelID, candidateID],
     queryFn: () => getVirtualModelCandidateStatus(modelID, candidateID),
@@ -263,15 +267,28 @@ function CandidateStatusDot({ modelID, candidateID }: { modelID: number; candida
       }
     : undefined
   return (
-    <EntityStatusDot
-      // 悬停摘要展示候选真实模型名，方便识别节点喵。
-      label={status?.label}
-      summary={summary}
-      loading={statusQuery.isLoading}
-      error={Boolean(statusQuery.isError)}
-      // 候选行空间紧凑，只展示圆点不展示可用性百分比文字喵。
-      showAvailabilityText={false}
-    />
+    <>
+      <EntityStatusDot
+        // 悬停摘要展示候选真实模型名，方便识别节点喵。
+        label={status?.label}
+        summary={summary}
+        loading={statusQuery.isLoading}
+        error={Boolean(statusQuery.isError)}
+        // 候选行空间紧凑，只展示圆点不展示可用性百分比文字喵。
+        showAvailabilityText={false}
+        onOpenPerformance={() => setIsDrawerOpen(true)}
+      />
+      {/* 候选性能抽屉：展示 TTFT/缓存命中率/Token/请求量图表喵。 */}
+      <EntityPerformanceDrawer
+        open={isDrawerOpen}
+        onOpenChange={setIsDrawerOpen}
+        title={status?.label ?? t('Candidate performance')}
+        description={t('Candidate performance over the last 24 hours')}
+        data={status ?? null}
+        loading={statusQuery.isLoading}
+        error={Boolean(statusQuery.isError)}
+      />
+    </>
   )
 }
 

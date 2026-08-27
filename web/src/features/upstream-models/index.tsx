@@ -37,6 +37,7 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { EntityStatusDot, type EntityStatusSummary } from '@/features/status-check/entity-status-dot'
+import { EntityPerformanceDrawer } from '@/features/status-check/entity-performance-drawer'
 
 import {
   checkUserUpstreamModelBalance,
@@ -426,7 +427,11 @@ function mapUpstreamModelSharedStatus(status: UpstreamModelSharedStatus): Entity
 }
 
 // UpstreamModelStatusIndicator 为单个上游模型行拉取状态并渲染健康圆点喵。
+// 点击圆点打开该上游模型的性能抽屉喵。
 function UpstreamModelStatusIndicator({ model }: { model: UserUpstreamModel }) {
+  const { t } = useTranslation()
+  // isDrawerOpen 记录性能抽屉开关喵。
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false)
   const statusQuery = useQuery({
     // 以模型 id 为键，属主行附带共享维度喵。
     queryKey: ['upstream-model-status', model.id],
@@ -436,15 +441,28 @@ function UpstreamModelStatusIndicator({ model }: { model: UserUpstreamModel }) {
   })
   const status = statusQuery.data?.data
   return (
-    <EntityStatusDot
-      label={model.display_name || model.normalized_name}
-      // 喵~防御：接口未返回数据时保持未加载状态喵。
-      summary={status ? mapUpstreamModelStatus(status) : undefined}
-      // 共享维度仅在属主请求 include_shared=true 且共享有调用时由后端携带喵。
-      shared={status?.shared ? mapUpstreamModelSharedStatus(status.shared) : undefined}
-      loading={statusQuery.isLoading}
-      error={Boolean(statusQuery.isError)}
-    />
+    <>
+      <EntityStatusDot
+        label={model.display_name || model.normalized_name}
+        // 喵~防御：接口未返回数据时保持未加载状态喵。
+        summary={status ? mapUpstreamModelStatus(status) : undefined}
+        // 共享维度仅在属主请求 include_shared=true 且共享有调用时由后端携带喵。
+        shared={status?.shared ? mapUpstreamModelSharedStatus(status.shared) : undefined}
+        loading={statusQuery.isLoading}
+        error={Boolean(statusQuery.isError)}
+        onOpenPerformance={() => setIsDrawerOpen(true)}
+      />
+      {/* 性能抽屉：展示上游模型自用维度的 TTFT/缓存命中率/Token/请求量图表喵。 */}
+      <EntityPerformanceDrawer
+        open={isDrawerOpen}
+        onOpenChange={setIsDrawerOpen}
+        title={model.display_name || model.normalized_name}
+        description={t('Upstream model performance over the last 24 hours')}
+        data={status ?? null}
+        loading={statusQuery.isLoading}
+        error={Boolean(statusQuery.isError)}
+      />
+    </>
   )
 }
 

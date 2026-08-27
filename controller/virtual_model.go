@@ -1134,8 +1134,12 @@ type virtualModelStatusPayload struct {
 	EnabledCandidates int                              `json:"enabled_candidates"`
 	Availability      float64                          `json:"availability"`
 	AvgLatencyMs      int64                            `json:"avg_latency_ms"`
+	AvgTtftMs         int64                            `json:"avg_ttft_ms"`
+	CacheHitRate      float64                          `json:"cache_hit_rate"`
+	TotalTokens       int64                            `json:"total_tokens"`
 	RequestCount      int64                            `json:"request_count"`
 	Availability24    []float64                        `json:"availability_24h"`
+	Series            []perfmetrics.EntityProbeBucket  `json:"series"`
 	LastAt            int64                            `json:"last_at"`
 	LastSuccess       bool                             `json:"last_success"`
 	LastLatencyMs     int64                            `json:"last_latency_ms"`
@@ -1145,14 +1149,18 @@ type virtualModelStatusPayload struct {
 
 // virtualModelCandidateStatusPayload 虚拟模型候选节点状态摘要喵。
 type virtualModelCandidateStatusPayload struct {
-	CandidateID  int     `json:"candidate_id"`
-	Label        string  `json:"label"`
-	Availability float64 `json:"availability"`
-	AvgLatencyMs int64   `json:"avg_latency_ms"`
-	RequestCount int64   `json:"request_count"`
-	LastAt       int64   `json:"last_at"`
-	LastSuccess  bool    `json:"last_success"`
-	LastError    string  `json:"last_error"`
+	CandidateID  int                              `json:"candidate_id"`
+	Label        string                           `json:"label"`
+	Availability float64                          `json:"availability"`
+	AvgLatencyMs int64                            `json:"avg_latency_ms"`
+	AvgTtftMs    int64                            `json:"avg_ttft_ms"`
+	CacheHitRate float64                          `json:"cache_hit_rate"`
+	TotalTokens  int64                            `json:"total_tokens"`
+	RequestCount int64                            `json:"request_count"`
+	Series       []perfmetrics.EntityProbeBucket  `json:"series"`
+	LastAt       int64                            `json:"last_at"`
+	LastSuccess  bool                             `json:"last_success"`
+	LastError    string                           `json:"last_error"`
 }
 
 // resolveVirtualCandidateUpstreamLabel 候选引用用户上游模型且直填真实模型名为空时，回退解析上游模型显示名喵。
@@ -1185,6 +1193,17 @@ func buildVirtualModelStatusPayload(virtualModel *model.VirtualModel, snapshot *
 	payload.AvgLatencyMs = status.AvgLatencyMs
 	payload.RequestCount = status.RequestCount
 	payload.Availability24 = status.Availability24
+	// 富系列：TTFT、缓存命中率与 token 消耗逐桶明细，供 Overview 图表喵。
+	detailed, detailedError := perfmetrics.QueryEntityProbeStatusDetailed(virtualModel.VirtualModelName(), perfmetrics.EntityProbeGroupSelf, entityProbeWindowHours)
+	// 喵~防御：富系列查询失败按空数据返回，不阻塞状态展示喵。
+	if detailedError != nil {
+		common.SysError("query virtual model entity probe detailed failed: " + detailedError.Error())
+	} else {
+		payload.AvgTtftMs = detailed.AvgTtftMs
+		payload.CacheHitRate = detailed.CacheHitRate
+		payload.TotalTokens = detailed.TotalTokens
+		payload.Series = detailed.Series
+	}
 	if state, stateError := model.GetEntityProbeState(model.EntityProbeScopeVirtual, int64(virtualModel.ID)); stateError == nil && state != nil {
 		payload.LastAt = state.LastAt
 		payload.LastSuccess = state.LastSuccess
@@ -1221,6 +1240,17 @@ func buildVirtualModelCandidateStatusPayload(virtualModel *model.VirtualModel, c
 	candidatePayload.Availability = status.Availability
 	candidatePayload.AvgLatencyMs = status.AvgLatencyMs
 	candidatePayload.RequestCount = status.RequestCount
+	// 富系列：候选节点的 TTFT、缓存命中率与 token 消耗逐桶明细，供性能抽屉图表喵。
+	detailed, detailedError := perfmetrics.QueryEntityProbeStatusDetailed(probeModelName, perfmetrics.EntityProbeGroupSelf, entityProbeWindowHours)
+	// 喵~防御：富系列查询失败按空数据返回，不阻塞状态展示喵。
+	if detailedError != nil {
+		common.SysError("query virtual model candidate entity probe detailed failed: " + detailedError.Error())
+	} else {
+		candidatePayload.AvgTtftMs = detailed.AvgTtftMs
+		candidatePayload.CacheHitRate = detailed.CacheHitRate
+		candidatePayload.TotalTokens = detailed.TotalTokens
+		candidatePayload.Series = detailed.Series
+	}
 	if state, stateError := model.GetEntityProbeState(model.EntityProbeScopeVirtualCandidate, int64(candidateID)); stateError == nil && state != nil {
 		candidatePayload.LastAt = state.LastAt
 		candidatePayload.LastSuccess = state.LastSuccess

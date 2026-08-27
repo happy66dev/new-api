@@ -156,6 +156,8 @@ func mergeStatusCounters(target *counters, value counters) {
 	target.totalLatencyMs += value.totalLatencyMs
 	target.ttftSumMs += value.ttftSumMs
 	target.ttftCount += value.ttftCount
+	target.outputTokens += value.outputTokens
+	target.generationMs += value.generationMs
 	target.cacheHitCount += value.cacheHitCount
 	target.cacheSampleCount += value.cacheSampleCount
 	target.cachedTokens += value.cachedTokens

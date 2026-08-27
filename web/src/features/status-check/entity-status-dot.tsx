@@ -60,6 +60,8 @@ type EntityStatusDotProps = {
   label?: string
   // showAvailabilityText 控制是否内联展示可用性百分比，缺省为 true喵。
   showAvailabilityText?: boolean
+  // onOpenPerformance 存在时点击圆点调用该回调（打开性能抽屉），替代内联详情弹层喵。
+  onOpenPerformance?: () => void
 }
 
 // EntityStatusDot 展示实体的健康状态圆点与可选详情弹层喵。
@@ -144,6 +146,33 @@ export function EntityStatusDot(props: EntityStatusDotProps) {
       {availabilityNode}
     </span>
   )
+
+  // 配置了性能抽屉回调（虚拟候选/上游模型）：点击圆点打开抽屉，保留悬停提示喵。
+  if (props.onOpenPerformance) {
+    return (
+      <TooltipProvider delay={300}>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                type='button'
+                className='inline-flex cursor-pointer items-center gap-1.5'
+                onClick={props.onOpenPerformance}
+                aria-label={
+                  props.label
+                    ? `${props.label} ${t('Performance')}`
+                    : t('Performance')
+                }
+              >
+                {dotRow}
+              </button>
+            }
+          />
+          <TooltipContent>{summaryText}</TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    )
+  }
 
   // 无 24h 序列（如共享视角）：仅保留悬停提示，不可点击喵。
   if (!canOpenDetails) {

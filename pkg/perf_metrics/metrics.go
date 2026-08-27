@@ -46,7 +46,7 @@ func RecordRelaySample(info *relaycommon.RelayInfo, success bool, outputTokens i
 	if generationMs <= 0 {
 		generationMs = latencyMs
 	}
-	cachedTokens, inputTokens := cacheTokenUsage(usage)
+	cachedTokens, inputTokens := CacheTokenUsage(usage)
 	Record(Sample{
 		Model:        info.OriginModelName,
 		Group:        info.UsingGroup,
@@ -56,14 +56,16 @@ func RecordRelaySample(info *relaycommon.RelayInfo, success bool, outputTokens i
 		Success:      success,
 		OutputTokens: outputTokens,
 		GenerationMs: generationMs,
-		CacheHit:     hasCacheHit(usage),
+		CacheHit:     HasCacheHit(usage),
 		CacheSample:  usage != nil,
 		CachedTokens: cachedTokens,
 		InputTokens:  inputTokens,
 	})
 }
 
-func cacheTokenUsage(usage *dto.Usage) (int64, int64) {
+// CacheTokenUsage 从 usage 提取缓存命中与输入 token 数，采用多厂商 fallback 口径喵。
+// 供 perf 统计与实体被动统计共享同一缓存命中率口径喵。
+func CacheTokenUsage(usage *dto.Usage) (int64, int64) {
 	if usage == nil {
 		return 0, 0
 	}
@@ -102,7 +104,8 @@ func adjustedCacheInputTokens(inputTokens int64, cachedTokens int64) int64 {
 	return inputTokens + cachedTokens
 }
 
-func hasCacheHit(usage *dto.Usage) bool {
+// HasCacheHit 判断 usage 是否包含缓存命中 token（任意厂商字段）喵。
+func HasCacheHit(usage *dto.Usage) bool {
 	if usage == nil {
 		return false
 	}

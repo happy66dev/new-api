@@ -496,14 +496,18 @@ const entityProbeWindowHours = 24
 
 // upstreamModelStatusPayload 属主视角的上游模型状态响应喵。
 type upstreamModelStatusPayload struct {
-	Availability   float64   `json:"availability"`
-	AvgLatencyMs   int64     `json:"avg_latency_ms"`
-	RequestCount   int64     `json:"request_count"`
-	Availability24 []float64 `json:"availability_24h"`
-	LastAt         int64     `json:"last_at"`
-	LastSuccess    bool      `json:"last_success"`
-	LastLatencyMs  int64     `json:"last_latency_ms"`
-	LastError      string    `json:"last_error"`
+	Availability   float64                        `json:"availability"`
+	AvgLatencyMs   int64                          `json:"avg_latency_ms"`
+	AvgTtftMs      int64                          `json:"avg_ttft_ms"`
+	CacheHitRate   float64                        `json:"cache_hit_rate"`
+	TotalTokens    int64                          `json:"total_tokens"`
+	RequestCount   int64                          `json:"request_count"`
+	Availability24 []float64                      `json:"availability_24h"`
+	Series         []perfmetrics.EntityProbeBucket `json:"series"`
+	LastAt         int64                          `json:"last_at"`
+	LastSuccess    bool                           `json:"last_success"`
+	LastLatencyMs  int64                          `json:"last_latency_ms"`
+	LastError      string                         `json:"last_error"`
 	// Shared 共享调用维度的聚合，仅属主 include_shared=true 时携带喵。
 	Shared *upstreamModelStatusPayload `json:"shared,omitempty"`
 }
@@ -546,11 +550,15 @@ func GetSharedUserUpstreamModelStatus(c *gin.Context) {
 		return
 	}
 	sharedStatus := buildUpstreamModelStatusPayload(upstreamModel, perfmetrics.EntityProbeGroupShared, model.EntityProbeScopeUpstreamShared)
-	// 共享聚合不暴露错误明细，只提供成功率、平均延迟、请求数与最近一次结果喵。
+	// 共享聚合不暴露错误明细，只提供成功率、平均延迟、请求数、TTFT、缓存命中率与 token 消耗喵。
 	common.ApiSuccess(c, gin.H{
 		"availability":   sharedStatus.Availability,
 		"avg_latency_ms": sharedStatus.AvgLatencyMs,
+		"avg_ttft_ms":    sharedStatus.AvgTtftMs,
+		"cache_hit_rate": sharedStatus.CacheHitRate,
+		"total_tokens":   sharedStatus.TotalTokens,
 		"request_count":  sharedStatus.RequestCount,
+		"series":         sharedStatus.Series,
 		"last_at":        sharedStatus.LastAt,
 		"last_success":   sharedStatus.LastSuccess,
 	})
@@ -572,6 +580,17 @@ func buildUpstreamModelStatusPayload(upstreamModel *model.UserUpstreamModel, pro
 	payload.AvgLatencyMs = status.AvgLatencyMs
 	payload.RequestCount = status.RequestCount
 	payload.Availability24 = status.Availability24
+	// 富系列：TTFT、缓存命中率与 token 消耗逐桶明细，供性能抽屉图表喵。
+	detailed, detailedError := perfmetrics.QueryEntityProbeStatusDetailed(upstreamModel.UserUpstreamModelName(), probeGroup, entityProbeWindowHours)
+	// 喵~防御：富系列查询失败按空数据返回，不阻塞状态展示喵。
+	if detailedError != nil {
+		common.SysError("query upstream model entity probe detailed failed: " + detailedError.Error())
+	} else {
+		payload.AvgTtftMs = detailed.AvgTtftMs
+		payload.CacheHitRate = detailed.CacheHitRate
+		payload.TotalTokens = detailed.TotalTokens
+		payload.Series = detailed.Series
+	}
 	state, stateError := model.GetEntityProbeState(scope, upstreamModel.ID)
 	if stateError == nil && state != nil {
 		payload.LastAt = state.LastAt

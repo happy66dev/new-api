@@ -124,16 +124,24 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 	return false
 }
 
-// upstreamProbeExtras 携带实体探测需要补记的吞吐与首字节明细喵。
+// upstreamProbeExtras 携带实体探测需要补记的吞吐、首字节与缓存 token 明细喵。
 type upstreamProbeExtras struct {
 	// ttftMs 从发起上游请求到收到响应头的时间，单位：毫秒喵。
 	ttftMs int64
 	// outputTokens 本次调用的完成 token 数，用于吞吐计算喵。
 	outputTokens int64
+	// inputTokens 本次调用的输入 token 数（含缓存命中），用于缓存命中率统计喵。
+	inputTokens int64
+	// cachedTokens 本次调用的缓存命中 token 数喵。
+	cachedTokens int64
+	// cacheHit 标记本次调用是否为缓存命中样本喵。
+	cacheHit bool
+	// cacheSample 标记本次调用是否携带 usage 喵。
+	cacheSample bool
 }
 
-// buildUpstreamProbeExtras 从透传执行结果提取 TTFT 与完成 token 数喵。
-// 空 usage 时 outputTokens 为零，吞吐自然跳过喵。
+// buildUpstreamProbeExtras 从透传执行结果提取 TTFT、完成 token 数与缓存 token 喵。
+// 空 usage 时相关计数为零，缓存命中率与吞吐自然跳过喵。
 func buildUpstreamProbeExtras(result *virtualmodelservice.UserUpstreamModelExecutionResult) upstreamProbeExtras {
 	// 喵~防御：空结果对象直接返回空 extras，避免空指针喵。
 	if result == nil {
@@ -142,6 +150,10 @@ func buildUpstreamProbeExtras(result *virtualmodelservice.UserUpstreamModelExecu
 	extras := upstreamProbeExtras{ttftMs: result.TtftMs}
 	if result.Usage != nil {
 		extras.outputTokens = int64(result.Usage.CompletionTokens)
+		// 缓存 token 提取复用内部模型同款多厂商 fallback，保证命中率口径一致喵。
+		extras.cachedTokens, extras.inputTokens = perfmetrics.CacheTokenUsage(result.Usage)
+		extras.cacheHit = perfmetrics.HasCacheHit(result.Usage)
+		extras.cacheSample = true
 	}
 	return extras
 }
@@ -176,6 +188,10 @@ func recordUpstreamModelProbeState(upstreamModel *model.UserUpstreamModel, isSha
 		HasTtft:      extras.ttftMs > 0,
 		OutputTokens: extras.outputTokens,
 		GenerationMs: generationMs,
+		InputTokens:  extras.inputTokens,
+		CachedTokens: extras.cachedTokens,
+		CacheHit:     extras.cacheHit,
+		CacheSample:  extras.cacheSample,
 	}
 	if isShared {
 		perfmetrics.RecordEntityProbeShared(probeModelName, latencyMs, success, probeExtras)

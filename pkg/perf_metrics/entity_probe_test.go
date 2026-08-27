@@ -94,3 +94,29 @@ func TestRecordEntityProbeSharedTracksThroughputAndTTFT(t *testing.T) {
 	require.Equal(t, int64(30), group.AvgTtftMs)
 	require.InDelta(t, 1428.57, group.AvgTps, 0.01)
 }
+
+// TestQueryEntityProbeStatusDetailed 验证富系列聚合返回 TTFT、缓存命中率与 token 消耗逐桶明细喵。
+func TestQueryEntityProbeStatusDetailed(t *testing.T) {
+	setupEntityProbeTestDB(t)
+
+	// 同一小时桶两次调用：一次带缓存命中（200 输入含 50 缓存命中），一次纯输入 100 喵。
+	RecordEntityProbe("user/detailed", 200, true, EntityProbeExtras{TtftMs: 40, HasTtft: true, InputTokens: 200, CachedTokens: 50, CacheHit: true, CacheSample: true, OutputTokens: 30, GenerationMs: 160})
+	RecordEntityProbe("user/detailed", 300, true, EntityProbeExtras{TtftMs: 60, HasTtft: true, InputTokens: 100, CachedTokens: 0, CacheHit: false, CacheSample: true, OutputTokens: 20, GenerationMs: 240})
+
+	detailed, detailErr := QueryEntityProbeStatusDetailed("user/detailed", EntityProbeGroupSelf, 24)
+	require.NoError(t, detailErr)
+	require.Equal(t, int64(2), detailed.RequestCount)
+	require.InDelta(t, 100.0, detailed.Availability, 0.001)
+	require.Equal(t, int64(250), detailed.AvgLatencyMs)
+	require.Equal(t, int64(50), detailed.AvgTtftMs)
+	// 缓存命中率 = 50 / (200+100) = 16.67% 喵。
+	require.InDelta(t, 16.67, detailed.CacheHitRate, 0.01)
+	// 总 token = 输入 300 + 输出 50 喵。
+	require.Equal(t, int64(350), detailed.TotalTokens)
+	require.Len(t, detailed.Series, 1)
+	// 逐桶明细应反映输入/输出/缓存 token 喵。
+	require.Equal(t, int64(300), detailed.Series[0].InputTokens)
+	require.Equal(t, int64(50), detailed.Series[0].OutputTokens)
+	require.Equal(t, int64(50), detailed.Series[0].CachedTokens)
+	require.InDelta(t, 16.67, detailed.Series[0].CacheHitRate, 0.01)
+}
