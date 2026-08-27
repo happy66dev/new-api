@@ -162,6 +162,8 @@ func mergeStatusCounters(target *counters, value counters) {
 	target.cacheSampleCount += value.cacheSampleCount
 	target.cachedTokens += value.cachedTokens
 	target.inputTokens += value.inputTokens
+	target.cacheCreation5mTokens += value.cacheCreation5mTokens
+	target.cacheCreation1hTokens += value.cacheCreation1hTokens
 }
 
 func cacheTokenRate(value counters) float64 {

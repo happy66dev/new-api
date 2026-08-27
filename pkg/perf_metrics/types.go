@@ -20,6 +20,10 @@ type Sample struct {
 	CacheSample  bool
 	CachedTokens int64
 	InputTokens  int64
+	// CacheCreation5mTokens 缓存写入 5 分钟分类 token 数（Claude 语义）喵。
+	CacheCreation5mTokens int64
+	// CacheCreation1hTokens 缓存写入 1 小时分类 token 数（Claude 语义）喵。
+	CacheCreation1hTokens int64
 }
 
 type QueryParams struct {
@@ -109,6 +113,10 @@ type counters struct {
 	cacheSampleCount int64
 	cachedTokens     int64
 	inputTokens      int64
+	// cacheCreation5mTokens 缓存写入 5 分钟分类 token 累计喵。
+	cacheCreation5mTokens int64
+	// cacheCreation1hTokens 缓存写入 1 小时分类 token 累计喵。
+	cacheCreation1hTokens int64
 }
 
 type atomicBucket struct {
@@ -123,6 +131,10 @@ type atomicBucket struct {
 	cacheSampleCount atomic.Int64
 	cachedTokens     atomic.Int64
 	inputTokens      atomic.Int64
+	// cacheCreation5mTokens 缓存写入 5 分钟分类 token 累计喵。
+	cacheCreation5mTokens atomic.Int64
+	// cacheCreation1hTokens 缓存写入 1 小时分类 token 累计喵。
+	cacheCreation1hTokens atomic.Int64
 }
 
 func (b *atomicBucket) add(sample Sample) {
@@ -161,6 +173,13 @@ func (b *atomicBucket) add(sample Sample) {
 			b.cachedTokens.Add(cachedTokens)
 		}
 	}
+	// 缓存写入分类 token 只累计非负值，避免负值污染聚合喵。
+	if sample.CacheCreation5mTokens > 0 {
+		b.cacheCreation5mTokens.Add(sample.CacheCreation5mTokens)
+	}
+	if sample.CacheCreation1hTokens > 0 {
+		b.cacheCreation1hTokens.Add(sample.CacheCreation1hTokens)
+	}
 }
 
 func (b *atomicBucket) snapshot() counters {
@@ -176,6 +195,8 @@ func (b *atomicBucket) snapshot() counters {
 		cacheSampleCount: b.cacheSampleCount.Load(),
 		cachedTokens:     b.cachedTokens.Load(),
 		inputTokens:      b.inputTokens.Load(),
+		cacheCreation5mTokens: b.cacheCreation5mTokens.Load(),
+		cacheCreation1hTokens: b.cacheCreation1hTokens.Load(),
 	}
 }
 
@@ -192,6 +213,8 @@ func (b *atomicBucket) drain() counters {
 		cacheSampleCount: b.cacheSampleCount.Swap(0),
 		cachedTokens:     b.cachedTokens.Swap(0),
 		inputTokens:      b.inputTokens.Swap(0),
+		cacheCreation5mTokens: b.cacheCreation5mTokens.Swap(0),
+		cacheCreation1hTokens: b.cacheCreation1hTokens.Swap(0),
 	}
 }
 
@@ -229,6 +252,12 @@ func (b *atomicBucket) addCounters(c counters) {
 	if c.inputTokens != 0 {
 		b.inputTokens.Add(c.inputTokens)
 	}
+	if c.cacheCreation5mTokens != 0 {
+		b.cacheCreation5mTokens.Add(c.cacheCreation5mTokens)
+	}
+	if c.cacheCreation1hTokens != 0 {
+		b.cacheCreation1hTokens.Add(c.cacheCreation1hTokens)
+	}
 }
 
 // EntityProbeBucket 单个小时桶的实体被动统计明细，供图表系列展示喵。
@@ -242,6 +271,10 @@ type EntityProbeBucket struct {
 	InputTokens  int64   `json:"input_tokens"`
 	OutputTokens int64   `json:"output_tokens"`
 	CachedTokens int64   `json:"cached_tokens"`
+	// CacheCreation5mTokens 缓存写入 5 分钟分类 token 数（Claude 语义）喵。
+	CacheCreation5mTokens int64 `json:"cache_creation_5m_tokens"`
+	// CacheCreation1hTokens 缓存写入 1 小时分类 token 数（Claude 语义）喵。
+	CacheCreation1hTokens int64 `json:"cache_creation_1h_tokens"`
 }
 
 // EntityProbeDetailed 单个实体在窗口内的被动统计聚合与逐桶系列喵。
@@ -252,5 +285,9 @@ type EntityProbeDetailed struct {
 	CacheHitRate float64             `json:"cache_hit_rate"`
 	RequestCount int64               `json:"request_count"`
 	TotalTokens  int64               `json:"total_tokens"`
-	Series       []EntityProbeBucket `json:"series"`
+	// TotalCacheCreation5mTokens 窗口内缓存写入 5 分钟分类 token 总和喵。
+	TotalCacheCreation5mTokens int64 `json:"total_cache_creation_5m_tokens"`
+	// TotalCacheCreation1hTokens 窗口内缓存写入 1 小时分类 token 总和喵。
+	TotalCacheCreation1hTokens int64 `json:"total_cache_creation_1h_tokens"`
+	Series                      []EntityProbeBucket `json:"series"`
 }

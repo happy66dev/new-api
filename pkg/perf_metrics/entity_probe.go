@@ -35,6 +35,10 @@ type EntityProbeExtras struct {
 	CacheHit bool
 	// CacheSample 标记本次调用是否携带 usage（可参与缓存命中率分母统计）喵。
 	CacheSample bool
+	// CacheCreation5mTokens 缓存写入 5 分钟分类 token 数（Claude 语义）喵。
+	CacheCreation5mTokens int64
+	// CacheCreation1hTokens 缓存写入 1 小时分类 token 数（Claude 语义）喵。
+	CacheCreation1hTokens int64
 }
 
 // RecordEntityProbe 记录一次实体真实调用的被动统计（自用维度）喵。
@@ -44,6 +48,7 @@ func RecordEntityProbe(modelName string, latencyMs int64, success bool, extras E
 		Model: modelName, Group: EntityProbeGroupSelf, LatencyMs: latencyMs, Success: success,
 		TtftMs: extras.TtftMs, HasTtft: extras.HasTtft, OutputTokens: extras.OutputTokens, GenerationMs: extras.GenerationMs,
 		CacheHit: extras.CacheHit, CacheSample: extras.CacheSample, CachedTokens: extras.CachedTokens, InputTokens: extras.InputTokens,
+		CacheCreation5mTokens: extras.CacheCreation5mTokens, CacheCreation1hTokens: extras.CacheCreation1hTokens,
 	})
 }
 
@@ -53,6 +58,7 @@ func RecordEntityProbeShared(modelName string, latencyMs int64, success bool, ex
 		Model: modelName, Group: EntityProbeGroupShared, LatencyMs: latencyMs, Success: success,
 		TtftMs: extras.TtftMs, HasTtft: extras.HasTtft, OutputTokens: extras.OutputTokens, GenerationMs: extras.GenerationMs,
 		CacheHit: extras.CacheHit, CacheSample: extras.CacheSample, CachedTokens: extras.CachedTokens, InputTokens: extras.InputTokens,
+		CacheCreation5mTokens: extras.CacheCreation5mTokens, CacheCreation1hTokens: extras.CacheCreation1hTokens,
 	})
 }
 
@@ -160,17 +166,19 @@ func QueryEntityProbeStatusDetailed(modelName string, group string, hours int) (
 	for _, row := range rows {
 		// 落库桶保留全部计数字段，与热桶字段对齐喵。
 		merged[row.BucketTs] = counters{
-			requestCount:     row.RequestCount,
-			successCount:     row.SuccessCount,
-			totalLatencyMs:   row.TotalLatencyMs,
-			ttftSumMs:        row.TtftSumMs,
-			ttftCount:        row.TtftCount,
-			outputTokens:     row.OutputTokens,
-			generationMs:     row.GenerationMs,
-			cacheHitCount:    row.CacheHitCount,
-			cacheSampleCount: row.CacheSampleCount,
-			cachedTokens:     row.CachedTokens,
-			inputTokens:      row.InputTokens,
+			requestCount:           row.RequestCount,
+			successCount:           row.SuccessCount,
+			totalLatencyMs:         row.TotalLatencyMs,
+			ttftSumMs:              row.TtftSumMs,
+			ttftCount:              row.TtftCount,
+			outputTokens:           row.OutputTokens,
+			generationMs:           row.GenerationMs,
+			cacheHitCount:          row.CacheHitCount,
+			cacheSampleCount:       row.CacheSampleCount,
+			cachedTokens:           row.CachedTokens,
+			inputTokens:            row.InputTokens,
+			cacheCreation5mTokens:  row.CacheCreation5mTokens,
+			cacheCreation1hTokens:  row.CacheCreation1hTokens,
 		}
 	}
 	// 内存热桶合并：只并入同一实体的同一分组，保证读到的状态包含尚未落库的最近样本喵。
@@ -205,6 +213,8 @@ func QueryEntityProbeStatusDetailed(modelName string, group string, hours int) (
 			InputTokens:  value.inputTokens,
 			OutputTokens: value.outputTokens,
 			CachedTokens: value.cachedTokens,
+			CacheCreation5mTokens: value.cacheCreation5mTokens,
+			CacheCreation1hTokens: value.cacheCreation1hTokens,
 		})
 	}
 	// 只保留最近 24 个有效桶，与前端 24 点图表语义对齐喵。
@@ -216,6 +226,8 @@ func QueryEntityProbeStatusDetailed(modelName string, group string, hours int) (
 	detailed.AvgTtftMs = avg(total.ttftSumMs, total.ttftCount)
 	detailed.CacheHitRate = math.Round(cacheTokenRate(total)*100) / 100
 	detailed.TotalTokens = total.inputTokens + total.outputTokens
+	detailed.TotalCacheCreation5mTokens = total.cacheCreation5mTokens
+	detailed.TotalCacheCreation1hTokens = total.cacheCreation1hTokens
 	detailed.Availability = math.Round(successRate(total)*100) / 100
 	return detailed, nil
 }

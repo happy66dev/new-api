@@ -382,7 +382,7 @@ function UpstreamModelDrawer({
               <Textarea
                 value={description}
                 onChange={(event) => setDescription(event.target.value)}
-                placeholder={t('Describe what this model is about')}
+                placeholder={t('Describe what upstream this is, its performance, the model, and its availability...')}
                 disabled={isSaving}
                 rows={3}
               />

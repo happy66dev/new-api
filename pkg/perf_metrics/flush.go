@@ -85,6 +85,8 @@ func flushOneBucket(k bucketKey, key any, value any) {
 		CacheSampleCount: drained.cacheSampleCount,
 		CachedTokens:     drained.cachedTokens,
 		InputTokens:      drained.inputTokens,
+		CacheCreation5mTokens: drained.cacheCreation5mTokens,
+		CacheCreation1hTokens: drained.cacheCreation1hTokens,
 	})
 	if err != nil {
 		bucket.addCounters(drained)
@@ -124,6 +126,8 @@ func redisCounters(values map[string]string) counters {
 		cacheSampleCount: parseRedisInt(values["cache_n"]),
 		cachedTokens:     parseRedisInt(values["cache_tok"]),
 		inputTokens:      parseRedisInt(values["input_tok"]),
+		cacheCreation5mTokens: parseRedisInt(values["cache_creation_5m"]),
+		cacheCreation1hTokens: parseRedisInt(values["cache_creation_1h"]),
 	}
 }
 

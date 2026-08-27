@@ -138,6 +138,10 @@ type upstreamProbeExtras struct {
 	cacheHit bool
 	// cacheSample 标记本次调用是否携带 usage 喵。
 	cacheSample bool
+	// cacheCreation5mTokens 缓存写入 5 分钟分类 token 数（Claude 语义），无则为零喵。
+	cacheCreation5mTokens int64
+	// cacheCreation1hTokens 缓存写入 1 小时分类 token 数（Claude 语义），无则为零喵。
+	cacheCreation1hTokens int64
 }
 
 // buildUpstreamProbeExtras 从透传执行结果提取 TTFT、完成 token 数与缓存 token 喵。
@@ -154,8 +158,19 @@ func buildUpstreamProbeExtras(result *virtualmodelservice.UserUpstreamModelExecu
 		extras.cachedTokens, extras.inputTokens = perfmetrics.CacheTokenUsage(result.Usage)
 		extras.cacheHit = perfmetrics.HasCacheHit(result.Usage)
 		extras.cacheSample = true
+		// 缓存写入分类 token 只取非负值（Claude 语义），有则记录喵。
+		extras.cacheCreation5mTokens = int64(clampNonNegative(result.Usage.ClaudeCacheCreation5mTokens))
+		extras.cacheCreation1hTokens = int64(clampNonNegative(result.Usage.ClaudeCacheCreation1hTokens))
 	}
 	return extras
+}
+
+// clampNonNegative 把负的 token 计数钳制为零，避免负数进入探测统计喵。
+func clampNonNegative(tokenCount int) int {
+	if tokenCount < 0 {
+		return 0
+	}
+	return tokenCount
 }
 
 // recordUpstreamModelProbeState 记录一次上游模型真实调用的被动统计与最近一次状态喵。
@@ -192,6 +207,8 @@ func recordUpstreamModelProbeState(upstreamModel *model.UserUpstreamModel, isSha
 		CachedTokens: extras.cachedTokens,
 		CacheHit:     extras.cacheHit,
 		CacheSample:  extras.cacheSample,
+		CacheCreation5mTokens: extras.cacheCreation5mTokens,
+		CacheCreation1hTokens: extras.cacheCreation1hTokens,
 	}
 	if isShared {
 		perfmetrics.RecordEntityProbeShared(probeModelName, latencyMs, success, probeExtras)

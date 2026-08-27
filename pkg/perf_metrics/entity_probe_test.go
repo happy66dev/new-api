@@ -120,3 +120,22 @@ func TestQueryEntityProbeStatusDetailed(t *testing.T) {
 	require.Equal(t, int64(50), detailed.Series[0].CachedTokens)
 	require.InDelta(t, 16.67, detailed.Series[0].CacheHitRate, 0.01)
 }
+
+// TestQueryEntityProbeStatusDetailedCacheCreation 验证缓存写入 5m/1h 分类 token 被探测记录与聚合喵。
+func TestQueryEntityProbeStatusDetailedCacheCreation(t *testing.T) {
+	setupEntityProbeTestDB(t)
+
+	// 同一小时桶两次带缓存写入的调用：5m 写入 80+20，1h 写入 40+0 喵。
+	RecordEntityProbe("user/cache-write", 200, true, EntityProbeExtras{InputTokens: 200, CacheSample: true, CacheCreation5mTokens: 80, CacheCreation1hTokens: 40, OutputTokens: 30, GenerationMs: 160})
+	RecordEntityProbe("user/cache-write", 300, true, EntityProbeExtras{InputTokens: 100, CacheSample: true, CacheCreation5mTokens: 20, CacheCreation1hTokens: 0, OutputTokens: 20, GenerationMs: 240})
+
+	detailed, detailErr := QueryEntityProbeStatusDetailed("user/cache-write", EntityProbeGroupSelf, 24)
+	require.NoError(t, detailErr)
+	// 窗口汇总应聚合两笔缓存写入分类 token 喵。
+	require.Equal(t, int64(100), detailed.TotalCacheCreation5mTokens)
+	require.Equal(t, int64(40), detailed.TotalCacheCreation1hTokens)
+	require.Len(t, detailed.Series, 1)
+	// 逐桶明细同样反映缓存写入分类 token 喵。
+	require.Equal(t, int64(100), detailed.Series[0].CacheCreation5mTokens)
+	require.Equal(t, int64(40), detailed.Series[0].CacheCreation1hTokens)
+}

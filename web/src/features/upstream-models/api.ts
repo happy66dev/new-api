@@ -124,6 +124,9 @@ export type EntityProbeBucket = {
   input_tokens: number
   output_tokens: number
   cached_tokens: number
+  // 缓存写入 5m/1h 分类 token（Claude 语义），测试模型探测记录喵。
+  cache_creation_5m_tokens: number
+  cache_creation_1h_tokens: number
 }
 
 // UpstreamModelSharedStatus 是共享使用者视角的状态，不含错误明细与 24h 序列喵。

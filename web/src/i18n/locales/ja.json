@@ -6095,6 +6095,7 @@
     "User Shared": "User Shared",
     "These are user-shared upstream models, not provided by this site. We do not guarantee their availability or safety.": "These are user-shared upstream models, not provided by this site. We do not guarantee their availability or safety.",
     "Model description": "Model description",
+    "Describe what upstream this is, its performance, the model, and its availability...": "Describe what upstream this is, its performance, the model, and its availability...",
     "Describe what this model is about": "Describe what this model is about",
     "Direct fill upstream URL and API Key": "Direct fill upstream URL and API Key",
     "Credentials and real model name are resolved from the selected user upstream model.": "Credentials and real model name are resolved from the selected user upstream model.",

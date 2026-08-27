@@ -158,17 +158,19 @@ func Query(params QueryParams) (QueryResult, error) {
 			group:    row.Group,
 			bucketTs: row.BucketTs,
 		}, counters{
-			requestCount:     row.RequestCount,
-			successCount:     row.SuccessCount,
-			totalLatencyMs:   row.TotalLatencyMs,
-			ttftSumMs:        row.TtftSumMs,
-			ttftCount:        row.TtftCount,
-			outputTokens:     row.OutputTokens,
-			generationMs:     row.GenerationMs,
-			cacheHitCount:    row.CacheHitCount,
-			cacheSampleCount: row.CacheSampleCount,
-			cachedTokens:     row.CachedTokens,
-			inputTokens:      row.InputTokens,
+			requestCount:           row.RequestCount,
+			successCount:           row.SuccessCount,
+			totalLatencyMs:         row.TotalLatencyMs,
+			ttftSumMs:              row.TtftSumMs,
+			ttftCount:              row.TtftCount,
+			outputTokens:           row.OutputTokens,
+			generationMs:           row.GenerationMs,
+			cacheHitCount:          row.CacheHitCount,
+			cacheSampleCount:       row.CacheSampleCount,
+			cachedTokens:           row.CachedTokens,
+			inputTokens:            row.InputTokens,
+			cacheCreation5mTokens:  row.CacheCreation5mTokens,
+			cacheCreation1hTokens:  row.CacheCreation1hTokens,
 		})
 	}
 
@@ -358,6 +360,8 @@ func mergeCounters(merged map[bucketKey]counters, key bucketKey, value counters)
 	current.cacheSampleCount += value.cacheSampleCount
 	current.cachedTokens += value.cachedTokens
 	current.inputTokens += value.inputTokens
+	current.cacheCreation5mTokens += value.cacheCreation5mTokens
+	current.cacheCreation1hTokens += value.cacheCreation1hTokens
 	merged[key] = current
 }
 
@@ -487,6 +491,13 @@ func recordRedis(key bucketKey, sample Sample) {
 		if sample.CachedTokens > 0 {
 			pipe.HIncrBy(ctx, redisKey, "cache_tok", sample.CachedTokens)
 		}
+	}
+	// 缓存写入分类 token 同步进 Redis 活跃桶，保证重启窗口查询口径一致喵。
+	if sample.CacheCreation5mTokens > 0 {
+		pipe.HIncrBy(ctx, redisKey, "cache_creation_5m", sample.CacheCreation5mTokens)
+	}
+	if sample.CacheCreation1hTokens > 0 {
+		pipe.HIncrBy(ctx, redisKey, "cache_creation_1h", sample.CacheCreation1hTokens)
 	}
 	pipe.Expire(ctx, redisKey, time.Hour)
 	_, _ = pipe.Exec(ctx)

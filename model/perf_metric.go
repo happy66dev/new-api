@@ -24,6 +24,10 @@ type PerfMetric struct {
 	CacheSampleCount int64  `json:"-" gorm:"default:0"`
 	CachedTokens     int64  `json:"-" gorm:"default:0"`
 	InputTokens      int64  `json:"-" gorm:"default:0"`
+	// CacheCreation5mTokens 是缓存写入 5 分钟分类的 token 数（Claude 语义），供探测记录喵。
+	CacheCreation5mTokens int64 `json:"-" gorm:"column:cache_creation_5m_tokens;default:0"`
+	// CacheCreation1hTokens 是缓存写入 1 小时分类的 token 数（Claude 语义），供探测记录喵。
+	CacheCreation1hTokens int64 `json:"-" gorm:"column:cache_creation_1h_tokens;default:0"`
 }
 
 func (PerfMetric) TableName() string {
@@ -52,6 +56,8 @@ func UpsertPerfMetric(metric *PerfMetric) error {
 			"cache_sample_count": gorm.Expr("perf_metrics.cache_sample_count + ?", metric.CacheSampleCount),
 			"cached_tokens":      gorm.Expr("perf_metrics.cached_tokens + ?", metric.CachedTokens),
 			"input_tokens":       gorm.Expr("perf_metrics.input_tokens + ?", metric.InputTokens),
+			"cache_creation_5m_tokens": gorm.Expr("perf_metrics.cache_creation_5m_tokens + ?", metric.CacheCreation5mTokens),
+			"cache_creation_1h_tokens": gorm.Expr("perf_metrics.cache_creation_1h_tokens + ?", metric.CacheCreation1hTokens),
 		}),
 	}).Create(metric).Error
 }

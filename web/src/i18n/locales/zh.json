@@ -6095,6 +6095,7 @@
     "User Shared": "用户共享",
     "These are user-shared upstream models, not provided by this site. We do not guarantee their availability or safety.": "此处为用户共享的上游模型，并非本站提供的模型，我们不对其可用性与安全提供任何保障。",
     "Model description": "模型简介",
+    "Describe what upstream this is, its performance, the model, and its availability...": "介绍这是什么上游、性能怎么样、什么模型、可用性怎么样等字段……",
     "Describe what this model is about": "简单介绍这个模型是干什么的",
     "Direct fill upstream URL and API Key": "直接填写上游地址与 API Key",
     "Credentials and real model name are resolved from the selected user upstream model.": "凭据与真实模型名取自所选用户上游模型。",
