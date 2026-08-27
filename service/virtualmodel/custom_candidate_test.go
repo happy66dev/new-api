@@ -36,7 +36,7 @@ func TestRewrittenCustomRequestBody(t *testing.T) {
 			request.Header.Set("Content-Type", testCase.contentType)
 			context, _ := gin.CreateTestContext(httptest.NewRecorder())
 			context.Request = request
-			rewrittenBody, rewriteError := rewrittenCustomRequestBody(context, "gpt-target")
+			rewrittenBody, rewriteError := rewrittenCustomRequestBody(context, "gpt-target", "")
 			if (rewriteError != nil) != testCase.expectError {
 				t.Fatalf("rewrittenCustomRequestBody() error=%v wantError=%v", rewriteError, testCase.expectError)
 			}
@@ -188,5 +188,107 @@ func TestNormalizeCustomCandidateExecutionFailure(t *testing.T) {
 	var nilFailure *CustomCandidateExecutionFailure
 	if nilFailure.Error() != "custom candidate execution failed" {
 		t.Fatalf("nil execution failure error = %q", nilFailure.Error())
+	}
+}
+
+// TestRewrittenCustomRequestBodyFieldReplacements 验证请求字段替换只作用于参数标量且绝不触碰 messages 喵。
+func TestRewrittenCustomRequestBodyFieldReplacements(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	testCases := []struct {
+		name               string
+		fieldReplacements  string
+		requestBody        string
+		expectedBody       string
+		expectError        bool
+	}{
+		// 命中映射旧值时替换为新值喵。
+		{name: "replace reasoning_effort max to xhigh", fieldReplacements: `{"reasoning_effort":{"max":"xhigh"}}`, requestBody: `{"model":"m","reasoning_effort":"max"}`, expectedBody: `{"model":"target","reasoning_effort":"xhigh"}`},
+		// 非字符串标量（数字）不替换，防止误改数值参数喵。
+		{name: "non-string scalar skipped", fieldReplacements: `{"temperature":{"0":"1"}}`, requestBody: `{"model":"m","temperature":0}`, expectedBody: `{"model":"target","temperature":0}`},
+		// 当前值未命中映射时原样保留喵。
+		{name: "unmatched value preserved", fieldReplacements: `{"reasoning_effort":{"max":"xhigh"}}`, requestBody: `{"model":"m","reasoning_effort":"high"}`, expectedBody: `{"model":"target","reasoning_effort":"high"}`},
+		// messages 开头的路径一律跳过，绝不改写对话内容喵。
+		{name: "messages path never replaced", fieldReplacements: `{"messages.0.content":{"hi":"hello"}}`, requestBody: `{"model":"m","messages":[{"content":"hi"}]}`, expectedBody: `{"model":"target","messages":[{"content":"hi"}]}`},
+		// 空配置保持请求体原样喵。
+		{name: "empty config keeps body", fieldReplacements: "", requestBody: `{"model":"m","reasoning_effort":"max"}`, expectedBody: `{"model":"target","reasoning_effort":"max"}`},
+		// 非法映射表（新值非字符串）直接拒绝喵。
+		{name: "invalid replacements rejected", fieldReplacements: `{"reasoning_effort":{"max":123}}`, requestBody: `{"model":"m"}`, expectError: true},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "https://gateway.example.test/v1/chat/completions", bytes.NewBufferString(testCase.requestBody))
+			request.Header.Set("Content-Type", "application/json")
+			context, _ := gin.CreateTestContext(httptest.NewRecorder())
+			context.Request = request
+			rewrittenBody, rewriteError := rewrittenCustomRequestBody(context, "target", testCase.fieldReplacements)
+			if (rewriteError != nil) != testCase.expectError {
+				t.Fatalf("rewrittenCustomRequestBody() error=%v wantError=%v", rewriteError, testCase.expectError)
+			}
+			if !testCase.expectError && string(rewrittenBody) != testCase.expectedBody {
+				t.Fatalf("rewritten body = %s, want %s", rewrittenBody, testCase.expectedBody)
+			}
+		})
+	}
+}
+
+// TestApplyCustomUpstreamHeaders 验证自定义请求头覆盖、危险头拒绝与 * 标记语义喵。
+func TestApplyCustomUpstreamHeaders(t *testing.T) {
+	// 合法配置覆盖同名客户端头，* 标记仅表示全部请求生效喵。
+	targetHeaders := make(http.Header)
+	targetHeaders.Set("User-Agent", "client-ua")
+	if err := applyCustomUpstreamHeaders(targetHeaders, `{"*":true,"User-Agent":"Kilo-Code/7.3.50"}`); err != nil {
+		t.Fatalf("apply custom headers: %v", err)
+	}
+	if targetHeaders.Get("User-Agent") != "Kilo-Code/7.3.50" {
+		t.Fatalf("User-Agent = %q, want override", targetHeaders.Get("User-Agent"))
+	}
+	// 认证与 hop-by-hop 危险头必须拒绝，防止伪造凭据或破坏代理语义喵。
+	if err := applyCustomUpstreamHeaders(targetHeaders, `{"authorization":"Bearer leak"}`); err == nil {
+		t.Fatal("authorization header should be rejected")
+	}
+	if err := applyCustomUpstreamHeaders(targetHeaders, `{"Connection":"close"}`); err == nil {
+		t.Fatal("connection header should be rejected")
+	}
+	// 非字符串头值必须拒绝，避免不可序列化值进入上游喵。
+	if err := applyCustomUpstreamHeaders(targetHeaders, `{"X-Trace":123}`); err == nil {
+		t.Fatal("non-string header value should be rejected")
+	}
+	// 空配置直接跳过，非法 JSON 拒绝喵。
+	if err := applyCustomUpstreamHeaders(targetHeaders, ""); err != nil {
+		t.Fatalf("empty config should pass: %v", err)
+	}
+	if err := applyCustomUpstreamHeaders(targetHeaders, `{bad`); err == nil {
+		t.Fatal("invalid JSON should be rejected")
+	}
+	// 导出校验函数与执行路径同源，保存时提前拒绝危险配置喵。
+	if err := ValidateCustomUpstreamHeadersJSON(`{"User-Agent":"ua"}`); err != nil {
+		t.Fatalf("validate custom headers: %v", err)
+	}
+	if err := ValidateCustomUpstreamHeadersJSON(`{"host":"evil"}`); err == nil {
+		t.Fatal("validate should reject host header")
+	}
+}
+
+// TestValidateFieldReplacementsJSON 验证字段替换映射表保存校验规则喵。
+func TestValidateFieldReplacementsJSON(t *testing.T) {
+	// 合法映射表通过喵。
+	if err := ValidateFieldReplacementsJSON(`{"reasoning_effort":{"max":"xhigh"}}`); err != nil {
+		t.Fatalf("validate valid replacements: %v", err)
+	}
+	// messages 开头路径拒绝，对话内容绝不替换喵。
+	if err := ValidateFieldReplacementsJSON(`{"messages.0.content":{"hi":"hello"}}`); err == nil {
+		t.Fatal("messages path should be rejected")
+	}
+	// 空配置通过喵。
+	if err := ValidateFieldReplacementsJSON(""); err != nil {
+		t.Fatalf("empty config should pass: %v", err)
+	}
+	// 非法 JSON 拒绝喵。
+	if err := ValidateFieldReplacementsJSON(`{bad`); err == nil {
+		t.Fatal("invalid JSON should be rejected")
+	}
+	// 空字段路径拒绝喵。
+	if err := ValidateFieldReplacementsJSON(`{"":{"a":"b"}}`); err == nil {
+		t.Fatal("empty path should be rejected")
 	}
 }

@@ -44,7 +44,7 @@ func ExecuteUserUpstreamModel(c *gin.Context, input CustomCandidateExecutionInpu
 	if validateURLError != nil {
 		return &UserUpstreamModelExecutionResult{Err: customCandidatePrecommitFailure(validateURLError)}
 	}
-	requestBody, bodyError := rewrittenCustomRequestBody(c, input.RealModelName)
+	requestBody, bodyError := rewrittenCustomRequestBody(c, input.RealModelName, input.FieldReplacements)
 	if bodyError != nil {
 		return &UserUpstreamModelExecutionResult{Err: customCandidatePrecommitFailure(bodyError)}
 	}
@@ -67,6 +67,10 @@ func ExecuteUserUpstreamModel(c *gin.Context, input CustomCandidateExecutionInpu
 	copyCustomUpstreamHeaders(upstreamRequest.Header, c.Request.Header)
 	if authError := applyCustomCandidateAuth(upstreamRequest.Header, input.AuthStyle, input.APIKey); authError != nil {
 		return &UserUpstreamModelExecutionResult{Err: customCandidatePrecommitFailure(authError)}
+	}
+	// 自定义请求头在复制客户端头与认证头之后应用，认证头仍由 auth_style 独占，其余键覆盖同名客户端头喵。
+	if headersError := applyCustomUpstreamHeaders(upstreamRequest.Header, input.CustomHeaders); headersError != nil {
+		return &UserUpstreamModelExecutionResult{Err: customCandidatePrecommitFailure(headersError)}
 	}
 	upstreamRequest.ContentLength = int64(len(requestBody))
 	upstreamRequest.Header.Set("Content-Length", strconv.FormatInt(upstreamRequest.ContentLength, 10))

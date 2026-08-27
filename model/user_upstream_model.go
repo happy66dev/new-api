@@ -34,6 +34,12 @@ type UserUpstreamModel struct {
 	CredentialVersion  int    `json:"-"`
 	RealModelName      string `json:"real_model_name" gorm:"type:varchar(128)"`
 	AuthStyle          string `json:"auth_style" gorm:"type:varchar(32)"`
+	// 自定义请求头：结构化 JSON，如 {"*": true, "User-Agent": "Kilo-Code/7.3.50"}，* 表示对全部请求生效喵。
+	// 认证头与 hop-by-hop 头禁止设置（由 auth_style 与代理语义管理），其余键会覆盖客户端同名头喵。
+	CustomHeaders string `json:"custom_headers" gorm:"type:text"`
+	// 请求字段替换：字段路径 → 旧值→新值映射表，如 {"reasoning_effort": {"max": "xhigh"}} 喵。
+	// 只作用于请求参数 JSON 标量，路径以 messages 开头的对话内容一律不替换喵。
+	FieldReplacements string `json:"field_replacements" gorm:"type:text"`
 	// 计费：每个字段是该 token 分类的独立价格（每百万 token 的 RMB 元），decimal 字符串喵。
 	ModelRatio           string `json:"model_ratio" gorm:"type:varchar(32)"`
 	CompletionRatio      string `json:"completion_ratio" gorm:"type:varchar(32)"`

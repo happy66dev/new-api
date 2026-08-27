@@ -909,6 +909,9 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 				StallTimeoutSeconds:      probeParameters.StallTimeoutSeconds,
 				MinContentChars:          probeParameters.MinContentChars,
 				ProbeTotalTimeoutSeconds: probeParameters.ProbeTotalTimeoutSeconds,
+				// 引用上游模型的请求定制：自定义请求头与字段替换随条目配置传入喵。
+				CustomHeaders:     referencedUpstreamModel.CustomHeaders,
+				FieldReplacements: referencedUpstreamModel.FieldReplacements,
 			})
 			executionError = executionResult.Err
 			executionUsage = executionResult.Usage

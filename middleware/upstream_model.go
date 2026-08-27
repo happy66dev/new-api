@@ -96,6 +96,9 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 		RealModelName:  upstreamModel.RealModelName,
 		AuthStyle:      model.VirtualModelAuthStyle(upstreamModel.AuthStyle),
 		TimeoutSeconds: userUpstreamModelDefaultTimeoutSeconds,
+		// 请求定制：自定义请求头与字段替换随模型配置传入，供透传时应用喵。
+		CustomHeaders:     upstreamModel.CustomHeaders,
+		FieldReplacements: upstreamModel.FieldReplacements,
 	})
 	// 透传失败：不计费、不写日志，返回受控错误或透传上游错误喵。
 	if executionResult.Err != nil {

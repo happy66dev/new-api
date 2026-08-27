@@ -38,6 +38,8 @@ const sharedModelFixture: UserUpstreamModel = {
   base_url: 'https://example.com',
   real_model_name: 'gpt-4o',
   auth_style: 'bearer',
+  custom_headers: '',
+  field_replacements: '',
   model_ratio: '1',
   completion_ratio: '1',
   cache_ratio: '1',

@@ -38,6 +38,10 @@ type CustomCandidateExecutionInput struct {
 	MinContentChars int
 	// ProbeTotalTimeoutSeconds 探测阶段总预算，单位：秒；零使用默认 300 喵。
 	ProbeTotalTimeoutSeconds int
+	// CustomHeaders 结构化自定义请求头 JSON（如 {"*": true, "User-Agent": "..."}），空表示不追加喵。
+	CustomHeaders string
+	// FieldReplacements 字段值映射表 JSON（如 {"reasoning_effort": {"max": "xhigh"}}），空表示不替换喵。
+	FieldReplacements string
 }
 
 // CustomCandidateExecutionFailure 表示自定义候选在响应提交前可安全编排的失败结果喵。
@@ -201,7 +205,7 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 	if validateURLError != nil {
 		return &CustomCandidateExecutionResult{Err: customCandidatePrecommitFailure(validateURLError)}
 	}
-	requestBody, bodyError := rewrittenCustomRequestBody(c, input.RealModelName)
+	requestBody, bodyError := rewrittenCustomRequestBody(c, input.RealModelName, input.FieldReplacements)
 	if bodyError != nil {
 		return &CustomCandidateExecutionResult{Err: customCandidatePrecommitFailure(bodyError)}
 	}
@@ -224,6 +228,10 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 	copyCustomUpstreamHeaders(upstreamRequest.Header, c.Request.Header)
 	if authError := applyCustomCandidateAuth(upstreamRequest.Header, input.AuthStyle, input.APIKey); authError != nil {
 		return &CustomCandidateExecutionResult{Err: customCandidatePrecommitFailure(authError)}
+	}
+	// 自定义请求头在复制客户端头与认证头之后应用，认证头仍由 auth_style 独占，其余键覆盖同名客户端头喵。
+	if headersError := applyCustomUpstreamHeaders(upstreamRequest.Header, input.CustomHeaders); headersError != nil {
+		return &CustomCandidateExecutionResult{Err: customCandidatePrecommitFailure(headersError)}
 	}
 	upstreamRequest.ContentLength = int64(len(requestBody))
 	upstreamRequest.Header.Set("Content-Length", strconv.FormatInt(upstreamRequest.ContentLength, 10))
@@ -319,8 +327,9 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 	return &CustomCandidateExecutionResult{Usage: usage, TtftMs: ttftMs}
 }
 
-// rewrittenCustomRequestBody 读取可复用 JSON 请求并仅修改顶层 model 字段喵。
-func rewrittenCustomRequestBody(c *gin.Context, realModelName string) ([]byte, error) {
+// rewrittenCustomRequestBody 读取可复用 JSON 请求并改写 model 字段与配置的请求字段替换喵。
+// fieldReplacements 是字段路径 → 旧值→新值映射表 JSON；路径以 messages 开头的对话内容一律不替换喵。
+func rewrittenCustomRequestBody(c *gin.Context, realModelName string, fieldReplacements string) ([]byte, error) {
 	// 喵~防御：当前自定义候选仅接收 JSON，以避免在 multipart 或表单中错误重写用户上传内容喵。
 	if !strings.HasPrefix(strings.ToLower(c.Request.Header.Get("Content-Type")), "application/json") {
 		return nil, errors.New("custom candidate only supports JSON requests")
@@ -341,7 +350,70 @@ func rewrittenCustomRequestBody(c *gin.Context, realModelName string) ([]byte, e
 	if rewriteError != nil {
 		return nil, rewriteError
 	}
+	// 字段值映射表：只替换请求参数标量，绝不触碰 messages 对话内容喵。
+	replacementMap, parseError := parseFieldReplacements(fieldReplacements)
+	if parseError != nil {
+		return nil, parseError
+	}
+	for fieldPath, valueMap := range replacementMap {
+		// 喵~防御：路径以 messages 开头（对话内容）一律跳过，防止改写用户对话喵。
+		if strings.HasPrefix(strings.TrimSpace(fieldPath), "messages") {
+			continue
+		}
+		currentValue := gjson.GetBytes(rewrittenBody, fieldPath)
+		// 喵~防御：字段不存在或非字符串标量时不替换，保持请求原样喵。
+		if !currentValue.Exists() || currentValue.Type != gjson.String {
+			continue
+		}
+		// 命中映射旧值才替换为新值，未命中的值原样保留喵。
+		if replacementValue, hit := valueMap[currentValue.String()]; hit {
+			rewrittenBody, rewriteError = sjson.SetBytes(rewrittenBody, fieldPath, replacementValue)
+			if rewriteError != nil {
+				return nil, rewriteError
+			}
+		}
+	}
 	return rewrittenBody, nil
+}
+
+// ValidateFieldReplacementsJSON 校验字段替换映射表 JSON 配置喵。
+// 路径非空且不得以 messages 开头（对话内容绝不替换），供保存时拒绝非法配置喵。
+func ValidateFieldReplacementsJSON(fieldReplacements string) error {
+	replacementMap, err := parseFieldReplacements(fieldReplacements)
+	if err != nil {
+		return err
+	}
+	for fieldPath := range replacementMap {
+		// 喵~防御：以 messages 开头的路径会改写对话内容，一律拒绝保存喵。
+		if strings.HasPrefix(strings.TrimSpace(fieldPath), "messages") {
+			return errors.New("field replacement path must not start with messages")
+		}
+	}
+	return nil
+}
+
+// parseFieldReplacements 解析并校验字段替换映射表 JSON，返回字段路径 → 旧值→新值映射喵。
+func parseFieldReplacements(fieldReplacements string) (map[string]map[string]string, error) {
+	// 喵~防御：空配置直接跳过，避免无意义的解析喵。
+	if strings.TrimSpace(fieldReplacements) == "" {
+		return nil, nil
+	}
+	var rawMap map[string]map[string]string
+	if err := common.UnmarshalJsonStr(fieldReplacements, &rawMap); err != nil {
+		return nil, errors.New("field replacements JSON is invalid")
+	}
+	for fieldPath, valueMap := range rawMap {
+		// 喵~防御：空路径与空新旧值一律拒绝，防止生成无意义的替换规则喵。
+		if strings.TrimSpace(fieldPath) == "" {
+			return nil, errors.New("field replacement path is empty")
+		}
+		for oldValue, newValue := range valueMap {
+			if strings.TrimSpace(oldValue) == "" || strings.TrimSpace(newValue) == "" {
+				return nil, errors.New("field replacement value is empty")
+			}
+		}
+	}
+	return rawMap, nil
 }
 
 // buildCustomUpstreamURL 保留原始 escaped path 与 query，并在 Base URL 下安全拼接路径喵。
@@ -386,12 +458,24 @@ func buildCustomUpstreamURL(baseURL *url.URL, requestURL *url.URL) (*url.URL, er
 	return &upstreamURL, nil
 }
 
+// blockedCustomUpstreamHeaderNames 返回客户端不可设置的请求头名（认证与 hop-by-hop 语义头）喵。
+// 认证头由 applyCustomCandidateAuth 独占注入，hop-by-hop 头会破坏代理连接语义喵。
+func blockedCustomUpstreamHeaderNames() map[string]struct{} {
+	return map[string]struct{}{
+		"authorization": {}, "x-api-key": {}, "proxy-authorization": {}, "cookie": {}, "connection": {}, "keep-alive": {}, "proxy-connection": {}, "te": {}, "trailer": {}, "transfer-encoding": {}, "upgrade": {}, "host": {}, "content-length": {}, "forwarded": {}, "x-forwarded-for": {}, "x-forwarded-host": {}, "x-forwarded-proto": {}, "x-real-ip": {},
+	}
+}
+
+// isBlockedCustomUpstreamHeader 判断请求头名是否属于危险头（大小写不敏感）喵。
+func isBlockedCustomUpstreamHeader(headerName string) bool {
+	_, blocked := blockedCustomUpstreamHeaderNames()[strings.ToLower(strings.TrimSpace(headerName))]
+	return blocked
+}
+
 // copyCustomUpstreamHeaders 复制安全请求头并移除客户端可控的认证和 hop-by-hop 字段喵。
 func copyCustomUpstreamHeaders(targetHeaders http.Header, sourceHeaders http.Header) {
 	// 定义固定危险头集合，防止客户端影响代理连接语义或伪造上游认证喵。
-	blockedHeaders := map[string]struct{}{
-		"authorization": {}, "x-api-key": {}, "proxy-authorization": {}, "cookie": {}, "connection": {}, "keep-alive": {}, "proxy-connection": {}, "te": {}, "trailer": {}, "transfer-encoding": {}, "upgrade": {}, "host": {}, "content-length": {}, "forwarded": {}, "x-forwarded-for": {}, "x-forwarded-host": {}, "x-forwarded-proto": {}, "x-real-ip": {},
-	}
+	blockedHeaders := blockedCustomUpstreamHeaderNames()
 	// 喵~防御：Connection 头可声明额外 hop-by-hop 字段，必须一并阻断以防客户端控制上游连接语义喵。
 	for _, connectionValue := range sourceHeaders.Values("Connection") {
 		for _, connectionToken := range strings.Split(connectionValue, ",") {
@@ -408,6 +492,47 @@ func copyCustomUpstreamHeaders(targetHeaders http.Header, sourceHeaders http.Hea
 			targetHeaders.Add(headerName, headerValue)
 		}
 	}
+}
+
+// ValidateCustomUpstreamHeadersJSON 校验自定义请求头 JSON 配置是否可安全应用喵。
+// 供保存时拒绝非法配置；执行时 applyCustomUpstreamHeaders 内部也会再次防御喵。
+func ValidateCustomUpstreamHeadersJSON(customHeadersJSON string) error {
+	return applyCustomUpstreamHeaders(nil, customHeadersJSON)
+}
+
+// applyCustomUpstreamHeaders 解析结构化自定义请求头 JSON 并覆盖到目标请求头喵。
+// "*" 为语义标记表示对全部请求生效，本身不是请求头；其余键覆盖同名客户端头喵。
+func applyCustomUpstreamHeaders(headers http.Header, customHeadersJSON string) error {
+	// 喵~防御：空配置直接跳过，避免无意义的解析喵。
+	if strings.TrimSpace(customHeadersJSON) == "" {
+		return nil
+	}
+	var customHeaders map[string]any
+	if err := common.UnmarshalJsonStr(customHeadersJSON, &customHeaders); err != nil {
+		return errors.New("custom upstream headers JSON is invalid")
+	}
+	for headerName, headerValue := range customHeaders {
+		// "*" 标记跳过，仅表示对所有请求生效喵。
+		if headerName == "*" {
+			continue
+		}
+		// 喵~防御：空头名与危险头一律拒绝，防止客户端覆盖认证或破坏代理语义喵。
+		if strings.TrimSpace(headerName) == "" {
+			return errors.New("custom upstream header name is empty")
+		}
+		if isBlockedCustomUpstreamHeader(headerName) {
+			return errors.New("custom upstream header is not allowed: " + headerName)
+		}
+		// 喵~防御：头值必须是字符串，拒绝布尔/数字等不可序列化的值喵。
+		valueText, ok := headerValue.(string)
+		if !ok {
+			return errors.New("custom upstream header value must be a string: " + headerName)
+		}
+		if headers != nil {
+			headers.Set(headerName, valueText)
+		}
+	}
+	return nil
 }
 
 // applyCustomCandidateAuth 按候选认证方式注入唯一的上游凭据喵。

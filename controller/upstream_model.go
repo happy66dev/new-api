@@ -26,6 +26,8 @@ type upstreamModelInput struct {
 	APIKey               string `json:"api_key"`
 	RealModelName        string `json:"real_model_name"`
 	AuthStyle            string `json:"auth_style"`
+	CustomHeaders        string `json:"custom_headers"`
+	FieldReplacements    string `json:"field_replacements"`
 	ModelRatio           string `json:"model_ratio"`
 	CompletionRatio      string `json:"completion_ratio"`
 	CacheRatio           string `json:"cache_ratio"`
@@ -170,6 +172,16 @@ func saveUpstreamModelFields(input upstreamModelInput, ownerUserID int, existing
 	if existing.RealModelName == "" {
 		return errors.New("真实模型名不能为空")
 	}
+	// 自定义请求头必须可通过安全校验，否则拒绝保存喵。
+	if err := virtualmodelservice.ValidateCustomUpstreamHeadersJSON(input.CustomHeaders); err != nil {
+		return err
+	}
+	existing.CustomHeaders = input.CustomHeaders
+	// 字段替换映射表必须可通过安全校验（禁止 messages 路径），否则拒绝保存喵。
+	if err := virtualmodelservice.ValidateFieldReplacementsJSON(input.FieldReplacements); err != nil {
+		return err
+	}
+	existing.FieldReplacements = input.FieldReplacements
 	// 认证方式规范化，未知方式直接拒绝喵。
 	authStyle, authError := model.NormalizeVirtualModelAuthStyle(model.VirtualModelAuthStyle(input.AuthStyle))
 	if authError != nil {
@@ -351,7 +363,7 @@ func UpdateUserUpstreamModel(c *gin.Context) {
 		}
 	}
 	// 更新条件绑定旧版本号，保证并发写只有一个请求成功，其余命中零行更新喵。
-	updateResult := model.DB.Model(upstreamModel).Where("id = ? AND owner_user_id = ? AND version = ?", upstreamModelID, c.GetInt("id"), existingVersion).Select("normalized_name", "display_name", "enabled", "encrypted_base_url", "encrypted_api_key", "base_url_fingerprint", "api_key_fingerprint", "credential_version", "real_model_name", "auth_style", "model_ratio", "completion_ratio", "cache_ratio", "cache_creation_ratio", "cache_creation_5m_ratio", "cache_creation_1h_ratio", "image_ratio", "audio_ratio", "audio_completion_ratio", "balance_cents", "available_cents", "balance_check_enabled", "balance_check_path", "share_enabled", "share_limit_cents", "show_balance_enabled", "version", "updated_time").Updates(upstreamModel)
+	updateResult := model.DB.Model(upstreamModel).Where("id = ? AND owner_user_id = ? AND version = ?", upstreamModelID, c.GetInt("id"), existingVersion).Select("normalized_name", "display_name", "enabled", "encrypted_base_url", "encrypted_api_key", "base_url_fingerprint", "api_key_fingerprint", "credential_version", "real_model_name", "auth_style", "custom_headers", "field_replacements", "model_ratio", "completion_ratio", "cache_ratio", "cache_creation_ratio", "cache_creation_5m_ratio", "cache_creation_1h_ratio", "image_ratio", "audio_ratio", "audio_completion_ratio", "balance_cents", "available_cents", "balance_check_enabled", "balance_check_path", "share_enabled", "share_limit_cents", "show_balance_enabled", "version", "updated_time").Updates(upstreamModel)
 	if updateResult.Error != nil {
 		common.ApiError(c, updateResult.Error)
 		return

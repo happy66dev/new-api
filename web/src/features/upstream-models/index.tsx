@@ -7,7 +7,7 @@
  (at your option) any later version.
 */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Pencil, Plus, RefreshCw, Settings2, Target, Trash2, Users, Wallet } from 'lucide-react'
+import { Pencil, Plus, RefreshCw, Settings2, Target, Trash2, Users, Wand2, Wallet } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -69,6 +69,24 @@ const yuanToCents = (yuan: string): number => {
   return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed * 100) : 0
 }
 
+// 自定义请求头预设：统一用户标识 UA，防止上游 UA 判断拦截请求喵。
+// "*" 标记表示该配置对全部请求生效，本身不是真实请求头喵。
+const CUSTOM_HEADERS_PRESET = JSON.stringify(
+  {
+    '*': true,
+    'User-Agent': 'Kilo-Code/7.3.50 ai-sdk/provider-utils/4.0.27 runtime/bun/1.3.14',
+  },
+  null,
+  2
+)
+
+// 字段替换预设：把思考强度 max 映射为上游更青睐的 xhigh，只作用于请求参数喵。
+const FIELD_REPLACEMENTS_PRESET = JSON.stringify(
+  { reasoning_effort: { max: 'xhigh' } },
+  null,
+  2
+)
+
 // UpstreamModelDrawer 提供创建/编辑用户上游模型的一体化抽屉喵。
 function UpstreamModelDrawer({
   open,
@@ -109,6 +127,9 @@ function UpstreamModelDrawer({
   // shareList 是当前模式下生效的逗号分隔用户 id 名单喵。
   const [shareList, setShareList] = useState('')
   const [showBalanceEnabled, setShowBalanceEnabled] = useState(false)
+  // 请求定制：自定义请求头与字段替换的 JSON 文本，保存时校验合法性喵。
+  const [customHeadersJSON, setCustomHeadersJSON] = useState('')
+  const [fieldReplacementsJSON, setFieldReplacementsJSON] = useState('')
   const [isSaving, setIsSaving] = useState(false)
 
   // 打开状态或编辑对象变化时重置本地草稿，避免把上一次字段带入新模型喵。
@@ -152,6 +173,8 @@ function UpstreamModelDrawer({
       setShareList('')
     }
     setShowBalanceEnabled(model?.show_balance_enabled ?? false)
+    setCustomHeadersJSON(model?.custom_headers ?? '')
+    setFieldReplacementsJSON(model?.field_replacements ?? '')
   }, [model, open])
 
   // saveModel 校验并保存用户上游模型，成功后刷新列表喵。
@@ -172,6 +195,16 @@ function UpstreamModelDrawer({
       toast.error(t('Upstream URL and API key are required'))
       return
     }
+    // 喵~防御：自定义请求头与字段替换必须是合法 JSON，否则拒绝保存喵。
+    const trimmedCustomHeaders = customHeadersJSON.trim()
+    const trimmedFieldReplacements = fieldReplacementsJSON.trim()
+    try {
+      if (trimmedCustomHeaders) JSON.parse(trimmedCustomHeaders)
+      if (trimmedFieldReplacements) JSON.parse(trimmedFieldReplacements)
+    } catch {
+      toast.error(t('Request customization JSON is invalid'))
+      return
+    }
     // 组装创建或更新请求载荷，编辑模式携带版本号做乐观并发控制喵。
     const input: UserUpstreamModelInput = {
       normalized_name: trimmedNormalizedName,
@@ -182,6 +215,8 @@ function UpstreamModelDrawer({
       api_key: apiKey,
       real_model_name: realModelName.trim(),
       auth_style: authStyle,
+      custom_headers: trimmedCustomHeaders,
+      field_replacements: trimmedFieldReplacements,
       model_ratio: modelRatio,
       completion_ratio: completionRatio,
       cache_ratio: cacheRatio,
@@ -308,6 +343,61 @@ function UpstreamModelDrawer({
                 <option value='anthropic'>Anthropic</option>
               </select>
             </label>
+          </SideDrawerSection>
+
+          <SideDrawerSection>
+            <SideDrawerSectionHeader
+              title={t('Request Customization')}
+              description={t('Custom headers and field replacements for upstream requests')}
+              icon={<Settings2 className='size-4' />}
+              iconTone='info'
+            />
+            <div className='flex items-center justify-between gap-3'>
+              <span className='text-sm font-medium'>{t('Custom request headers')}</span>
+              <Button
+                type='button'
+                size='sm'
+                variant='outline'
+                onClick={() => setCustomHeadersJSON(CUSTOM_HEADERS_PRESET)}
+                disabled={isSaving}
+              >
+                <Wand2 className='size-3.5' />
+                {t('Use preset')}
+              </Button>
+            </div>
+            <Textarea
+              value={customHeadersJSON}
+              onChange={(event) => setCustomHeadersJSON(event.target.value)}
+              placeholder={t('Custom headers JSON (e.g. {"*": true, "User-Agent": "..."})')}
+              disabled={isSaving}
+              className='min-h-[96px] font-mono text-xs'
+            />
+            <p className='text-muted-foreground text-xs'>
+              {t('Custom headers apply to all upstream requests and override client headers. Authentication headers are managed separately.')}
+            </p>
+            <div className='flex items-center justify-between gap-3'>
+              <span className='text-sm font-medium'>{t('Field replacements')}</span>
+              <Button
+                type='button'
+                size='sm'
+                variant='outline'
+                onClick={() => setFieldReplacementsJSON(FIELD_REPLACEMENTS_PRESET)}
+                disabled={isSaving}
+              >
+                <Wand2 className='size-3.5' />
+                {t('Use preset')}
+              </Button>
+            </div>
+            <Textarea
+              value={fieldReplacementsJSON}
+              onChange={(event) => setFieldReplacementsJSON(event.target.value)}
+              placeholder={t('Field replacement JSON (e.g. {"reasoning_effort": {"max": "xhigh"}})')}
+              disabled={isSaving}
+              className='min-h-[80px] font-mono text-xs'
+            />
+            <p className='text-muted-foreground text-xs'>
+              {t('Field replacements map request parameter values (e.g. reasoning effort) and never modify message contents.')}
+            </p>
           </SideDrawerSection>
 
           <SideDrawerSection>

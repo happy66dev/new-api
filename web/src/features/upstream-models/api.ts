@@ -15,6 +15,10 @@ export type UserUpstreamModel = {
   base_url: string
   real_model_name: string
   auth_style: 'bearer' | 'api_key' | 'anthropic' | string
+  // 自定义请求头：结构化 JSON（{"*": true, "User-Agent": "..."}），防止 UA 判断拦截喵。
+  custom_headers: string
+  // 请求字段替换：字段路径 → 旧值→新值映射表（如 {"reasoning_effort": {"max": "xhigh"}}）喵。
+  field_replacements: string
   model_ratio: string
   completion_ratio: string
   cache_ratio: string
@@ -60,6 +64,9 @@ export type UserUpstreamModelInput = {
   api_key?: string
   real_model_name: string
   auth_style: string
+  // 自定义请求头与字段替换在 Q 实现，P1 前端暂不提供编辑入口，字段保持可选喵。
+  custom_headers?: string
+  field_replacements?: string
   model_ratio: string
   completion_ratio: string
   cache_ratio: string
