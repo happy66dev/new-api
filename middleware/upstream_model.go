@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	upstreammodelservice "github.com/QuantumNous/new-api/service/upstreammodel"
@@ -56,6 +57,8 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 		// 属主名下没有该模型时，查询共享中的同名模型，供其他用户免费共享调用喵。
 		upstreamModel, queryError = model.GetEnabledSharedUserUpstreamModelByName(normalizedName)
 		if queryError != nil {
+			// 喵~防御：模型不存在或停用时只更新其最近调用时间，不改变成功率喵。
+			touchUpstreamModelConfigState(c, ownerUserID, normalizedName, startTime)
 			abortWithOpenAiMessage(c, http.StatusNotFound, "user upstream model not found", types.ErrorCode("upstream_model_not_found"))
 			return false
 		}
@@ -64,10 +67,13 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 	// 请求前硬检查：自用调用需余额与可用额度都大于 0；共享调用由查询条件保证三账户未耗尽喵。
 	if !isShared {
 		if upstreamModel.BalanceCents <= 0 {
+			// 配置态：余额耗尽不计入成功率，只更新最近调用时间喵。
+			recordUpstreamModelProbeState(upstreamModel, false, false, false, "", startTime)
 			abortUpstreamModelQuotaExhausted(c)
 			return false
 		}
 		if upstreamModel.AvailableCents <= 0 {
+			recordUpstreamModelProbeState(upstreamModel, false, false, false, "", startTime)
 			abortUpstreamModelQuotaExhausted(c)
 			return false
 		}
@@ -76,6 +82,8 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 	apiKey, decryptAPIKeyError := virtualmodelservice.DecryptCredential(upstreamModel.EncryptedAPIKey, upstreamModel.CredentialVersion)
 	// 喵~防御：凭据密文篡改、主密钥缺失或解密失败均只返回受控不可用错误，不泄露秘密或密文状态喵。
 	if decryptBaseURLError != nil || decryptAPIKeyError != nil {
+		// 凭据解密失败计入失败（反映配置问题），记录受控错误分类喵。
+		recordUpstreamModelProbeState(upstreamModel, isShared, true, false, "credential_error", startTime)
 		abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "user upstream model is not available", types.ErrorCode("upstream_model_unavailable"))
 		return false
 	}
@@ -88,6 +96,8 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 	})
 	// 透传失败：不计费、不写日志，返回受控错误或透传上游错误喵。
 	if executionResult.Err != nil {
+		// 实体状态检测：上游 4xx/5xx、超时、连接失败等透传失败计入失败喵。
+		recordUpstreamModelProbeState(upstreamModel, isShared, true, false, upstreamModelFailureErrorClass(executionResult.Err), startTime)
 		customFailure := &virtualmodelservice.CustomCandidateExecutionFailure{}
 		// 喵~防御：非结构化异常不能透传；若响应已提交则只中止，避免重复错误响应喵。
 		if !errors.As(executionResult.Err, &customFailure) {
@@ -107,10 +117,70 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 		abortWithOpenAiMessage(c, http.StatusBadGateway, "user upstream model is unavailable", types.ErrorCode("upstream_model_unavailable"))
 		return false
 	}
-	// 成功透传后按独立 RMB 计费系统扣费与写日志；共享调用免费只累计共享消耗喵。
+	// 成功透传计入成功，随后按独立 RMB 计费系统扣费与写日志；共享调用免费只累计共享消耗喵。
+	recordUpstreamModelProbeState(upstreamModel, isShared, true, true, "", startTime)
 	settleUserUpstreamModelCharge(c, upstreamModel.OwnerUserID, upstreamModel, executionResult.Usage, modelRequest.Group, isUpstreamModelRequestStreaming(c), int(time.Since(startTime).Seconds()), isShared)
 	c.Abort()
 	return false
+}
+
+// recordUpstreamModelProbeState 记录一次上游模型真实调用的被动统计与最近一次状态喵。
+// counted 为 true 时计入成功率（成功/失败都累计请求数），为 false 时只更新最近一次时间喵。
+func recordUpstreamModelProbeState(upstreamModel *model.UserUpstreamModel, isShared bool, counted bool, success bool, errorClass string, startTime time.Time) {
+	// 喵~防御：空模型对象直接返回，避免空指针喵。
+	if upstreamModel == nil {
+		return
+	}
+	latencyMs := time.Since(startTime).Milliseconds()
+	probeModelName := upstreamModel.UserUpstreamModelName()
+	// 自用与共享维度使用不同的作用域与固定隔离分组，互不混用喵。
+	scope := model.EntityProbeScopeUpstream
+	if isShared {
+		scope = model.EntityProbeScopeUpstreamShared
+	}
+	now := time.Now().Unix()
+	if !counted {
+		// 配置态请求：只更新最近一次时间，不改动成功率喵。
+		_ = model.TouchEntityProbeLastAt(scope, upstreamModel.ID, 0, upstreamModel.OwnerUserID, now)
+		return
+	}
+	if isShared {
+		perfmetrics.RecordEntityProbeShared(probeModelName, latencyMs, success)
+	} else {
+		perfmetrics.RecordEntityProbe(probeModelName, latencyMs, success)
+	}
+	_ = model.RecordEntityProbeCounted(scope, upstreamModel.ID, 0, upstreamModel.OwnerUserID, now, success, latencyMs, errorClass)
+}
+
+// touchUpstreamModelConfigState 模型不存在或停用时尝试更新其最近调用时间（不改变成功率）喵。
+func touchUpstreamModelConfigState(c *gin.Context, ownerUserID int, normalizedName string, startTime time.Time) {
+	// 喵~防御：空请求上下文直接返回喵。
+	if c == nil {
+		return
+	}
+	now := time.Now().Unix()
+	// 先查自己名下任意状态的模型，命中说明是被停用或额度耗尽喵。
+	if upstreamModel, queryError := model.GetUserUpstreamModelByOwnerName(ownerUserID, normalizedName); queryError == nil && upstreamModel != nil {
+		_ = model.TouchEntityProbeLastAt(model.EntityProbeScopeUpstream, upstreamModel.ID, 0, upstreamModel.OwnerUserID, now)
+		return
+	}
+	// 自己名下没有时查共享池任意状态的模型，命中说明共享额度耗尽或共享被关闭喵。
+	if sharedModel, queryError := model.GetSharedUserUpstreamModelByNormalizedName(normalizedName); queryError == nil && sharedModel != nil {
+		_ = model.TouchEntityProbeLastAt(model.EntityProbeScopeUpstreamShared, sharedModel.ID, 0, sharedModel.OwnerUserID, now)
+	}
+}
+
+// upstreamModelFailureErrorClass 从透传失败结果提取受控错误分类，非结构化异常回退通用文案喵。
+func upstreamModelFailureErrorClass(executionError error) string {
+	// 喵~防御：空错误回退通用分类，避免空指针喵。
+	if executionError == nil {
+		return "upstream_unavailable"
+	}
+	customFailure := &virtualmodelservice.CustomCandidateExecutionFailure{}
+	if errors.As(executionError, &customFailure) {
+		return customFailure.Failure.ErrorClass
+	}
+	return "upstream_unavailable"
 }
 
 // settleUserUpstreamModelCharge 计算费用、扣减余额与累计消耗，并写入自定上游日志喵。

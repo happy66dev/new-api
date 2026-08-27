@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"gorm.io/gorm"
 )
 
@@ -116,6 +117,20 @@ func GetUserUpstreamModelByOwnerID(upstreamModelID int64, ownerUserID int) (*Use
 	return &upstreamModel, nil
 }
 
+// GetUserUpstreamModelByOwnerName 返回某用户名下的指定名称上游模型（不限制启用状态）喵。
+// 实体状态检测用：模型被停用时仍需定位实体以更新「最近一次调用」喵。
+func GetUserUpstreamModelByOwnerName(ownerUserID int, normalizedName string) (*UserUpstreamModel, error) {
+	// 喵~防御：无效属主或空名称直接返回记录不存在，避免空值进入 SQL 查询喵。
+	if ownerUserID <= 0 || strings.TrimSpace(normalizedName) == "" {
+		return nil, gorm.ErrRecordNotFound
+	}
+	var upstreamModel UserUpstreamModel
+	if err := DB.Where("owner_user_id = ? AND normalized_name = ?", ownerUserID, normalizedName).First(&upstreamModel).Error; err != nil {
+		return nil, err
+	}
+	return &upstreamModel, nil
+}
+
 // GetEnabledUserUpstreamModelByOwnerName 返回某用户启用的指定名称上游模型喵。
 func GetEnabledUserUpstreamModelByOwnerName(ownerUserID int, normalizedName string) (*UserUpstreamModel, error) {
 	// 喵~防御：无效属主或空名称直接返回记录不存在，避免隐藏资源存在性喵。
@@ -144,6 +159,13 @@ func DeleteUserUpstreamModelByOwnerWithVersion(upstreamModelID int64, ownerUserI
 	// 喵~防御：零行删除既可能是并发版本冲突，也可能是资源不存在，统一返回记录不存在喵。
 	if result.RowsAffected != 1 {
 		return gorm.ErrRecordNotFound
+	}
+	// 实体状态检测：模型删除后联动清理自用与共享维度的状态行，避免残留孤儿数据喵。
+	if err := DB.Where("scope IN ? AND entity_id = ?",
+		[]string{EntityProbeScopeUpstream, EntityProbeScopeUpstreamShared}, upstreamModelID).
+		Delete(&EntityProbeState{}).Error; err != nil {
+		// 喵~防御：清理失败只记录日志，不阻止删除已提交的结果喵。
+		common.SysError("failed to delete upstream model entity probe states: " + err.Error())
 	}
 	return nil
 }

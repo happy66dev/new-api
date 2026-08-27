@@ -10,6 +10,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	virtualmodelservice "github.com/QuantumNous/new-api/service/virtualmodel"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -1059,7 +1060,147 @@ func GetVirtualModelStatus(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"model": virtualModel.VirtualModelName(), "enabled": virtualModel.Enabled, "candidate_count": len(candidates), "enabled_candidates": countEnabledVirtualCandidates(candidates)})
+	// 实体状态检测：读取启用候选快照作为节点摘要，同时保留旧字段保证 Overview 既有展示不破坏喵。
+	snapshot, snapshotError := model.GetVirtualModelExecutionSnapshot(virtualModel.ID)
+	// 喵~防御：快照读取失败不影响整体状态返回，仅候选摘要为空喵。
+	var snapshotValue *model.VirtualModelExecutionSnapshot
+	if snapshotError == nil && snapshot != nil {
+		snapshotValue = snapshot
+	}
+	payload := buildVirtualModelStatusPayload(virtualModel, snapshotValue)
+	payload.Enabled = virtualModel.Enabled
+	payload.CandidateCount = len(candidates)
+	payload.EnabledCandidates = countEnabledVirtualCandidates(candidates)
+	common.ApiSuccess(c, payload)
+}
+
+// GetVirtualModelCandidateStatus 返回单个候选节点的状态统计喵。
+func GetVirtualModelCandidateStatus(c *gin.Context) {
+	modelID, ok := parseVirtualModelID(c)
+	if !ok {
+		return
+	}
+	virtualModel, ok := loadOwnedVirtualModel(c, modelID)
+	if !ok {
+		return
+	}
+	candidateID, ok := parseVirtualModelCandidateID(c)
+	if !ok {
+		return
+	}
+	// 校验候选确实属于该虚拟模型，防止越权读取其他模型的节点状态喵。
+	var candidate model.VirtualModelCandidate
+	if err := model.DB.Where("id = ? AND virtual_model_id = ?", candidateID, virtualModel.ID).First(&candidate).Error; err != nil {
+		virtualModelNotFound(c)
+		return
+	}
+	label := ""
+	snapshot, snapshotError := model.GetVirtualModelExecutionSnapshot(virtualModel.ID)
+	// 喵~防御：快照可用时取真实模型名作为节点标签喵。
+	if snapshotError == nil && snapshot != nil {
+		for _, snapshotCandidate := range snapshot.Candidates {
+			if snapshotCandidate.CandidateID == candidateID {
+				label = snapshotCandidate.RealModelName
+				break
+			}
+		}
+	}
+	payload := buildVirtualModelCandidateStatusPayload(virtualModel, candidateID, label)
+	common.ApiSuccess(c, payload)
+}
+
+// parseVirtualModelCandidateID 解析并限制路径中的候选编号喵。
+func parseVirtualModelCandidateID(c *gin.Context) (int, bool) {
+	candidateID, err := strconv.Atoi(c.Param("candidateId"))
+	if err != nil || candidateID <= 0 {
+		virtualModelNotFound(c)
+		return 0, false
+	}
+	return candidateID, true
+}
+
+// virtualModelStatusPayload 虚拟模型整体状态响应喵。
+// 保留 enabled/candidate_count/enabled_candidates 旧字段，兼容 Overview 既有展示喵。
+type virtualModelStatusPayload struct {
+	Enabled           bool                             `json:"enabled"`
+	CandidateCount    int                              `json:"candidate_count"`
+	EnabledCandidates int                              `json:"enabled_candidates"`
+	Availability      float64                          `json:"availability"`
+	AvgLatencyMs      int64                            `json:"avg_latency_ms"`
+	RequestCount      int64                            `json:"request_count"`
+	Availability24    []float64                        `json:"availability_24h"`
+	LastAt            int64                            `json:"last_at"`
+	LastSuccess       bool                             `json:"last_success"`
+	LastLatencyMs     int64                            `json:"last_latency_ms"`
+	LastError         string                           `json:"last_error"`
+	Candidates        []virtualModelCandidateStatusPayload `json:"candidates"`
+}
+
+// virtualModelCandidateStatusPayload 虚拟模型候选节点状态摘要喵。
+type virtualModelCandidateStatusPayload struct {
+	CandidateID  int     `json:"candidate_id"`
+	Label        string  `json:"label"`
+	Availability float64 `json:"availability"`
+	AvgLatencyMs int64   `json:"avg_latency_ms"`
+	RequestCount int64   `json:"request_count"`
+	LastAt       int64   `json:"last_at"`
+	LastSuccess  bool    `json:"last_success"`
+	LastError    string  `json:"last_error"`
+}
+
+// buildVirtualModelStatusPayload 组装虚拟模型整体与候选节点摘要的状态载荷喵。
+func buildVirtualModelStatusPayload(virtualModel *model.VirtualModel, snapshot *model.VirtualModelExecutionSnapshot) virtualModelStatusPayload {
+	payload := virtualModelStatusPayload{Candidates: []virtualModelCandidateStatusPayload{}}
+	// 喵~防御：空模型对象直接返回空载荷喵。
+	if virtualModel == nil {
+		return payload
+	}
+	status, queryError := perfmetrics.QueryEntityProbeStatus(virtualModel.VirtualModelName(), perfmetrics.EntityProbeGroupSelf, entityProbeWindowHours)
+	// 喵~防御：聚合查询失败按空数据返回，不阻塞状态展示喵。
+	if queryError != nil {
+		common.SysError("query virtual model entity probe status failed: " + queryError.Error())
+	}
+	payload.Availability = status.Availability
+	payload.AvgLatencyMs = status.AvgLatencyMs
+	payload.RequestCount = status.RequestCount
+	payload.Availability24 = status.Availability24
+	if state, stateError := model.GetEntityProbeState(model.EntityProbeScopeVirtual, int64(virtualModel.ID)); stateError == nil && state != nil {
+		payload.LastAt = state.LastAt
+		payload.LastSuccess = state.LastSuccess
+		payload.LastLatencyMs = state.LastLatencyMs
+		payload.LastError = state.LastError
+	}
+	// 启用候选快照逐个生成节点摘要喵。
+	if snapshot != nil {
+		for _, candidate := range snapshot.Candidates {
+			payload.Candidates = append(payload.Candidates, buildVirtualModelCandidateStatusPayload(virtualModel, candidate.CandidateID, candidate.RealModelName))
+		}
+	}
+	return payload
+}
+
+// buildVirtualModelCandidateStatusPayload 组装单个候选节点的状态摘要喵。
+func buildVirtualModelCandidateStatusPayload(virtualModel *model.VirtualModel, candidateID int, label string) virtualModelCandidateStatusPayload {
+	candidatePayload := virtualModelCandidateStatusPayload{CandidateID: candidateID, Label: label}
+	// 喵~防御：空模型对象直接返回空载荷喵。
+	if virtualModel == nil {
+		return candidatePayload
+	}
+	probeModelName := fmt.Sprintf("%s/candidate/%d", virtualModel.VirtualModelName(), candidateID)
+	status, queryError := perfmetrics.QueryEntityProbeStatus(probeModelName, perfmetrics.EntityProbeGroupSelf, entityProbeWindowHours)
+	// 喵~防御：聚合查询失败按空数据返回，不阻塞状态展示喵。
+	if queryError != nil {
+		common.SysError("query virtual model candidate entity probe status failed: " + queryError.Error())
+	}
+	candidatePayload.Availability = status.Availability
+	candidatePayload.AvgLatencyMs = status.AvgLatencyMs
+	candidatePayload.RequestCount = status.RequestCount
+	if state, stateError := model.GetEntityProbeState(model.EntityProbeScopeVirtualCandidate, int64(candidateID)); stateError == nil && state != nil {
+		candidatePayload.LastAt = state.LastAt
+		candidatePayload.LastSuccess = state.LastSuccess
+		candidatePayload.LastError = state.LastError
+	}
+	return candidatePayload
 }
 
 // countEnabledVirtualCandidates 统计当前配置中启用而非实时健康的候选数量喵。

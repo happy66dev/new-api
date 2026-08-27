@@ -18,7 +18,7 @@ func newUpstreamModelTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	testDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, testDB.AutoMigrate(&model.UserUpstreamModel{}))
+	require.NoError(t, testDB.AutoMigrate(&model.UserUpstreamModel{}, &model.EntityProbeState{}))
 	return testDB
 }
 
@@ -163,4 +163,75 @@ func TestHandleUserUpstreamModelRequestShared(t *testing.T) {
 	handled = handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "user/shared"})
 	require.False(t, handled)
 	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+}
+
+// TestHandleUserUpstreamModelProbeStateConfig 验证配置态请求只更新最近时间、不计入成功率喵。
+func TestHandleUserUpstreamModelProbeStateConfig(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	// 构造独立测试库，替换全局 DB 并在结束后恢复喵。
+	testDB := newUpstreamModelTestDB(t)
+	oldDB := model.DB
+	model.DB = testDB
+	defer func() { model.DB = oldDB }()
+
+	// 余额为 0 的启用模型：请求被硬检查拦截，状态行只触达最近时间喵。
+	require.NoError(t, testDB.Create(&model.UserUpstreamModel{OwnerUserID: 7, NormalizedName: "empty-balance", Enabled: true, BalanceCents: 0, AvailableCents: 100}).Error)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/empty-balance"}`))
+	ctx.Set("id", 7)
+	require.False(t, handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "user/empty-balance"}))
+	require.Equal(t, http.StatusConflict, recorder.Code)
+
+	var emptyBalanceModel model.UserUpstreamModel
+	require.NoError(t, testDB.Where("normalized_name = ?", "empty-balance").First(&emptyBalanceModel).Error)
+	state, stateErr := model.GetEntityProbeState(model.EntityProbeScopeUpstream, emptyBalanceModel.ID)
+	require.NoError(t, stateErr)
+	require.Equal(t, int64(0), state.RequestCount)
+	require.Equal(t, int64(0), state.SuccessCount)
+	require.True(t, state.LastAt > 0)
+
+	// 停用模型：启用查询失败后回退任意状态查询，同样只触达最近时间喵。
+	require.NoError(t, testDB.Create(&model.UserUpstreamModel{OwnerUserID: 7, NormalizedName: "disabled", Enabled: false}).Error)
+	recorder = httptest.NewRecorder()
+	ctx, _ = gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/disabled"}`))
+	ctx.Set("id", 7)
+	require.False(t, handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "user/disabled"}))
+	require.Equal(t, http.StatusNotFound, recorder.Code)
+
+	var disabledModel model.UserUpstreamModel
+	require.NoError(t, testDB.Where("normalized_name = ?", "disabled").First(&disabledModel).Error)
+	state, stateErr = model.GetEntityProbeState(model.EntityProbeScopeUpstream, disabledModel.ID)
+	require.NoError(t, stateErr)
+	require.Equal(t, int64(0), state.RequestCount)
+	require.True(t, state.LastAt > 0)
+}
+
+// TestHandleUserUpstreamModelProbeStateDecryptFailure 验证凭据解密失败计入失败样本喵。
+func TestHandleUserUpstreamModelProbeStateDecryptFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	// 构造独立测试库，替换全局 DB 并在结束后恢复喵。
+	testDB := newUpstreamModelTestDB(t)
+	oldDB := model.DB
+	model.DB = testDB
+	defer func() { model.DB = oldDB }()
+
+	// 余额充足但密文无效的模型：解密失败返回 503，且计入一次失败喵。
+	require.NoError(t, testDB.Create(&model.UserUpstreamModel{OwnerUserID: 7, NormalizedName: "bad-cred", Enabled: true, BalanceCents: 500, AvailableCents: 300, EncryptedBaseURL: "bad-enc", EncryptedAPIKey: "bad-enc", CredentialVersion: 1, RealModelName: "gpt-4o"}).Error)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/bad-cred"}`))
+	ctx.Set("id", 7)
+	require.False(t, handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "user/bad-cred"}))
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+
+	var badCredModel model.UserUpstreamModel
+	require.NoError(t, testDB.Where("normalized_name = ?", "bad-cred").First(&badCredModel).Error)
+	state, stateErr := model.GetEntityProbeState(model.EntityProbeScopeUpstream, badCredModel.ID)
+	require.NoError(t, stateErr)
+	require.Equal(t, int64(1), state.RequestCount)
+	require.Equal(t, int64(0), state.SuccessCount)
+	require.False(t, state.LastSuccess)
+	require.Equal(t, "credential_error", state.LastError)
 }

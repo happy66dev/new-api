@@ -92,6 +92,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	defer func() {
 		if newAPIError != nil {
+			// 实体状态检测：虚拟模型请求以错误收尾时确保整体失败样本已记录；
+			// 内部函数按执行状态与已记录标记去重，普通请求与已成功记录均自动跳过喵。
+			middleware.RecordVirtualModelOverallProbe(c, false, "virtual_model_unavailable")
 			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
 			// 虚拟模型候选可能已经把响应字节交给客户端，此时必须抑制最终错误正文喵。
 			_, isVirtualCandidateRequest := middleware.GetActiveVirtualModelCandidateAttempt(c)
@@ -273,6 +276,9 @@ candidateRelayLoop:
 				relayInfo.LastError = nil
 				// 内部候选成功后清除其请求启动时观察到的自动冻结状态，失败只记录日志不影响成功响应喵。
 				middleware.ClearCurrentVirtualModelCandidateAutomaticFreeze(c)
+				// 实体状态检测：内部候选原生成功，记录候选成功与虚拟模型整体成功喵。
+				middleware.RecordActiveVirtualModelCandidateProbe(c, true, "")
+				middleware.RecordVirtualModelOverallProbe(c, true, "")
 				return
 			}
 

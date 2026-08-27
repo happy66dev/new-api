@@ -14,6 +14,7 @@ import {
   createVirtualModel,
   deleteVirtualModel,
   freezeVirtualModelCandidate,
+  getVirtualModelCandidateStatus,
   getVirtualModelStatus,
   getVirtualModels,
   replaceVirtualModelCandidateFailureRules,
@@ -187,7 +188,23 @@ describe('virtual model API', () => {
       return {
         data: {
           success: true,
-          data: { model: 'virtual/research-route', enabled: true, candidate_count: 2, enabled_candidates: 1 },
+          data: {
+            model: 'virtual/research-route',
+            enabled: true,
+            candidate_count: 2,
+            enabled_candidates: 1,
+            availability: 100,
+            avg_latency_ms: 120,
+            request_count: 5,
+            availability_24h: [100, 100, 80],
+            last_at: 1_700_000_000,
+            last_success: true,
+            last_latency_ms: 90,
+            last_error: '',
+            candidates: [
+              { candidate_id: 42, label: 'gpt-4.1', availability: 100, avg_latency_ms: 120, request_count: 5, last_at: 1_700_000_000, last_success: true, last_error: '' },
+            ],
+          },
         },
       }
     }
@@ -195,6 +212,36 @@ describe('virtual model API', () => {
     const result = await getVirtualModelStatus(21)
 
     expect(result.data?.enabled_candidates).toBe(1)
+    expect(result.data?.availability).toBe(100)
+    expect(result.data?.candidates?.length).toBe(1)
+  })
+
+  test('loads one candidate node status through the scoped endpoint', async () => {
+    // mock GET 校验候选状态查询挂在模型与候选双作用域路径下喵。
+    apiClient.get = async (url) => {
+      expect(url).toBe('/api/virtual-models/21/candidates/42/status')
+      return {
+        data: {
+          success: true,
+          data: {
+            candidate_id: 42,
+            label: 'gpt-4.1',
+            availability: 75,
+            avg_latency_ms: 200,
+            request_count: 3,
+            last_at: 1_700_000_000,
+            last_success: false,
+            last_error: 'rate_limited',
+          },
+        },
+      }
+    }
+
+    const result = await getVirtualModelCandidateStatus(21, 42)
+
+    expect(result.data?.candidate_id).toBe(42)
+    expect(result.data?.last_success).toBe(false)
+    expect(result.data?.last_error).toBe('rate_limited')
   })
 
   test('freezes one candidate with an explicit future expiration timestamp', async () => {

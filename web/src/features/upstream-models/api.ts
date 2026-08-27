@@ -86,6 +86,53 @@ export type UserUpstreamModelApiResponse<T> = {
   data?: T
 }
 
+// UpstreamModelStatus 是状态检测接口返回的属主视角聚合统计喵。
+export type UpstreamModelStatus = {
+  // 可用性是 0-100 的百分比喵。
+  availability: number
+  avg_latency_ms: number
+  request_count: number
+  // availability_24h 是最近 24 个采样点的可用性序列，供 AvailabilityBars 展示喵。
+  availability_24h: number[]
+  last_at: number
+  last_success: boolean
+  last_latency_ms: number
+  last_error: string
+  // shared 是共享调用维度的聚合，仅属主请求 include_shared=true 且共享有数据时携带喵。
+  shared?: UpstreamModelSharedStatus
+}
+
+// UpstreamModelSharedStatus 是共享使用者视角的状态，不含错误明细与 24h 序列喵。
+export type UpstreamModelSharedStatus = {
+  availability: number
+  avg_latency_ms: number
+  request_count: number
+  last_at: number
+  last_success: boolean
+}
+
+// getUpstreamModelStatus 查询属主视角的上游模型状态，includeShared 时附加共享维度喵。
+export async function getUpstreamModelStatus(
+  id: number,
+  includeShared = false
+): Promise<UserUpstreamModelApiResponse<UpstreamModelStatus>> {
+  const response = await api.get(`/api/upstream-models/${id}/status`, {
+    params: { include_shared: includeShared ? 'true' : 'false' },
+  })
+  return response.data
+}
+
+// getSharedUpstreamModelStatus 以共享使用者身份查询某上游模型的共享维度聚合状态喵。
+export async function getSharedUpstreamModelStatus(
+  name: string
+): Promise<UserUpstreamModelApiResponse<UpstreamModelSharedStatus>> {
+  // 喵~防御：名称编码避免特殊字符破坏路由喵。
+  const response = await api.get(
+    `/api/upstream-models/shared/${encodeURIComponent(name)}/status`
+  )
+  return response.data
+}
+
 export async function getUserUpstreamModels(): Promise<
   UserUpstreamModelApiResponse<UserUpstreamModel[]>
 > {

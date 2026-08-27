@@ -35,6 +35,7 @@ import { formatPrice, formatRequestPrice } from '../lib/price'
 import type { PricingModel, TokenUnit } from '../types'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
 import { ModelPerfBadge, type ModelPerfBadgeData } from './model-perf-badge'
+import { SharedUpstreamStatusDot } from './shared-upstream-status-dot'
 
 export interface ModelCardProps {
   model: PricingModel
@@ -205,10 +206,12 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
       {/* Header: icon + name + price + actions */}
       <div className='flex items-start justify-between gap-2.5 sm:gap-3'>
         <div className='flex min-w-0 items-start gap-2.5 sm:gap-3'>
-          <div className={cn(
-            'flex size-9 shrink-0 items-center justify-center rounded-lg sm:size-10 sm:rounded-xl',
-            props.backgroundImage ? 'bg-muted/50' : 'bg-muted/40'
-          )}>
+          <div
+            className={cn(
+              'flex size-9 shrink-0 items-center justify-center rounded-lg sm:size-10 sm:rounded-xl',
+              props.backgroundImage ? 'bg-muted/50' : 'bg-muted/40'
+            )}
+          >
             {modelIcon || (
               <span className='text-muted-foreground text-sm font-bold'>
                 {initial}
@@ -216,9 +219,17 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
             )}
           </div>
           <div className='min-w-0'>
-            <h3 className='text-foreground truncate font-mono text-[15px] leading-tight font-bold'>
-              {props.model.model_name}
-            </h3>
+            <div className='flex min-w-0 items-center gap-1.5'>
+              <h3 className='text-foreground truncate font-mono text-[15px] leading-tight font-bold'>
+                {props.model.model_name}
+              </h3>
+              {/* 用户共享模型：在模型名旁展示共享维度健康圆点喵。 */}
+              {props.model.owner_by === 'user-shared' && (
+                <SharedUpstreamStatusDot
+                  modelName={props.model.model_name || ''}
+                />
+              )}
+            </div>
             <div className='mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm sm:mt-1 sm:gap-x-3'>
               {priceSummary}
             </div>
@@ -253,7 +264,9 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
       {/* 用户共享模型的免责说明：提示非本站提供、本站不担保安全喵。 */}
       {props.model.owner_by === 'user-shared' && (
         <p className='text-muted-foreground/60 mt-1.5 flex items-start gap-1.5 rounded-md border border-amber-300/50 bg-amber-50/50 px-2 py-1.5 text-[11px] leading-4 dark:border-amber-400/20 dark:bg-amber-400/10'>
-          <span className='mt-0.5 text-amber-600/70 dark:text-amber-300/70'>⚠</span>
+          <span className='mt-0.5 text-amber-600/70 dark:text-amber-300/70'>
+            ⚠
+          </span>
           <span>
             {t(
               'These are user-shared upstream models, not provided by this site. We do not guarantee their availability or safety.'

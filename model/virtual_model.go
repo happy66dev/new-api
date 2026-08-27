@@ -772,6 +772,12 @@ func DeleteVirtualModelByOwnerWithVersion(virtualModelID int, ownerUserID int, o
 		if deleteResult.RowsAffected != 1 {
 			return errors.New("virtual_model_version_conflict")
 		}
+		// 实体状态检测：模型删除后联动清理整体与候选节点的状态行，避免残留孤儿数据喵。
+		if err := tx.Where("(scope = ? AND entity_id = ?) OR (scope = ? AND virtual_id = ?)",
+			EntityProbeScopeVirtual, virtualModelID, EntityProbeScopeVirtualCandidate, virtualModelID).
+			Delete(&EntityProbeState{}).Error; err != nil {
+			return err
+		}
 		return nil
 	})
 }

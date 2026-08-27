@@ -8,6 +8,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	upstreammodelservice "github.com/QuantumNous/new-api/service/upstreammodel"
 	virtualmodelservice "github.com/QuantumNous/new-api/service/virtualmodel"
 	"github.com/gin-gonic/gin"
@@ -488,4 +489,95 @@ func SyncUserUpstreamModelAvailable(c *gin.Context) {
 		"available_cents":          remainingCents,
 		"upstream_remaining_cents": remainingCents,
 	})
+}
+
+// entityProbeWindowHours 实体状态检测的统计窗口，单位：小时喵。
+const entityProbeWindowHours = 24
+
+// upstreamModelStatusPayload 属主视角的上游模型状态响应喵。
+type upstreamModelStatusPayload struct {
+	Availability   float64   `json:"availability"`
+	AvgLatencyMs   int64     `json:"avg_latency_ms"`
+	RequestCount   int64     `json:"request_count"`
+	Availability24 []float64 `json:"availability_24h"`
+	LastAt         int64     `json:"last_at"`
+	LastSuccess    bool      `json:"last_success"`
+	LastLatencyMs  int64     `json:"last_latency_ms"`
+	LastError      string    `json:"last_error"`
+	// Shared 共享调用维度的聚合，仅属主 include_shared=true 时携带喵。
+	Shared *upstreamModelStatusPayload `json:"shared,omitempty"`
+}
+
+// GetUserUpstreamModelStatus 返回属主视角的上游模型状态（自用统计 + 最近一次）喵。
+// ?include_shared=true 时额外携带共享调用维度的聚合，供属主切换查看喵。
+func GetUserUpstreamModelStatus(c *gin.Context) {
+	upstreamModelID, ok := parseUpstreamModelID(c)
+	if !ok {
+		return
+	}
+	upstreamModel, ok := loadOwnedUpstreamModel(c, upstreamModelID)
+	if !ok {
+		return
+	}
+	payload := buildUpstreamModelStatusPayload(upstreamModel, perfmetrics.EntityProbeGroupSelf, model.EntityProbeScopeUpstream)
+	if c.Query("include_shared") == "true" {
+		sharedStatus := buildUpstreamModelStatusPayload(upstreamModel, perfmetrics.EntityProbeGroupShared, model.EntityProbeScopeUpstreamShared)
+		// 共享维度无数据时不返回空对象，避免前端展示无意义切换喵。
+		if sharedStatus.RequestCount > 0 {
+			payload.Shared = &sharedStatus
+		}
+	}
+	common.ApiSuccess(c, payload)
+}
+
+// GetSharedUserUpstreamModelStatus 返回共享使用者视角的上游模型聚合状态喵。
+// 只包含共享调用维度的聚合，不含属主身份、错误明细或调用者身份喵。
+func GetSharedUserUpstreamModelStatus(c *gin.Context) {
+	normalizedName := strings.TrimSpace(c.Param("name"))
+	// 喵~防御：空名称按资源不存在处理喵。
+	if normalizedName == "" {
+		upstreamModelNotFound(c)
+		return
+	}
+	// 只有共享中（启用）的模型才可被共享使用者查询，否则统一按 404 处理喵。
+	upstreamModel, err := model.GetEnabledSharedUserUpstreamModelByName(normalizedName)
+	if err != nil {
+		upstreamModelNotFound(c)
+		return
+	}
+	sharedStatus := buildUpstreamModelStatusPayload(upstreamModel, perfmetrics.EntityProbeGroupShared, model.EntityProbeScopeUpstreamShared)
+	// 共享聚合不暴露错误明细，只提供成功率、平均延迟、请求数与最近一次结果喵。
+	common.ApiSuccess(c, gin.H{
+		"availability":   sharedStatus.Availability,
+		"avg_latency_ms": sharedStatus.AvgLatencyMs,
+		"request_count":  sharedStatus.RequestCount,
+		"last_at":        sharedStatus.LastAt,
+		"last_success":   sharedStatus.LastSuccess,
+	})
+}
+
+// buildUpstreamModelStatusPayload 组装属主视角的上游模型状态载荷喵。
+func buildUpstreamModelStatusPayload(upstreamModel *model.UserUpstreamModel, probeGroup string, scope string) upstreamModelStatusPayload {
+	payload := upstreamModelStatusPayload{}
+	// 喵~防御：空模型对象直接返回空载荷喵。
+	if upstreamModel == nil {
+		return payload
+	}
+	status, queryError := perfmetrics.QueryEntityProbeStatus(upstreamModel.UserUpstreamModelName(), probeGroup, entityProbeWindowHours)
+	// 喵~防御：聚合查询失败按空数据返回，不阻塞状态展示喵。
+	if queryError != nil {
+		common.SysError("query upstream model entity probe status failed: " + queryError.Error())
+	}
+	payload.Availability = status.Availability
+	payload.AvgLatencyMs = status.AvgLatencyMs
+	payload.RequestCount = status.RequestCount
+	payload.Availability24 = status.Availability24
+	state, stateError := model.GetEntityProbeState(scope, upstreamModel.ID)
+	if stateError == nil && state != nil {
+		payload.LastAt = state.LastAt
+		payload.LastSuccess = state.LastSuccess
+		payload.LastLatencyMs = state.LastLatencyMs
+		payload.LastError = state.LastError
+	}
+	return payload
 }

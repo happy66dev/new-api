@@ -36,17 +36,24 @@ import {
 } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { EntityStatusDot, type EntityStatusSummary } from '@/features/status-check/entity-status-dot'
 
 import {
   checkUserUpstreamModelBalance,
   createUserUpstreamModel,
   deleteUserUpstreamModel,
+  getUpstreamModelStatus,
   getUserUpstreamModels,
   syncUserUpstreamModelAvailable,
   syncUserUpstreamModelBalance,
   updateUserUpstreamModel,
 } from './api'
-import type { UserUpstreamModel, UserUpstreamModelInput } from './api'
+import type {
+  UpstreamModelSharedStatus,
+  UpstreamModelStatus,
+  UserUpstreamModel,
+  UserUpstreamModelInput,
+} from './api'
 
 // 金额辅助函数：分与元互转，用户以元输入、后端以分存储喵。
 const centsToYuan = (cents: number): string => (cents / 100).toFixed(2)
@@ -393,6 +400,54 @@ function UpstreamModelDrawer({
   )
 }
 
+// mapUpstreamModelStatus 把后端状态载荷规整为状态组件可消费的摘要喵。
+function mapUpstreamModelStatus(status: UpstreamModelStatus): EntityStatusSummary {
+  return {
+    availability: status.availability,
+    avg_latency_ms: status.avg_latency_ms,
+    request_count: status.request_count,
+    availability_24h: status.availability_24h,
+    last_at: status.last_at,
+    last_success: status.last_success,
+    last_latency_ms: status.last_latency_ms,
+    last_error: status.last_error,
+  }
+}
+
+// mapUpstreamModelSharedStatus 共享维度载荷字段较少，单独规整为摘要喵。
+function mapUpstreamModelSharedStatus(status: UpstreamModelSharedStatus): EntityStatusSummary {
+  return {
+    availability: status.availability,
+    avg_latency_ms: status.avg_latency_ms,
+    request_count: status.request_count,
+    last_at: status.last_at,
+    last_success: status.last_success,
+  }
+}
+
+// UpstreamModelStatusIndicator 为单个上游模型行拉取状态并渲染健康圆点喵。
+function UpstreamModelStatusIndicator({ model }: { model: UserUpstreamModel }) {
+  const statusQuery = useQuery({
+    // 以模型 id 为键，属主行附带共享维度喵。
+    queryKey: ['upstream-model-status', model.id],
+    queryFn: () => getUpstreamModelStatus(model.id, true),
+    staleTime: 30 * 1000,
+    retry: false,
+  })
+  const status = statusQuery.data?.data
+  return (
+    <EntityStatusDot
+      label={model.display_name || model.normalized_name}
+      // 喵~防御：接口未返回数据时保持未加载状态喵。
+      summary={status ? mapUpstreamModelStatus(status) : undefined}
+      // 共享维度仅在属主请求 include_shared=true 且共享有调用时由后端携带喵。
+      shared={status?.shared ? mapUpstreamModelSharedStatus(status.shared) : undefined}
+      loading={statusQuery.isLoading}
+      error={Boolean(statusQuery.isError)}
+    />
+  )
+}
+
 // UpstreamModels 提供用户上游模型的管理列表页喵。
 export function UpstreamModels() {
   const { t } = useTranslation()
@@ -529,6 +584,8 @@ export function UpstreamModels() {
                 </div>
               </div>
               <div className='flex shrink-0 items-center gap-2'>
+                {/* 行状态指示器：Check 按钮左侧展示健康圆点喵。 */}
+                <UpstreamModelStatusIndicator model={item} />
                 <Button
                   size='sm'
                   variant='outline'

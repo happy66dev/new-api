@@ -20,6 +20,7 @@ import { VirtualModelCandidatesEditor } from '@/features/virtual-models/componen
 import { VirtualModelDeleteDialog } from '@/features/virtual-models/components/virtual-model-dialogs'
 import { VirtualModelDrawer } from '@/features/virtual-models/components/virtual-model-drawer'
 import { VirtualModelGlobalFailureRulesEditor } from '@/features/virtual-models/components/virtual-model-global-failure-rules-editor'
+import { VirtualModelOverviewStatus } from '@/features/virtual-models/components/virtual-model-overview-status'
 
 export function VirtualModels() {
   const { t } = useTranslation()
@@ -27,6 +28,8 @@ export function VirtualModels() {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false)
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
   const [editingModelId, setEditingModelId] = useState<number | null>(null)
+  // activeTab 记录当前选项卡；Overview 候选摘要行可跳转到候选链选项卡喵。
+  const [activeTab, setActiveTab] = useState<string>('overview')
   const virtualModelsQuery = useQuery({
     queryKey: ['virtual-models'],
     queryFn: getVirtualModels,
@@ -107,7 +110,10 @@ export function VirtualModels() {
           </div>
           <div className='min-h-0 flex-1 overflow-auto'>
             {selectedModel ? (
-              <Tabs defaultValue='overview'>
+              <Tabs
+                value={activeTab}
+                onValueChange={(value) => setActiveTab(String(value))}
+              >
                 <TabsList className='max-w-full flex-wrap justify-start'>
                   <TabsTrigger value='overview'>{t('Overview')}</TabsTrigger>
                   <TabsTrigger value='candidates'>{t('Candidate Chain')}</TabsTrigger>
@@ -128,6 +134,16 @@ export function VirtualModels() {
                       </div>
                     </div>
                     <p className='text-sm'>{t('Candidate count')}: {selectedModel.candidates?.length ?? 0}</p>
+                  </div>
+                  {/* 基本信息下方的整体状态卡片：指标 + 24h 柱状图 + 候选摘要喵。 */}
+                  <div className='mt-4'>
+                    <VirtualModelOverviewStatus
+                      status={virtualModelStatus}
+                      loading={virtualModelStatusQuery.isLoading}
+                      error={virtualModelStatusQuery.isError}
+                      onNavigateToCandidates={() => setActiveTab('candidates')}
+                      onRefresh={() => void virtualModelStatusQuery.refetch()}
+                    />
                   </div>
                 </TabsContent>
                 <TabsContent className='mt-4' value='candidates'>

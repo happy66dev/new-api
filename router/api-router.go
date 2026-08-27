@@ -287,6 +287,7 @@ func SetApiRouter(router *gin.Engine) {
 			virtualModelRoute.PUT("/:id/failure-rules", controller.ReplaceVirtualModelGlobalFailureRules)
 			virtualModelRoute.PUT("/:id/key-bindings", controller.ReplaceVirtualModelBindings)
 			virtualModelRoute.GET("/:id/status", controller.GetVirtualModelStatus)
+			virtualModelRoute.GET("/:id/candidates/:candidateId/status", controller.GetVirtualModelCandidateStatus)
 			virtualModelRoute.POST("/:id/candidates/:candidateId/freeze", controller.FreezeVirtualModelCandidate)
 			virtualModelRoute.DELETE("/:id/candidates/:candidateId/freeze", controller.UnfreezeVirtualModelCandidate)
 			virtualModelRoute.GET("/:id/audit-log", controller.GetVirtualModelAuditLog)
@@ -297,12 +298,14 @@ func SetApiRouter(router *gin.Engine) {
 		{
 			upstreamModelRoute.GET("", controller.GetUserUpstreamModels)
 			upstreamModelRoute.POST("", controller.CreateUserUpstreamModel)
+			upstreamModelRoute.GET("/shared/:name/status", controller.GetSharedUserUpstreamModelStatus)
 			upstreamModelRoute.GET("/:id", controller.GetUserUpstreamModel)
 			upstreamModelRoute.PUT("/:id", controller.UpdateUserUpstreamModel)
 			upstreamModelRoute.DELETE("/:id", controller.DeleteUserUpstreamModel)
 			upstreamModelRoute.POST("/:id/balance-check", controller.CheckUserUpstreamModelBalance)
 			upstreamModelRoute.POST("/:id/balance/sync", controller.SyncUserUpstreamModelBalance)
 			upstreamModelRoute.POST("/:id/balance/sync-available", controller.SyncUserUpstreamModelAvailable)
+			upstreamModelRoute.GET("/:id/status", controller.GetUserUpstreamModelStatus)
 		}
 
 		tokenRoute := apiRouter.Group("/token")

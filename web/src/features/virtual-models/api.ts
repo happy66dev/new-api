@@ -79,11 +79,35 @@ export type VirtualModelVersionedDeleteInput = {
   version: number
 }
 
+// VirtualModelStatus 是虚拟模型整体状态响应，含整体指标与候选节点摘要喵。
 export type VirtualModelStatus = {
   model: string
   enabled: boolean
   candidate_count: number
   enabled_candidates: number
+  // 以下为实体状态检测新增字段：整体可用性/延迟/请求数/24h 序列/最近一次喵。
+  availability: number
+  avg_latency_ms: number
+  request_count: number
+  availability_24h: number[]
+  last_at: number
+  last_success: boolean
+  last_latency_ms: number
+  last_error: string
+  // candidates 是启用候选快照的节点摘要，供 Overview 状态卡片展示喵。
+  candidates: VirtualModelCandidateStatus[]
+}
+
+// VirtualModelCandidateStatus 是单个候选节点的状态摘要，不含 24h 序列喵。
+export type VirtualModelCandidateStatus = {
+  candidate_id: number
+  label: string
+  availability: number
+  avg_latency_ms: number
+  request_count: number
+  last_at: number
+  last_success: boolean
+  last_error: string
 }
 
 export type VirtualModelApiResponse<T> = {
@@ -186,6 +210,19 @@ export async function getVirtualModelStatus(
   const response = await api.get(`/api/virtual-models/${id}/status`, {
     skipErrorHandler: true,
   })
+  return response.data
+}
+
+// getVirtualModelCandidateStatus 读取单个候选节点的状态摘要；
+// 候选被删除后 in-flight 请求会返回 404，因此同样跳过全局错误弹窗喵。
+export async function getVirtualModelCandidateStatus(
+  modelID: number,
+  candidateID: number
+): Promise<VirtualModelApiResponse<VirtualModelCandidateStatus>> {
+  const response = await api.get(
+    `/api/virtual-models/${modelID}/candidates/${candidateID}/status`,
+    { skipErrorHandler: true }
+  )
   return response.data
 }
 

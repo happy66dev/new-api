@@ -53,15 +53,17 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { getUserGroups, getUserModels } from '@/features/playground/api'
 import { shouldClearModelForGroup } from '@/features/playground/lib/options/playground-option-utils'
+import { EntityStatusDot, type EntityStatusSummary } from '@/features/status-check/entity-status-dot'
 import { getUserUpstreamModels } from '@/features/upstream-models/api'
 
-import type {
-  VirtualModel,
-  VirtualModelCandidate,
-  VirtualModelCandidateAuthStyle,
-  VirtualModelCandidateInput,
+import {
+  getVirtualModelCandidateStatus,
+  replaceVirtualModelCandidates,
+  type VirtualModel,
+  type VirtualModelCandidate,
+  type VirtualModelCandidateAuthStyle,
+  type VirtualModelCandidateInput,
 } from '../api'
-import { replaceVirtualModelCandidates } from '../api'
 import { VirtualModelCandidateFailureRulesEditor } from './virtual-model-candidate-failure-rules-editor'
 
 // CandidateDraft 仅保存编辑候选链需要的字段；已有自定义候选的密钥不回填到草稿喵。
@@ -237,6 +239,40 @@ function validateCandidateDraft(
     real_model_name: realModelName,
     upstream_model_id: null,
   }
+}
+
+// CandidateStatusDot 为单个候选节点拉取状态并渲染健康圆点喵。
+// 候选状态载荷不含 24h 序列，因此只展示圆点与悬停摘要喵。
+function CandidateStatusDot({ modelID, candidateID }: { modelID: number; candidateID: number }) {
+  const statusQuery = useQuery({
+    queryKey: ['virtual-model-candidate-status', modelID, candidateID],
+    queryFn: () => getVirtualModelCandidateStatus(modelID, candidateID),
+    staleTime: 30 * 1000,
+    retry: false,
+  })
+  const status = statusQuery.data?.data
+  // 候选载荷字段较少，规整为摘要的公共形状喵。
+  const summary: EntityStatusSummary | undefined = status
+    ? {
+        availability: status.availability,
+        avg_latency_ms: status.avg_latency_ms,
+        request_count: status.request_count,
+        last_at: status.last_at,
+        last_success: status.last_success,
+        last_error: status.last_error,
+      }
+    : undefined
+  return (
+    <EntityStatusDot
+      // 悬停摘要展示候选真实模型名，方便识别节点喵。
+      label={status?.label}
+      summary={summary}
+      loading={statusQuery.isLoading}
+      error={Boolean(statusQuery.isError)}
+      // 候选行空间紧凑，只展示圆点不展示可用性百分比文字喵。
+      showAvailabilityText={false}
+    />
+  )
 }
 
 // VirtualModelCandidatesEditor 管理候选链顺序；列表默认只显示模型名，点击候选行展开完整参数编辑喵。
@@ -434,6 +470,12 @@ export function VirtualModelCandidatesEditor({
               <Button type='button' size='icon-sm' variant='ghost' disabled={isSaving || index === draftCandidates.length - 1} onClick={() => moveCandidate(index, 'down')} aria-label={t('Move candidate down')}>
                 <HugeiconsIcon icon={ArrowDown01Icon} strokeWidth={2} aria-hidden='true' />
               </Button>
+              {/* 候选状态点：已有候选展示健康圆点，新增草稿（无 id）不展示喵。 */}
+              {candidate.id !== undefined && (
+                <span className='flex items-center px-1'>
+                  <CandidateStatusDot modelID={model.id} candidateID={candidate.id} />
+                </span>
+              )}
               <Button type='button' size='icon-sm' variant='ghost' disabled={isSaving || candidate.id === undefined} onClick={() => setRulesCandidateIndex(index)} aria-label={t('Candidate failure rules')}>
                 <ShieldCheck className='size-4' />
               </Button>

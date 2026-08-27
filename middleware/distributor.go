@@ -15,6 +15,7 @@ import (
 	taskdto "github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
+	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -200,6 +201,7 @@ func isVirtualModelRequest(modelName string) bool {
 // 主人注意：虚拟模型会保留原始请求体以便跨内部候选重写 model；请求体上限仍受全局 BodyStorage 限制喵。
 type virtualModelExecutionState struct {
 	virtualModelName                string
+	virtualModelID                  int
 	ownerUserID                     int
 	executionSnapshot               *model.VirtualModelExecutionSnapshot
 	manualFrozenCandidateIDs        map[int]bool
@@ -218,6 +220,12 @@ type virtualModelExecutionState struct {
 	skippedCandidateIDs       map[int]bool
 	candidateAttemptSequence  int    // 请求内已分配的候选尝试序号，单调递增，单位：次喵。
 	currentCandidateAttemptID string // 当前已激活候选尝试的请求内唯一标识，未激活时为空喵。
+	// startTime 虚拟模型请求的整体开始时间，用于整体状态检测延迟（含失败候选尝试）喵。
+	startTime time.Time
+	// currentCandidateStartedAt 当前激活候选的开始时间，用于候选级状态检测延迟喵。
+	currentCandidateStartedAt time.Time
+	// overallProbeRecorded 防止整体状态样本重复记录喵。
+	overallProbeRecorded bool
 }
 
 // handleVirtualModelRequest 验证虚拟模型授权、构造请求级快照并激活首个可执行候选喵。
@@ -304,6 +312,7 @@ func handleVirtualModelRequest(c *gin.Context, modelRequest *ModelRequest) bool 
 	originalRequestBodySnapshot := append([]byte(nil), originalRequestBody...)
 	executionState := &virtualModelExecutionState{
 		virtualModelName:                virtualModel.VirtualModelName(),
+		virtualModelID:                  virtualModel.ID,
 		ownerUserID:                     ownerUserID,
 		executionSnapshot:               executionSnapshot,
 		manualFrozenCandidateIDs:        manualFrozenCandidateIDs,
@@ -317,6 +326,9 @@ func handleVirtualModelRequest(c *gin.Context, modelRequest *ModelRequest) bool 
 		maximumLoopRounds:               virtualModel.MaxLoopRounds,
 		currentCandidateIndex:           -1,
 		skippedCandidateIDs:             make(map[int]bool),
+		// 整体与候选延迟都从请求进入虚拟层开始计时喵。
+		startTime:                 time.Now(),
+		currentCandidateStartedAt: time.Now(),
 	}
 	common.SetContextKey(c, constant.ContextKeyVirtualModelExecutionState, executionState)
 	// 虚拟模型请求日志统一归入「虚拟模型」类型（internal 候选走消费日志时覆盖 type 为 9）喵。
@@ -331,6 +343,8 @@ func handleVirtualModelRequest(c *gin.Context, modelRequest *ModelRequest) bool 
 	if c.Writer != nil && c.Writer.Written() {
 		return false
 	}
+	// 实体状态检测：首个候选激活即失败且无响应写出，记录虚拟模型整体失败喵。
+	RecordVirtualModelOverallProbe(c, false, "virtual_model_unavailable")
 	abortWithOpenAiMessage(c, http.StatusBadGateway, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
 	return false
 }
@@ -385,6 +399,9 @@ func AdvanceVirtualModelAfterNativeFailure(c *gin.Context, nativeError *types.Ne
 	})
 	action, freezeSeconds := virtualmodelservice.DecideVirtualModelFailureAction(executionState.executionSnapshot, currentCandidate.CandidateID, nativeFailure)
 	if action == model.VirtualModelActionPassthrough {
+		// 实体状态检测：内部候选失败按规则透传错误，记录候选失败与虚拟模型整体失败喵。
+		RecordActiveVirtualModelCandidateProbe(c, false, nativeFailure.ErrorClass)
+		RecordVirtualModelOverallProbe(c, false, nativeFailure.ErrorClass)
 		return decision
 	}
 	// 失败规则 retry：在候选允许的最大重试次数内重放当前内部候选喵。
@@ -396,6 +413,8 @@ func AdvanceVirtualModelAfterNativeFailure(c *gin.Context, nativeError *types.Ne
 			return decision
 		}
 	}
+	// 实体状态检测：内部候选完成全部原生重试且不再重试，记录该候选失败样本喵。
+	RecordActiveVirtualModelCandidateProbe(c, false, nativeFailure.ErrorClass)
 	// 失败规则 freeze：在 owner 范围内按候选编号冻结指定时长，随后跳过该候选喵。
 	if action == model.VirtualModelActionFreeze && freezeSeconds > 0 {
 		frozenUntil := common.GetTimestamp() + int64(freezeSeconds)
@@ -425,6 +444,10 @@ func AdvanceVirtualModelAfterNativeFailure(c *gin.Context, nativeError *types.Ne
 	}
 	if c.Writer != nil && c.Writer.Written() {
 		decision.CustomCandidateCommitted = true
+	}
+	// 实体状态检测：候选链彻底耗尽且无后备候选接管时，记录虚拟模型整体失败喵。
+	if !decision.RetryCurrentCandidate && !decision.NextCandidateActivated && !decision.CustomCandidateCommitted {
+		RecordVirtualModelOverallProbe(c, false, nativeFailure.ErrorClass)
 	}
 	return decision
 }
@@ -555,6 +578,8 @@ func activateNextVirtualModelCandidate(c *gin.Context, executionState *virtualMo
 		common.SetContextKey(c, constant.ContextKeyVirtualCandidateSeq, candidateSeq)
 		if candidateSnapshot.SourceType == model.VirtualModelSourceInternal {
 			if restoreVirtualModelOriginalRequest(c, executionState.originalRequestBody) && applyInternalVirtualModelCandidate(c, executionState.modelRequest, executionState.virtualModelName, candidateSnapshot) {
+				// 实体状态检测：候选激活成功，标记该候选延迟起点喵。
+				executionState.currentCandidateStartedAt = time.Now()
 				return true
 			}
 			// 喵~防御：内部候选无法安全接入原生 relay 时立即终止本次选择，避免把鉴权或配置错误误伪装为候选故障喵。
@@ -644,6 +669,64 @@ func recordVirtualModelCustomSuccess(c *gin.Context, useTimeSeconds int) {
 			"final_success": true,
 		},
 	})
+}
+
+// RecordActiveVirtualModelCandidateProbe 记录当前激活候选的被动统计样本喵。
+// 供内部候选原生 relay 成功/失败后由外部调用，候选延迟取该候选激活起的耗时喵。
+func RecordActiveVirtualModelCandidateProbe(c *gin.Context, success bool, errorClass string) {
+	executionState, foundState := getVirtualModelExecutionState(c)
+	// 喵~防御：无执行状态或候选越界时跳过，普通请求不产生任何记录喵。
+	if !foundState || executionState == nil || executionState.currentCandidateIndex < 0 || executionState.currentCandidateIndex >= len(executionState.executionSnapshot.Candidates) {
+		return
+	}
+	candidate := executionState.executionSnapshot.Candidates[executionState.currentCandidateIndex]
+	recordVirtualModelCandidateProbe(c, executionState, candidate.CandidateID, success, errorClass, time.Since(executionState.currentCandidateStartedAt).Milliseconds())
+}
+
+// recordVirtualModelCandidateProbe 记录单个候选节点的被动统计样本与最近一次状态喵。
+func recordVirtualModelCandidateProbe(c *gin.Context, executionState *virtualModelExecutionState, candidateID int, success bool, errorClass string, latencyMs int64) {
+	// 喵~防御：执行状态或模型名缺失时跳过，避免空指针喵。
+	if c == nil || executionState == nil || executionState.virtualModelName == "" {
+		return
+	}
+	// 候选节点的聚合键为 virtual/<name>/candidate/<id>，全部归入自用固定分组喵。
+	probeModelName := fmt.Sprintf("%s/candidate/%d", executionState.virtualModelName, candidateID)
+	perfmetrics.RecordEntityProbe(probeModelName, latencyMs, success)
+	now := time.Now().Unix()
+	// 候选节点状态行的 EntityID 为候选 id、VirtualID 为所属虚拟模型 id，供按模型聚合查询喵。
+	_ = model.RecordEntityProbeCounted(model.EntityProbeScopeVirtualCandidate, int64(candidateID), int64(executionState.virtualModelID), executionState.ownerUserID, now, success, latencyMs, errorClass)
+}
+
+// RecordVirtualModelOverallProbe 记录虚拟模型整体的被动统计样本喵。
+// 任一候选 2xx 成功即整体成功；候选链耗尽或透传失败即整体失败；整体延迟取整次请求耗时喵。
+func RecordVirtualModelOverallProbe(c *gin.Context, success bool, errorClass string) {
+	executionState, foundState := getVirtualModelExecutionState(c)
+	// 喵~防御：无执行状态或已记录过整体结果时跳过，避免重复样本喵。
+	if !foundState || executionState == nil || executionState.overallProbeRecorded {
+		return
+	}
+	// 喵~防御：空模型名不产生无意义记录喵。
+	if executionState.virtualModelName == "" {
+		return
+	}
+	executionState.overallProbeRecorded = true
+	latencyMs := time.Since(executionState.startTime).Milliseconds()
+	perfmetrics.RecordEntityProbe(executionState.virtualModelName, latencyMs, success)
+	now := time.Now().Unix()
+	_ = model.RecordEntityProbeCounted(model.EntityProbeScopeVirtual, int64(executionState.virtualModelID), 0, executionState.ownerUserID, now, success, latencyMs, errorClass)
+}
+
+// recordCustomCandidateFailureProbe 记录自定义候选失败及其引用上游模型的失败样本喵。
+// hasResponse 表示候选已写出最终响应（请求终结），此时一并记录虚拟模型整体失败喵。
+func recordCustomCandidateFailureProbe(c *gin.Context, candidate *model.VirtualModelInternalCandidateSnapshot, hasUpstreamReference bool, referencedUpstreamModel *model.UserUpstreamModel, errorClass string, startTime time.Time, hasResponse bool) {
+	executionState, _ := getVirtualModelExecutionState(c)
+	recordVirtualModelCandidateProbe(c, executionState, candidate.CandidateID, false, errorClass, time.Since(startTime).Milliseconds())
+	if hasUpstreamReference && referencedUpstreamModel != nil {
+		recordUpstreamModelProbeState(referencedUpstreamModel, false, true, false, errorClass, startTime)
+	}
+	if hasResponse {
+		RecordVirtualModelOverallProbe(c, false, errorClass)
+	}
 }
 
 // executeCustomVirtualModelCandidate 在当前 middleware 生命周期内安全完成单次自定义候选透传喵。
@@ -754,10 +837,16 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 					requestGroup = executionState.modelRequest.Group
 				}
 				settleUserUpstreamModelCharge(c, referencedUpstreamModel.OwnerUserID, referencedUpstreamModel, executionUsage, requestGroup, isUpstreamModelRequestStreaming(c), int(time.Since(startTime).Seconds()), false)
+				// 实体状态检测：引用上游模型成功，同时记录上游模型自用维度成功喵。
+				recordUpstreamModelProbeState(referencedUpstreamModel, false, true, true, "", startTime)
 			} else {
 				// 纯直填 custom 候选成功：写虚拟模型日志（无 usage 解析，token 计 0）喵。
 				recordVirtualModelCustomSuccess(c, int(time.Since(startTime).Seconds()))
 			}
+			// 实体状态检测：自定义候选成功，记录候选成功与虚拟模型整体成功喵。
+			executionState, _ := getVirtualModelExecutionState(c)
+			recordVirtualModelCandidateProbe(c, executionState, candidate.CandidateID, true, "", time.Since(startTime).Milliseconds())
+			RecordVirtualModelOverallProbe(c, true, "")
 			// 记录该 custom 候选成功尝试摘要，供最终日志展示候选链结果喵。
 			appendVirtualModelCandidateAttempt(c, model.VirtualModelCandidateAttemptRecord{
 				Seq:         currentVirtualModelCandidateSeq(c),
@@ -788,9 +877,13 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 		// 喵~防御：非结构化异常不能参与规则匹配或重试；若响应已提交则只中止，避免重复错误响应喵。
 		if !errors.As(executionError, &customFailure) {
 			if c.Writer != nil && c.Writer.Written() {
+				// 实体状态检测：响应已部分提交但仍失败，记录候选失败与整体失败喵。
+				recordCustomCandidateFailureProbe(c, candidate, hasUpstreamReference, referencedUpstreamModel, "upstream_unavailable", startTime, true)
 				c.Abort()
 				return false
 			}
+			// 实体状态检测：非结构化异常记录候选失败与虚拟模型整体失败喵。
+			recordCustomCandidateFailureProbe(c, candidate, hasUpstreamReference, referencedUpstreamModel, "upstream_unavailable", startTime, true)
 			abortWithOpenAiMessage(c, http.StatusBadGateway, "virtual model custom upstream is unavailable", types.ErrorCode("virtual_model_unavailable"))
 			return false
 		}
@@ -815,6 +908,8 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 			if executionState, foundState := getVirtualModelExecutionState(c); foundState && !executionState.requestDeadline.IsZero() {
 				remainingDuration := time.Until(executionState.requestDeadline)
 				if remainingDuration <= 0 {
+					// 实体状态检测：总 deadline 耗尽导致候选无法继续，记录候选失败喵。
+					recordCustomCandidateFailureProbe(c, candidate, hasUpstreamReference, referencedUpstreamModel, customFailure.Failure.ErrorClass, startTime, false)
 					return false
 				}
 				if retryDelay > remainingDuration {
@@ -825,6 +920,8 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 			case <-time.After(retryDelay):
 				continue
 			case <-c.Request.Context().Done():
+				// 实体状态检测：客户端取消导致候选无法继续，记录候选失败喵。
+				recordCustomCandidateFailureProbe(c, candidate, hasUpstreamReference, referencedUpstreamModel, customFailure.Failure.ErrorClass, startTime, false)
 				return false
 			}
 		}
@@ -834,16 +931,22 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 			freezeError := model.UpsertVirtualModelCustomFreezeState(ownerUserID, identityDigest, common.GetTimestamp()+int64(freezeSeconds), customFailure.Failure.ErrorClass, common.GetTimestamp())
 			// 喵~防御：冻结状态写入失败不会降级为继续重试，避免上游故障扩大为循环请求喵。
 			if freezeError != nil {
+				// 实体状态检测：冻结写入失败终结候选链，记录候选失败与整体失败喵。
+				recordCustomCandidateFailureProbe(c, candidate, hasUpstreamReference, referencedUpstreamModel, customFailure.Failure.ErrorClass, startTime, true)
 				abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
 				return false
 			}
 		}
 		if action == model.VirtualModelActionPassthrough {
+			// 实体状态检测：透传失败终结请求，记录候选失败与整体失败喵。
+			recordCustomCandidateFailureProbe(c, candidate, hasUpstreamReference, referencedUpstreamModel, customFailure.Failure.ErrorClass, startTime, true)
 			// 喵~防御：仅回传已受限缓冲的上游错误正文和过滤后的响应头，禁止写入 hop-by-hop 字段喵。
 			virtualmodelservice.CopyCustomPassthroughResponse(c.Writer, customFailure.ResponseHeaders, customFailure.Failure.HTTPStatus, customFailure.ResponseBody)
 			c.Abort()
 			return false
 		}
+		// 实体状态检测：next、freeze 与不可继续 retry 后候选终态失败，记录候选失败（整体结果由候选链终局决定）喵。
+		recordCustomCandidateFailureProbe(c, candidate, hasUpstreamReference, referencedUpstreamModel, customFailure.Failure.ErrorClass, startTime, false)
 		// next、freeze 和不可继续 retry 交由候选链尝试后续候选喵。
 		return false
 	}
