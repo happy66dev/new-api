@@ -16,6 +16,17 @@ export type BodyRegexMode = 'none' | 'preset' | 'simple' | 'custom'
 // seconds 直接按秒；minutes 按分钟乘以 60；mixed 支持 "1m30s" 复合格式；auto 自动扫描自然语言时间喵。
 export type FreezeUnit = 'seconds' | 'minutes' | 'mixed' | 'auto'
 
+// ConditionType 描述失败条件的类型，HTTP 状态码与错误分类二选一喵。
+// http 按状态码匹配；timeout/network/rate_limited 按稳定错误分类匹配；custom_error 自定义错误分类喵。
+export type ConditionType = 'http' | 'timeout' | 'network' | 'rate_limited' | 'custom_error'
+
+// CONDITION_TYPE_TO_ERROR_CLASS 把非 HTTP 条件类型映射为后端错误分类值喵。
+export const CONDITION_TYPE_TO_ERROR_CLASS: Partial<Record<ConditionType, string>> = {
+  timeout: 'timeout',
+  network: 'network_error',
+  rate_limited: 'rate_limited',
+}
+
 // FREEZE_UNITS 提供响应体冻结单位下拉选项，labelKey 供 i18n 翻译喵。
 export const FREEZE_UNITS: { value: FreezeUnit; labelKey: string }[] = [
   { value: 'auto', labelKey: 'Freeze unit: auto' },
@@ -33,6 +44,10 @@ export type FailureRuleDraft = {
   bodyRegexPreset: string
   // bodyRegexSimple 记录简易模式输入的普通文本，保存时转义为正则喵。
   bodyRegexSimple: string
+  // conditionType 记录失败条件类型：HTTP 状态码与错误分类二选一喵。
+  conditionType: ConditionType
+  // customErrorClass 自定义错误分类文本，仅在 custom_error 类型生效喵。
+  customErrorClass: string
   errorClass: string
   freezeSeconds: string
   // freezeField 是响应体中的冻结时间字段名，非空时启用从响应体解析冻结时间喵。
@@ -99,12 +114,30 @@ export function toFailureRuleDraft(rule: VirtualModelFailureRule): FailureRuleDr
   const httpStatusText = httpStatusMaxValue > 0 ? `${httpStatusValue}~${httpStatusMaxValue}` : String(httpStatusValue)
   // 冻结单位必须是合法枚举，空串或旧数据非法值时回退到秒，避免下拉显示错位喵。
   const freezeUnit = FREEZE_UNITS.find((unit) => unit.value === rule.freeze_unit)?.value ?? 'seconds'
+  // 根据已有 error_class 推断条件类型：稳定分类映射为对应类型，未知分类按自定义错误类喵。
+  let conditionType: ConditionType = 'http'
+  let customErrorClass = ''
+  const existingErrorClass = rule.error_class ?? ''
+  if (existingErrorClass !== '') {
+    if (existingErrorClass === 'timeout') {
+      conditionType = 'timeout'
+    } else if (existingErrorClass === 'network_error') {
+      conditionType = 'network'
+    } else if (existingErrorClass === 'rate_limited') {
+      conditionType = 'rate_limited'
+    } else {
+      conditionType = 'custom_error'
+      customErrorClass = existingErrorClass
+    }
+  }
   return {
     bodyRegex,
     bodyRegexMode,
     bodyRegexPreset,
     bodyRegexSimple: '',
-    errorClass: rule.error_class ?? '',
+    conditionType,
+    customErrorClass,
+    errorClass: existingErrorClass,
     freezeSeconds: String(rule.freeze_seconds ?? 0),
     freezeField: rule.freeze_field ?? '',
     freezeUnit,
@@ -121,6 +154,8 @@ export function createFailureRuleDraft(): FailureRuleDraft {
     bodyRegexMode: 'none',
     bodyRegexPreset: '',
     bodyRegexSimple: '',
+    conditionType: 'http',
+    customErrorClass: '',
     errorClass: '',
     freezeSeconds: '0',
     freezeField: '',
@@ -180,18 +215,34 @@ export function validateFailureRuleDraft(
   index: number,
   t: (key: string, options?: Record<string, unknown>) => string
 ): VirtualModelFailureRule {
-  // 将状态码文本解析为下界与可选上界，零表示不限制状态码喵。
-  const parsedStatus = parseHttpStatusText(rule.httpStatus)
-  // 喵~防御：状态码必须可解析且落在 0 到 599 之间，范围上界非零时不得小于下界喵。
-  if (
-    !parsedStatus ||
-    parsedStatus.min < 0 ||
-    parsedStatus.min > MAXIMUM_HTTP_STATUS ||
-    parsedStatus.max < 0 ||
-    parsedStatus.max > MAXIMUM_HTTP_STATUS ||
-    (parsedStatus.max > 0 && parsedStatus.max < parsedStatus.min)
-  ) {
-    throw new Error(t('Failure rule {{index}} HTTP status must be 0, a single code, or a range like 500~524', { index: index + 1 }))
+  // 按条件类型二选一：HTTP 状态码与错误分类互斥喵。
+  let httpStatusMin = 0
+  let httpStatusMax = 0
+  let errorClass = rule.errorClass.trim()
+  if (rule.conditionType === 'http') {
+    // HTTP 条件：校验状态码文本，并把错误分类置空喵。
+    const parsedStatus = parseHttpStatusText(rule.httpStatus)
+    // 喵~防御：状态码必须可解析且落在 0 到 599 之间，范围上界非零时不得小于下界喵。
+    if (
+      !parsedStatus ||
+      parsedStatus.min < 0 ||
+      parsedStatus.min > MAXIMUM_HTTP_STATUS ||
+      parsedStatus.max < 0 ||
+      parsedStatus.max > MAXIMUM_HTTP_STATUS ||
+      (parsedStatus.max > 0 && parsedStatus.max < parsedStatus.min)
+    ) {
+      throw new Error(t('Failure rule {{index}} HTTP status must be 0, a single code, or a range like 500~524', { index: index + 1 }))
+    }
+    httpStatusMin = parsedStatus.min
+    httpStatusMax = parsedStatus.max
+    errorClass = ''
+  } else {
+    // 非 HTTP 条件：错误分类来自稳定映射或自定义输入，HTTP 状态码不限制喵。
+    errorClass = CONDITION_TYPE_TO_ERROR_CLASS[rule.conditionType] ?? rule.customErrorClass.trim()
+    // 喵~防御：错误分类必须非空，避免生成既不按状态码也不按分类的无效规则喵。
+    if (errorClass === '') {
+      throw new Error(t('Failure rule {{index}} error class is required', { index: index + 1 }))
+    }
   }
   // 将冻结秒数文本转换为数值，零表示不追加固定冻结时间喵。
   const freezeSeconds = Number(rule.freezeSeconds)
@@ -207,12 +258,12 @@ export function validateFailureRuleDraft(
   }
   // 根据编辑模式生成最终响应体正则，简易与自定义输入均在此收敛喵。
   const bodyRegex = resolveBodyRegex(rule)
-  // 返回后端期待的下划线字段，空条件表示该维度不限制匹配喵。
+  // 返回后端期待的下划线字段，HTTP 与错误分类二选一喵。
   return {
     id: rule.id,
-    http_status: parsedStatus.min,
-    http_status_max: parsedStatus.max,
-    error_class: rule.errorClass.trim(),
+    http_status: httpStatusMin,
+    http_status_max: httpStatusMax,
+    error_class: errorClass,
     body_regex: bodyRegex,
     action: rule.action,
     freeze_seconds: freezeSeconds,

@@ -21,6 +21,7 @@ import {
   COMMON_HTTP_STATUSES,
   FREEZE_UNITS,
   type BodyRegexMode,
+  type ConditionType,
   type FailureRuleDraft,
   type FreezeUnit,
 } from '../lib/failure-rules'
@@ -65,47 +66,74 @@ export function FailureRuleEditorRow({
 
       <div className='grid gap-3 sm:grid-cols-2 lg:grid-cols-3'>
         <label className='grid gap-1 text-sm font-medium'>
-          {t('HTTP status')}
-          <Input value={rule.httpStatus} disabled={isSaving} placeholder={t('0 = any, e.g. 429 or 500~524')} onChange={(event) => onChange({ httpStatus: event.target.value })} />
-          {/* 常用状态码预设：点击填入，再次点击清除喵。 */}
-          <span className='flex flex-wrap gap-1'>
-            {COMMON_HTTP_STATUSES.map((status) => {
-              const active = Number(rule.httpStatus) === status
-              return (
-                <button
-                  type='button'
-                  key={status}
-                  disabled={isSaving}
-                  className={cn(
-                    'rounded-full border px-2 py-0.5 text-xs transition-colors',
-                    active ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
-                  )}
-                  onClick={() => onChange({ httpStatus: active ? '0' : String(status) })}
-                >
-                  {status}
-                </button>
-              )
-            })}
-            {/* 常用状态码范围预设：点击填入范围文本，再次点击清除喵。 */}
-            {COMMON_HTTP_STATUS_RANGES.map((rangeText) => {
-              const active = rule.httpStatus.trim() === rangeText
-              return (
-                <button
-                  type='button'
-                  key={rangeText}
-                  disabled={isSaving}
-                  className={cn(
-                    'rounded-full border px-2 py-0.5 text-xs transition-colors',
-                    active ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
-                  )}
-                  onClick={() => onChange({ httpStatus: active ? '0' : rangeText })}
-                >
-                  {rangeText}
-                </button>
-              )
-            })}
-          </span>
+          {t('Failure condition')}
+          {/* 失败条件二选一：HTTP 状态码或错误分类，互斥选择喵。 */}
+          <select className='border-input bg-background h-9 rounded-md border px-3 text-sm' value={rule.conditionType} disabled={isSaving} onChange={(event) => onChange({ conditionType: event.target.value as ConditionType })}>
+            <option value='http'>{t('HTTP status code')}</option>
+            <option value='timeout'>{t('Timeout')}</option>
+            <option value='network'>{t('Network error')}</option>
+            <option value='rate_limited'>{t('Rate limited')}</option>
+            <option value='custom_error'>{t('Custom error class')}</option>
+          </select>
         </label>
+        {/* HTTP 条件：展示状态码输入与常用预设喵。 */}
+        {rule.conditionType === 'http' && (
+          <label className='grid gap-1 text-sm font-medium'>
+            {t('HTTP status')}
+            <Input value={rule.httpStatus} disabled={isSaving} placeholder={t('0 = any, e.g. 429 or 500~524')} onChange={(event) => onChange({ httpStatus: event.target.value })} />
+            {/* 常用状态码预设：点击填入，再次点击清除喵。 */}
+            <span className='flex flex-wrap gap-1'>
+              {COMMON_HTTP_STATUSES.map((status) => {
+                const active = Number(rule.httpStatus) === status
+                return (
+                  <button
+                    type='button'
+                    key={status}
+                    disabled={isSaving}
+                    className={cn(
+                      'rounded-full border px-2 py-0.5 text-xs transition-colors',
+                      active ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
+                    )}
+                    onClick={() => onChange({ httpStatus: active ? '0' : String(status) })}
+                  >
+                    {status}
+                  </button>
+                )
+              })}
+              {/* 常用状态码范围预设：点击填入范围文本，再次点击清除喵。 */}
+              {COMMON_HTTP_STATUS_RANGES.map((rangeText) => {
+                const active = rule.httpStatus.trim() === rangeText
+                return (
+                  <button
+                    type='button'
+                    key={rangeText}
+                    disabled={isSaving}
+                    className={cn(
+                      'rounded-full border px-2 py-0.5 text-xs transition-colors',
+                      active ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
+                    )}
+                    onClick={() => onChange({ httpStatus: active ? '0' : rangeText })}
+                  >
+                    {rangeText}
+                  </button>
+                )
+              })}
+            </span>
+          </label>
+        )}
+        {/* 非 HTTP 条件：展示所选错误分类的说明或自定义输入喵。 */}
+        {rule.conditionType !== 'http' && (
+          <label className='grid gap-1 text-sm font-medium'>
+            {rule.conditionType === 'custom_error' ? t('Error class') : t('Error class (fixed)')}
+            {rule.conditionType === 'custom_error' ? (
+              <Input value={rule.customErrorClass} disabled={isSaving} placeholder='e.g. upstream_unavailable' onChange={(event) => onChange({ customErrorClass: event.target.value })} />
+            ) : (
+              <div className='flex h-9 items-center rounded-md border px-3 text-sm text-muted-foreground'>
+                {rule.conditionType === 'timeout' ? t('Matches timeout failures') : rule.conditionType === 'network' ? t('Matches network error failures') : t('Matches rate limited failures')}
+              </div>
+            )}
+          </label>
+        )}
         <label className='grid gap-1 text-sm font-medium'>
           {t('Action')}
           <select className='border-input bg-background h-9 rounded-md border px-3 text-sm' value={rule.action} disabled={isSaving} onChange={(event) => onChange({ action: event.target.value as FailureRuleDraft['action'] })}>

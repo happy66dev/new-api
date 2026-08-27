@@ -1,6 +1,7 @@
 package virtualmodel
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"regexp"
@@ -24,7 +25,12 @@ func NormalizeCandidateFailure(statusCode int, responseHeaders http.Header, resp
 	failure := CandidateFailure{HTTPStatus: statusCode, ErrorClass: "upstream_error"}
 	// 喵~防御：网络或 TLS 失败没有可信 HTTP 状态，必须与 HTTP 响应故障区分喵。
 	if executionError != nil {
-		failure.ErrorClass = "network_error"
+		// 区分超时：context deadline 超时归为 timeout 错误分类，其余网络错误归 network_error 喵。
+		if errors.Is(executionError, context.DeadlineExceeded) {
+			failure.ErrorClass = "timeout"
+		} else {
+			failure.ErrorClass = "network_error"
+		}
 		return failure
 	}
 	// 根据常见 HTTP 状态建立稳定分类，规则仍可通过精确状态码覆盖喵。
@@ -100,20 +106,29 @@ func DecideVirtualModelFailureAction(executionSnapshot *model.VirtualModelExecut
 	return DecideCandidateFailureAction(candidateRules, failure)
 }
 
-// candidateFailureRuleMatches 判断单条规则是否同时满足所有已配置条件喵。
-// 规则只按 HTTP 状态码（单值或范围）与响应体正则匹配，不依赖可能让用户困惑的错误分类抽象喵。
+// candidateFailureRuleMatches 判断单条规则是否命中喵。
+// 失败条件二选一：配置了 ErrorClass 时按错误分类（超时/网络等）匹配，否则按 HTTP 状态码（单值或范围）匹配；
+// 两种条件都与可选响应体正则做 AND 组合喵。
 func candidateFailureRuleMatches(rule model.VirtualModelFailureRule, failure CandidateFailure) bool {
-	// HTTP 状态已配置时必须匹配；带范围上界时落在闭区间内喵。
-	if rule.HTTPStatus != 0 {
-		if rule.HTTPStatusMax > 0 {
-			// 范围匹配：失败状态码必须落在 [HTTPStatus, HTTPStatusMax] 闭区间内喵。
-			if failure.HTTPStatus < rule.HTTPStatus || failure.HTTPStatus > rule.HTTPStatusMax {
-				return false
-			}
-		} else {
-			// 单值匹配：失败状态码必须精确等于配置值喵。
-			if failure.HTTPStatus != rule.HTTPStatus {
-				return false
+	errorClass := strings.TrimSpace(rule.ErrorClass)
+	if errorClass != "" {
+		// 错误分类条件：失败分类必须精确匹配，HTTP 状态码不参与喵。
+		if failure.ErrorClass != errorClass {
+			return false
+		}
+	} else {
+		// HTTP 状态已配置时必须匹配；带范围上界时落在闭区间内喵。
+		if rule.HTTPStatus != 0 {
+			if rule.HTTPStatusMax > 0 {
+				// 范围匹配：失败状态码必须落在 [HTTPStatus, HTTPStatusMax] 闭区间内喵。
+				if failure.HTTPStatus < rule.HTTPStatus || failure.HTTPStatus > rule.HTTPStatusMax {
+					return false
+				}
+			} else {
+				// 单值匹配：失败状态码必须精确等于配置值喵。
+				if failure.HTTPStatus != rule.HTTPStatus {
+					return false
+				}
 			}
 		}
 	}
@@ -346,6 +361,16 @@ func RetryBackoffSeconds(retryIndex int) int {
 	return backoffSeconds
 }
 
+// validCandidateErrorClass 判断错误分类是否在稳定白名单内喵。
+// 与 NormalizeCandidateFailure 产出的分类一一对应，保证规则能命中真实失败喵。
+func validCandidateErrorClass(errorClass string) bool {
+	switch errorClass {
+	case "timeout", "network_error", "rate_limited", "upstream_server_error", "upstream_client_error", "upstream_error":
+		return true
+	}
+	return false
+}
+
 // ValidateCandidateFailureRule 校验控制面写入的候选级失败规则边界喵。
 func ValidateCandidateFailureRule(rule *model.VirtualModelFailureRule) error {
 	// 喵~防御：空规则或非法候选编号必须拒绝持久化喵。
@@ -381,7 +406,16 @@ func validateFailureRuleFields(ruleOrder int, httpStatus int, httpStatusMax int,
 		return errors.New("virtual model failure rule action is invalid")
 	}
 	// 喵~防御：错误分类不得超过可检索长度，避免恶意长文本占用规则存储喵。
-	if strings.TrimSpace(errorClass) != "" && len(errorClass) > 64 {
+	errorClass = strings.TrimSpace(errorClass)
+	if errorClass != "" && len(errorClass) > 64 {
+		return errors.New("virtual model failure rule error class is invalid")
+	}
+	// 喵~防御：HTTP 状态码与错误分类必须二选一，同时配置会让匹配语义歧义喵。
+	if httpStatus != 0 && errorClass != "" {
+		return errors.New("virtual model failure rule is invalid")
+	}
+	// 喵~防御：错误分类只接受稳定白名单，拒绝拼写错误导致规则永不命中喵。
+	if errorClass != "" && !validCandidateErrorClass(errorClass) {
 		return errors.New("virtual model failure rule error class is invalid")
 	}
 	// 喵~防御：响应体正则必须能在运行时编译，超长正则直接拒绝喵。

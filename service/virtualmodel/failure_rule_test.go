@@ -1,6 +1,7 @@
 package virtualmodel
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"testing"
@@ -375,4 +376,101 @@ func TestValidateFailureRuleAutoUnit(t *testing.T) {
 	if validationError := ValidateCandidateFailureRule(autoFieldRule); validationError != nil {
 		t.Fatalf("auto unit with field rejected: %v", validationError)
 	}
+}
+
+// TestDecideCandidateFailureActionErrorClass 验证失败规则按错误分类匹配的二选一语义喵。
+// 配置了 ErrorClass 时只按分类匹配并忽略 HTTP 状态码，未命中时保持默认切换下一候选喵。
+func TestDecideCandidateFailureActionErrorClass(t *testing.T) {
+	// 定义错误分类规则、失败载荷与预期动作的测试场景，动作用非默认值标记命中喵。
+	testCases := []struct {
+		name           string
+		rule           model.VirtualModelFailureRule
+		failure        CandidateFailure
+		expectedAction model.VirtualModelFailureAction
+	}{
+		{
+			name:           "timeout class matches a timeout failure",
+			rule:           model.VirtualModelFailureRule{ErrorClass: "timeout", Action: model.VirtualModelActionFreeze},
+			failure:        CandidateFailure{HTTPStatus: 0, ErrorClass: "timeout"},
+			expectedAction: model.VirtualModelActionFreeze,
+		},
+		{
+			name:           "timeout class ignores http status when class differs",
+			rule:           model.VirtualModelFailureRule{ErrorClass: "timeout", Action: model.VirtualModelActionFreeze},
+			failure:        CandidateFailure{HTTPStatus: 504, ErrorClass: "upstream_server_error"},
+			expectedAction: model.VirtualModelActionNext,
+		},
+		{
+			name:           "network class matches a network failure",
+			rule:           model.VirtualModelFailureRule{ErrorClass: "network_error", Action: model.VirtualModelActionRetry},
+			failure:        CandidateFailure{HTTPStatus: 0, ErrorClass: "network_error"},
+			expectedAction: model.VirtualModelActionRetry,
+		},
+		{
+			name:           "rate limited class matches an http 429 failure",
+			rule:           model.VirtualModelFailureRule{ErrorClass: "rate_limited", Action: model.VirtualModelActionFreeze},
+			failure:        CandidateFailure{HTTPStatus: 429, ErrorClass: "rate_limited"},
+			expectedAction: model.VirtualModelActionFreeze,
+		},
+		{
+			name:           "error class is trimmed before comparison",
+			rule:           model.VirtualModelFailureRule{ErrorClass: " timeout ", Action: model.VirtualModelActionFreeze},
+			failure:        CandidateFailure{HTTPStatus: 0, ErrorClass: "timeout"},
+			expectedAction: model.VirtualModelActionFreeze,
+		},
+	}
+	// 逐项断言错误分类规则不会误命中其它分类或退化为任意状态匹配喵。
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			action, _ := DecideCandidateFailureAction([]model.VirtualModelFailureRule{testCase.rule}, testCase.failure)
+			require.Equal(t, testCase.expectedAction, action)
+		})
+	}
+}
+
+// TestDecideCandidateFailureActionErrorClassBodyRegex 验证错误分类条件仍与响应体正则 AND 组合喵。
+func TestDecideCandidateFailureActionErrorClassBodyRegex(t *testing.T) {
+	// 超时规则同时限定响应体包含 deadline 字样喵。
+	rule := model.VirtualModelFailureRule{ErrorClass: "timeout", BodyRegex: "deadline", Action: model.VirtualModelActionRetry}
+	// 分类命中且响应体正则命中时按规则动作执行喵。
+	action, _ := DecideCandidateFailureAction([]model.VirtualModelFailureRule{rule}, CandidateFailure{HTTPStatus: 0, ErrorClass: "timeout", BodyPreview: "request deadline exceeded"})
+	require.Equal(t, model.VirtualModelActionRetry, action)
+	// 响应体正则不命中时整条规则视为不匹配，回退默认切换下一候选喵。
+	action, _ = DecideCandidateFailureAction([]model.VirtualModelFailureRule{rule}, CandidateFailure{HTTPStatus: 0, ErrorClass: "timeout", BodyPreview: "slow but alive"})
+	require.Equal(t, model.VirtualModelActionNext, action)
+}
+
+// TestNormalizeCandidateFailureTimeout 验证 context 超时被独立分类为 timeout 而非 network_error 喵。
+func TestNormalizeCandidateFailureTimeout(t *testing.T) {
+	// 空响应头保证超时路径不采纳任何上游冻结建议喵。
+	timeoutFailure := NormalizeCandidateFailure(0, nil, nil, context.DeadlineExceeded)
+	require.Equal(t, "timeout", timeoutFailure.ErrorClass)
+	require.Equal(t, 0, timeoutFailure.HTTPStatus)
+	// HTTP 408 与 504 仍归为 timeout，兼容旧的上游超时信号喵。
+	require.Equal(t, "timeout", NormalizeCandidateFailure(http.StatusRequestTimeout, nil, nil, nil).ErrorClass)
+	require.Equal(t, "timeout", NormalizeCandidateFailure(http.StatusGatewayTimeout, nil, nil, nil).ErrorClass)
+	// 非超时的执行错误仍归为网络错误，不与 timeout 混淆喵。
+	require.Equal(t, "network_error", NormalizeCandidateFailure(0, nil, nil, http.ErrHandlerTimeout).ErrorClass)
+}
+
+// TestValidateFailureRuleErrorClass 验证错误分类与 HTTP 状态码二选一及白名单校验喵。
+func TestValidateFailureRuleErrorClass(t *testing.T) {
+	// 合法分类、无状态码的规则必须允许保存喵。
+	validRule := &model.VirtualModelFailureRule{CandidateID: 1, RuleOrder: 0, ErrorClass: "timeout", Action: model.VirtualModelActionNext}
+	require.NoError(t, ValidateCandidateFailureRule(validRule))
+	// 喵~防御：HTTP 状态码与错误分类同时配置会让匹配语义歧义，必须拒绝喵。
+	bothRule := *validRule
+	bothRule.HTTPStatus = http.StatusBadGateway
+	require.Error(t, ValidateCandidateFailureRule(&bothRule))
+	// 喵~防御：白名单之外的分类会因拼写错误而永不命中，必须拒绝喵。
+	unknownClassRule := *validRule
+	unknownClassRule.ErrorClass = "upstream_custom_gateway"
+	require.Error(t, ValidateCandidateFailureRule(&unknownClassRule))
+	// 喵~防御：超长错误分类文本必须拒绝，避免无界存储喵。
+	longClassRule := *validRule
+	longClassRule.ErrorClass = strings.Repeat("x", 65)
+	require.Error(t, ValidateCandidateFailureRule(&longClassRule))
+	// 模型级全局规则同样遵守二选一与白名单语义喵。
+	globalRule := &model.VirtualModelGlobalFailureRule{VirtualModelID: 1, RuleOrder: 0, ErrorClass: "network_error", Action: model.VirtualModelActionRetry}
+	require.NoError(t, ValidateGlobalFailureRule(globalRule))
 }
