@@ -48,6 +48,8 @@ type virtualModelCandidateInput struct {
 	AuthStyle      model.VirtualModelAuthStyle  `json:"auth_style"`
 	// UpstreamModelID 引用用户上游模型条目，非空时凭据与真实模型名以该条目为准喵。
 	UpstreamModelID *int64 `json:"upstream_model_id,omitempty"`
+	// FrozenUntil 当前手动冻结到期时间（Unix 秒），未冻结时为零，供调用链页面展示已冻结状态喵。
+	FrozenUntil int64 `json:"frozen_until,omitempty"`
 	// 喵~防御：FailureRules 必须使用真实模型类型而不是 DTO，否则 GORM 会按结构体名生成 virtual_model_failure_rule_inputs 表名导致查询报 no such table。
 	FailureRules []model.VirtualModelFailureRule `json:"failure_rules,omitempty"`
 }
@@ -93,9 +95,11 @@ type virtualModelBindingInput struct {
 }
 
 // virtualModelFreezeInput 描述带模型版本保护的手动冻结或解冻请求喵。
+// FreezeSeconds 与 ExpiresAt 二选一：FreezeSeconds 为正时换算到期时间，否则使用 ExpiresAt 喵。
 type virtualModelFreezeInput struct {
-	ExpiresAt int64 `json:"expires_at"`
-	Version   int64 `json:"version"`
+	ExpiresAt     int64 `json:"expires_at"`
+	FreezeSeconds int   `json:"freeze_seconds"`
+	Version       int64 `json:"version"`
 }
 
 // virtualModelDeleteInput 描述带模型版本保护的删除请求喵。
@@ -181,6 +185,18 @@ func buildVirtualModelResponse(virtualModel *model.VirtualModel) (*virtualModelR
 			return nil, err
 		}
 		candidateResponses = append(candidateResponses, candidateResponse)
+	}
+	// 读取当前手动冻结状态，供调用链页面展示已冻结徽章与剩余时间喵。
+	candidateIDs := make([]int, 0, len(candidateResponses))
+	for _, candidateResponse := range candidateResponses {
+		candidateIDs = append(candidateIDs, candidateResponse.ID)
+	}
+	frozenUntilByCandidate, freezeQueryError := model.GetActiveVirtualModelManualFreezes(candidateIDs, common.GetTimestamp())
+	// 喵~防御：冻结状态查询失败不阻断模型读取，仅跳过冻结状态回填喵。
+	if freezeQueryError == nil {
+		for i := range candidateResponses {
+			candidateResponses[i].FrozenUntil = frozenUntilByCandidate[candidateResponses[i].ID]
+		}
 	}
 	var bindings []model.VirtualModelTokenBinding
 	if err := model.DB.Where("virtual_model_id = ? AND owner_user_id = ?", virtualModel.ID, virtualModel.OwnerUserID).Find(&bindings).Error; err != nil {
@@ -927,12 +943,21 @@ func FreezeVirtualModelCandidate(c *gin.Context) {
 		return
 	}
 	currentTimestamp := common.GetTimestamp()
-	// 喵~防御：冻结必须携带当前版本并处于最多一天的未来时间窗内，避免长期不可用或陈旧覆盖喵。
+	// 喵~防御：冻结必须携带当前版本，避免陈旧覆盖喵。
 	if input.Version <= 0 {
 		common.ApiError(c, errors.New("虚拟模型版本无效"))
 		return
 	}
-	if input.ExpiresAt <= currentTimestamp || input.ExpiresAt-currentTimestamp > 86400 {
+	// 到期时间解析：FreezeSeconds 为正时按秒数换算到期时间戳，否则要求 ExpiresAt 落在未来一天时间窗内喵。
+	expiresAt := input.ExpiresAt
+	if input.FreezeSeconds > 0 {
+		// 喵~防御：自定义秒数不得超过一天，与自动冻结 freeze 的上限保持一致喵。
+		if input.FreezeSeconds > 86400 {
+			common.ApiError(c, errors.New("冻结秒数必须在未来 86400 秒内"))
+			return
+		}
+		expiresAt = currentTimestamp + int64(input.FreezeSeconds)
+	} else if input.ExpiresAt <= currentTimestamp || input.ExpiresAt-currentTimestamp > 86400 {
 		common.ApiError(c, errors.New("冻结到期时间必须在未来 86400 秒内"))
 		return
 	}
@@ -961,7 +986,7 @@ func FreezeVirtualModelCandidate(c *gin.Context) {
 		freeze.CandidateID = candidate.ID
 		freeze.OperatorID = c.GetInt("id")
 		freeze.StartedAt = currentTimestamp
-		freeze.ExpiresAt = input.ExpiresAt
+		freeze.ExpiresAt = expiresAt
 		if errors.Is(freezeQueryError, gorm.ErrRecordNotFound) {
 			if err := tx.Create(freeze).Error; err != nil {
 				return err
@@ -982,7 +1007,7 @@ func FreezeVirtualModelCandidate(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"candidate_id": candidateID, "expires_at": input.ExpiresAt, "operator_id": c.GetInt("id"), "version": input.Version + 1})
+	common.ApiSuccess(c, gin.H{"candidate_id": candidateID, "expires_at": expiresAt, "operator_id": c.GetInt("id"), "version": input.Version + 1})
 }
 
 // UnfreezeVirtualModelCandidate 解除当前用户模型候选的所有有效手动冻结喵。

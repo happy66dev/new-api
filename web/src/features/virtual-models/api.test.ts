@@ -248,17 +248,17 @@ describe('virtual model API', () => {
     expect(result.data?.last_error).toBe('rate_limited')
   })
 
-  test('freezes one candidate with an explicit future expiration timestamp', async () => {
-    const expiresAt = 1_900_000_000
+  test('freezes one candidate with an explicit freeze duration in seconds', async () => {
+    const freezeSeconds = 600
     const version = 7
-    // mock POST 校验冻结请求同时提交候选编号、到期时间和乐观锁版本喵。
+    // mock POST 校验冻结请求提交候选编号、自定义秒数和乐观锁版本喵。
     apiClient.post = async (url, payload) => {
       expect(url).toBe('/api/virtual-models/21/candidates/42/freeze')
-      expect(payload).toEqual({ expires_at: expiresAt, version })
-      return { data: { success: true, data: { candidate_id: 42, expires_at: expiresAt, version: 8 } } }
+      expect(payload).toEqual({ freeze_seconds: freezeSeconds, version })
+      return { data: { success: true, data: { candidate_id: 42, expires_at: 1_900_000_000, version: 8 } } }
     }
 
-    const result = await freezeVirtualModelCandidate(21, 42, expiresAt, version)
+    const result = await freezeVirtualModelCandidate(21, 42, freezeSeconds, version)
 
     expect(result.data?.candidate_id).toBe(42)
   })

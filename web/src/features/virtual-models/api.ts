@@ -16,6 +16,8 @@ export type VirtualModelCandidate = {
   auth_style?: VirtualModelCandidateAuthStyle
   // 引用用户上游模型条目时非空，凭据与真实模型名以该条目为准喵。
   upstream_model_id?: number | null
+  // frozen_until 当前手动冻结到期时间（Unix 秒），未冻结时缺省，供调用链页面展示已冻结徽章喵。
+  frozen_until?: number
   failure_rules?: VirtualModelFailureRule[]
 }
 
@@ -286,12 +288,13 @@ export async function getVirtualModelCandidateStatus(
 export async function freezeVirtualModelCandidate(
   modelID: number,
   candidateID: number,
-  expiresAt: number,
+  freezeSeconds: number,
   version: number
 ): Promise<VirtualModelApiResponse<{ candidate_id: number; expires_at: number; version: number }>> {
   const response = await api.post(
     `/api/virtual-models/${modelID}/candidates/${candidateID}/freeze`,
-    { expires_at: expiresAt, version }
+    // 以自定义秒数冻结，由后端换算到期时间戳喵。
+    { freeze_seconds: freezeSeconds, version }
   )
   return response.data
 }

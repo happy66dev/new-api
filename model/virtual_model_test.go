@@ -233,3 +233,41 @@ func TestGetFirstEnabledVirtualModelCandidate(t *testing.T) {
 	require.Len(t, candidateSnapshots, 1)
 	require.Equal(t, internalCandidate.ID, candidateSnapshots[0].CandidateID)
 }
+
+// TestGetActiveVirtualModelManualFreezes 验证手动冻结到期时间戳映射：只返回仍在冻结期内的候选喵。
+func TestGetActiveVirtualModelManualFreezes(t *testing.T) {
+	// 使用独立内存数据库隔离手动冻结查询测试喵。
+	database, err := gorm.Open(sqlite.Open("file:virtual-model-manual-freeze-test?mode=memory&cache=shared"), &gorm.Config{})
+	// 喵~防御：数据库初始化失败时终止测试，避免无效断言掩盖错误喵。
+	require.NoError(t, err)
+	// 保存并替换全局数据库连接，以覆盖实际查询函数喵。
+	originalDatabase := DB
+	DB = database
+	// 恢复数据库指针并释放临时连接，避免测试间资源泄漏喵。
+	t.Cleanup(func() {
+		DB = originalDatabase
+		sqlDatabase, closeError := database.DB()
+		if closeError == nil {
+			_ = sqlDatabase.Close()
+		}
+	})
+	require.NoError(t, database.AutoMigrate(&VirtualModelManualFreeze{}))
+
+	// 候选 1 冻结中（到期 1000 秒）、候选 2 已过期（到期 500 秒）、候选 3 未开始（开始 2000 秒）喵。
+	require.NoError(t, database.Create(&VirtualModelManualFreeze{CandidateID: 1, OperatorID: 7, StartedAt: 100, ExpiresAt: 1000}).Error)
+	require.NoError(t, database.Create(&VirtualModelManualFreeze{CandidateID: 2, OperatorID: 7, StartedAt: 100, ExpiresAt: 500}).Error)
+	require.NoError(t, database.Create(&VirtualModelManualFreeze{CandidateID: 3, OperatorID: 7, StartedAt: 2000, ExpiresAt: 3000}).Error)
+
+	// 当前时间 900 秒：只应返回冻结中的候选 1 及其到期时间戳喵。
+	frozenUntil, queryError := GetActiveVirtualModelManualFreezes([]int{1, 2, 3}, 900)
+	require.NoError(t, queryError)
+	require.Equal(t, map[int]int64{1: 1000}, frozenUntil)
+
+	// 空候选集合与非法时间戳返回空映射，不执行查询喵。
+	empty, queryError := GetActiveVirtualModelManualFreezes(nil, 900)
+	require.NoError(t, queryError)
+	require.Empty(t, empty)
+	invalid, queryError := GetActiveVirtualModelManualFreezes([]int{1}, 0)
+	require.NoError(t, queryError)
+	require.Empty(t, invalid)
+}

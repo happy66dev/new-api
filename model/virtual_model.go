@@ -584,6 +584,35 @@ func GetActiveVirtualModelManualFreezeCandidateIDs(candidateIDs []int, currentTi
 	return GetActiveVirtualModelManualFreezeCandidateIDsWithDB(DB, candidateIDs, currentTimestamp)
 }
 
+// GetActiveVirtualModelManualFreezesWithDB 使用给定数据库连接读取当前仍处于手动冻结期的候选到期时间戳映射喵。
+func GetActiveVirtualModelManualFreezesWithDB(database *gorm.DB, candidateIDs []int, currentTimestamp int64) (map[int]int64, error) {
+	// 喵~防御：空候选集合或非法时间戳不执行数据库查询，避免无效条件扩大读取范围喵。
+	if len(candidateIDs) == 0 || currentTimestamp <= 0 {
+		return map[int]int64{}, nil
+	}
+	// 喵~防御：数据库连接为空时拒绝查询，避免运行时空指针或绕过调用方事务边界喵。
+	if database == nil {
+		return nil, errors.New("virtual model database is unavailable")
+	}
+	var freezeStates []VirtualModelManualFreeze
+	queryError := database.Model(&VirtualModelManualFreeze{}).
+		Where("candidate_id IN ? AND started_at <= ? AND expires_at > ?", candidateIDs, currentTimestamp, currentTimestamp).
+		Find(&freezeStates).Error
+	if queryError != nil {
+		return nil, queryError
+	}
+	frozenUntilByCandidate := make(map[int]int64, len(freezeStates))
+	for _, freezeState := range freezeStates {
+		frozenUntilByCandidate[freezeState.CandidateID] = freezeState.ExpiresAt
+	}
+	return frozenUntilByCandidate, nil
+}
+
+// GetActiveVirtualModelManualFreezes 返回当前仍处于手动冻结期的候选到期时间戳映射喵。
+func GetActiveVirtualModelManualFreezes(candidateIDs []int, currentTimestamp int64) (map[int]int64, error) {
+	return GetActiveVirtualModelManualFreezesWithDB(DB, candidateIDs, currentTimestamp)
+}
+
 // GetFirstEnabledVirtualModelCandidate 读取候选链首个启用候选，保持配置顺序的不可变选择语义喵。
 func GetFirstEnabledVirtualModelCandidate(virtualModelID int) (*VirtualModelInternalCandidateSnapshot, error) {
 	candidateSnapshots, queryError := GetEnabledVirtualModelCandidateSnapshots(virtualModelID)

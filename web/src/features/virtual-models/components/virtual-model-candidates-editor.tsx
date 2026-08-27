@@ -16,7 +16,7 @@ import {
 } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
 import { useQuery } from '@tanstack/react-query'
-import { ShieldCheck } from 'lucide-react'
+import { ShieldCheck, Snowflake } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -41,6 +41,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { cn } from '@/lib/utils'
 import {
   Sheet,
   SheetClose,
@@ -58,8 +59,10 @@ import { EntityPerformanceDrawer } from '@/features/status-check/entity-performa
 import { getUserUpstreamModels } from '@/features/upstream-models/api'
 
 import {
+  freezeVirtualModelCandidate,
   getVirtualModelCandidateStatus,
   replaceVirtualModelCandidates,
+  unfreezeVirtualModelCandidate,
   type VirtualModel,
   type VirtualModelCandidate,
   type VirtualModelCandidateAuthStyle,
@@ -73,6 +76,8 @@ type CandidateDraft = {
   authStyle: VirtualModelCandidateAuthStyle
   baseURL: string
   enabled: boolean
+  // frozenUntil 当前手动冻结到期时间（Unix 秒），零表示未冻结，用于展示已冻结徽章喵。
+  frozenUntil: number
   groupName: string
   id?: number
   maxRetries: string
@@ -88,6 +93,14 @@ const DEFAULT_TIMEOUT_SECONDS = '60'
 // DEFAULT_MAX_RETRIES 是新候选默认的自定义上游重试次数喵。
 const DEFAULT_MAX_RETRIES = '0'
 
+// FREEZE_SECOND_PRESETS 冻结弹窗的快捷秒数预设，覆盖常见运维场景喵。
+const FREEZE_SECOND_PRESETS: { labelKey: string; seconds: number }[] = [
+  { labelKey: '60 seconds', seconds: 60 },
+  { labelKey: '10 minutes', seconds: 600 },
+  { labelKey: '1 hour', seconds: 3600 },
+  { labelKey: '24 hours', seconds: 86400 },
+]
+
 // toCandidateDraft 把脱敏响应映射到可编辑草稿，绝不从响应读取 API Key 喵。
 function toCandidateDraft(candidate: VirtualModelCandidate): CandidateDraft {
   return {
@@ -96,6 +109,7 @@ function toCandidateDraft(candidate: VirtualModelCandidate): CandidateDraft {
     // 喵~防御：响应中的 base_url 仅是脱敏摘要，不能回传覆盖真实加密地址，因此既有候选草稿保持为空喵。
     baseURL: candidate.id ? '' : (candidate.base_url ?? ''),
     enabled: candidate.enabled,
+    frozenUntil: candidate.frozen_until ?? 0,
     groupName: candidate.group_name ?? '',
     id: candidate.id,
     maxRetries: String(candidate.max_retries),
@@ -113,6 +127,7 @@ function createCandidateDraft(sourceType: 'internal' | 'custom'): CandidateDraft
     authStyle: 'bearer',
     baseURL: '',
     enabled: true,
+    frozenUntil: 0,
     groupName: '',
     maxRetries: DEFAULT_MAX_RETRIES,
     realModelName: '',
@@ -310,6 +325,10 @@ export function VirtualModelCandidatesEditor({
   const [rulesCandidateIndex, setRulesCandidateIndex] = useState<number | null>(null)
   // pendingDeleteIndex 记录等待确认删除的候选下标，非空时打开删除确认弹窗喵。
   const [pendingDeleteIndex, setPendingDeleteIndex] = useState<number | null>(null)
+  // pendingFreezeIndex 记录等待设置冻结秒数的候选下标，非空时打开冻结弹窗喵。
+  const [pendingFreezeIndex, setPendingFreezeIndex] = useState<number | null>(null)
+  // freezeSecondsInput 冻结弹窗中的自定义秒数输入，默认 3600 秒喵。
+  const [freezeSecondsInput, setFreezeSecondsInput] = useState('3600')
 
   // 加载当前用户的上游模型列表，供自定义候选引用选择喵。
   const upstreamModelsQuery = useQuery({
@@ -437,6 +456,61 @@ export function VirtualModelCandidatesEditor({
     }
   }
 
+  // openFreezeDialog 打开冻结弹窗并把秒数重置为默认值喵。
+  const openFreezeDialog = (index: number) => {
+    setFreezeSecondsInput('3600')
+    setPendingFreezeIndex(index)
+  }
+
+  // freezeCandidate 对指定候选发起手动冻结，成功后本地即时回填到期时间并刷新喵。
+  const freezeCandidate = async (index: number) => {
+    const candidate = draftCandidates[index]
+    if (!candidate?.id) return
+    const freezeSeconds = Number(freezeSecondsInput)
+    // 喵~防御：秒数必须为 1 到 86400 之间的整数，与后端冻结上限保持一致喵。
+    if (!Number.isInteger(freezeSeconds) || freezeSeconds < 1 || freezeSeconds > 86400) {
+      toast.error(t('Freeze seconds must be between 1 and 86400'))
+      return
+    }
+    try {
+      setIsSaving(true)
+      const response = await freezeVirtualModelCandidate(model.id, candidate.id, freezeSeconds, model.version)
+      if (!response.success) {
+        throw new Error(response.message || t('Unable to freeze candidate'))
+      }
+      // 本地即时回填冻结到期时间，让徽章立刻出现，刷新后再校准喵。
+      updateCandidate(index, { frozenUntil: response.data?.expires_at ?? Math.floor(Date.now() / 1000) + freezeSeconds })
+      toast.success(t('Candidate frozen'))
+      setPendingFreezeIndex(null)
+      onSaved()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('Unable to freeze candidate'))
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  // unfreezeCandidate 解除指定候选的手动冻结喵。
+  const unfreezeCandidate = async (index: number) => {
+    const candidate = draftCandidates[index]
+    if (!candidate?.id) return
+    try {
+      setIsSaving(true)
+      const response = await unfreezeVirtualModelCandidate(model.id, candidate.id, model.version)
+      if (!response.success) {
+        throw new Error(response.message || t('Unable to unfreeze candidate'))
+      }
+      // 本地清空冻结到期时间，让徽章立刻消失喵。
+      updateCandidate(index, { frozenUntil: 0 })
+      toast.success(t('Candidate unfrozen'))
+      onSaved()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('Unable to unfreeze candidate'))
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
   return (
     <div className='space-y-4'>
       <div className='flex flex-wrap items-center justify-between gap-3'>
@@ -478,6 +552,12 @@ export function VirtualModelCandidatesEditor({
               </Badge>
               <span className='min-w-0 flex-1 truncate font-medium'>{candidateDisplayName(candidate)}</span>
               <Badge variant={candidate.enabled ? 'default' : 'secondary'}>{candidate.enabled ? t('Enabled') : t('Disabled')}</Badge>
+              {/* 已冻结候选展示冻结徽章与剩余分钟，方便运维快速识别不可用节点喵。 */}
+              {candidate.frozenUntil > Math.floor(Date.now() / 1000) && (
+                <Badge variant='secondary' className='border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-300'>
+                  {t('Frozen')} · {Math.max(0, Math.ceil((candidate.frozenUntil - Math.floor(Date.now() / 1000)) / 60))}m
+                </Badge>
+              )}
               <HugeiconsIcon icon={expandedIndex === index ? ChevronUpIcon : ChevronDownIcon} strokeWidth={2} className='size-4 shrink-0 text-muted-foreground' aria-hidden='true' />
             </button>
             <div className='flex gap-1'>
@@ -492,6 +572,23 @@ export function VirtualModelCandidatesEditor({
                 <span className='flex items-center px-1'>
                   <CandidateStatusDot modelID={model.id} candidateID={candidate.id} />
                 </span>
+              )}
+              {/* 手动冻结/解冻按钮：未冻结时打开秒数弹窗，已冻结时直接解除喵。 */}
+              {candidate.id !== undefined && (
+                <Button
+                  type='button'
+                  size='icon-sm'
+                  variant='ghost'
+                  disabled={isSaving}
+                  onClick={() =>
+                    candidate.frozenUntil > Math.floor(Date.now() / 1000)
+                      ? unfreezeCandidate(index)
+                      : openFreezeDialog(index)
+                  }
+                  aria-label={candidate.frozenUntil > Math.floor(Date.now() / 1000) ? t('Unfreeze candidate') : t('Freeze candidate')}
+                >
+                  <Snowflake className='size-4' />
+                </Button>
               )}
               <Button type='button' size='icon-sm' variant='ghost' disabled={isSaving || candidate.id === undefined} onClick={() => setRulesCandidateIndex(index)} aria-label={t('Candidate failure rules')}>
                 <ShieldCheck className='size-4' />
@@ -647,6 +744,59 @@ export function VirtualModelCandidatesEditor({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* 手动冻结弹窗：输入自定义秒数或点击预设快捷冻结，确认后发起请求喵。 */}
+      <Sheet
+        open={pendingFreezeIndex !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingFreezeIndex(null)
+        }}
+      >
+        <SheetContent className={sideDrawerContentClassName()}>
+          <SheetHeader className={sideDrawerHeaderClassName()}>
+            <SheetTitle>{t('Freeze candidate')}</SheetTitle>
+            <SheetDescription>{t('Frozen candidates are skipped until the duration elapses.')}</SheetDescription>
+          </SheetHeader>
+          <div className={sideDrawerFormClassName('gap-4')}>
+            {/* 弹窗顶部展示待冻结候选名称，避免误冻结其他节点喵。 */}
+            {pendingFreezeIndex !== null && draftCandidates[pendingFreezeIndex] && (
+              <Badge variant='secondary' className='self-start'>{candidateDisplayName(draftCandidates[pendingFreezeIndex])}</Badge>
+            )}
+            <label className='grid gap-1 text-sm font-medium'>
+              {t('Freeze seconds')}
+              <Input inputMode='numeric' value={freezeSecondsInput} disabled={isSaving} onChange={(event) => setFreezeSecondsInput(event.target.value)} />
+            </label>
+            {/* 快捷秒数预设：点击填入，再次点击同值清除喵。 */}
+            <span className='flex flex-wrap gap-1'>
+              {FREEZE_SECOND_PRESETS.map((preset) => {
+                const active = Number(freezeSecondsInput) === preset.seconds
+                return (
+                  <button
+                    type='button'
+                    key={preset.seconds}
+                    disabled={isSaving}
+                    className={cn(
+                      'rounded-full border px-2 py-0.5 text-xs transition-colors',
+                      active ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
+                    )}
+                    onClick={() => setFreezeSecondsInput(active ? '' : String(preset.seconds))}
+                  >
+                    {t(preset.labelKey)}
+                  </button>
+                )
+              })}
+            </span>
+          </div>
+          <SheetFooter className={sideDrawerFooterClassName()}>
+            <SheetClose render={<Button variant='outline' disabled={isSaving} />}>
+              {t('Cancel')}
+            </SheetClose>
+            <Button disabled={isSaving} onClick={() => pendingFreezeIndex !== null && freezeCandidate(pendingFreezeIndex)}>
+              {t('Freeze')}
+            </Button>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
     </div>
   )
 }

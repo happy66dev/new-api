@@ -103,3 +103,39 @@ func TestSaveCustomCandidateCarriesUpstreamModelID(t *testing.T) {
 	}, false)
 	require.Error(t, saveError)
 }
+
+// TestBuildVirtualModelResponseFrozenUntil 验证手动冻结状态回填到候选响应，供调用链页面展示已冻结徽章喵。
+func TestBuildVirtualModelResponseFrozenUntil(t *testing.T) {
+	// 使用内存 SQLite 快速构造虚拟模型、候选与手动冻结表喵。
+	testDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, testDB.AutoMigrate(&model.VirtualModel{}, &model.VirtualModelCandidate{}, &model.VirtualModelInternalCandidate{}, &model.VirtualModelFailureRule{}, &model.VirtualModelGlobalFailureRule{}, &model.VirtualModelTokenBinding{}, &model.VirtualModelManualFreeze{}))
+
+	// 喵~防御：保存并恢复全局数据库连接，避免污染其他测试用例。
+	originalDB := model.DB
+	model.DB = testDB
+	t.Cleanup(func() { model.DB = originalDB })
+
+	now := time.Now().Unix()
+	virtualModel := &model.VirtualModel{OwnerUserID: 1, NormalizedName: "frozen", DisplayName: "Frozen", Enabled: true, LoopEnabled: false, TotalTimeoutSeconds: 120, MaxLoopRounds: 1, Version: 1, CreatedTime: now, UpdatedTime: now}
+	require.NoError(t, testDB.Create(virtualModel).Error)
+	candidate := &model.VirtualModelCandidate{VirtualModelID: virtualModel.ID, StableOrder: 0, SourceType: model.VirtualModelSourceInternal, Enabled: true, MaxRetries: 0, TimeoutSeconds: 60, Version: 1, CreatedTime: now, UpdatedTime: now}
+	require.NoError(t, testDB.Create(candidate).Error)
+	require.NoError(t, testDB.Create(&model.VirtualModelInternalCandidate{CandidateID: candidate.ID, GroupName: "default", RealModelName: "gpt-4o-mini"}).Error)
+
+	// 手动冻结：从现在起 600 秒后到期，供回填断言喵。
+	expiresAt := now + 600
+	require.NoError(t, testDB.Create(&model.VirtualModelManualFreeze{CandidateID: candidate.ID, OperatorID: 1, StartedAt: now, ExpiresAt: expiresAt}).Error)
+
+	// 构建响应必须携带当前仍生效的冻结到期时间喵。
+	response, buildError := buildVirtualModelResponse(virtualModel)
+	require.NoError(t, buildError)
+	require.Len(t, response.Candidates, 1)
+	require.Equal(t, expiresAt, response.Candidates[0].FrozenUntil)
+
+	// 冻结到期后响应不再携带冻结状态喵。
+	require.NoError(t, testDB.Model(&model.VirtualModelManualFreeze{}).Where("candidate_id = ?", candidate.ID).Update("expires_at", now-10).Error)
+	response, buildError = buildVirtualModelResponse(virtualModel)
+	require.NoError(t, buildError)
+	require.Equal(t, int64(0), response.Candidates[0].FrozenUntil)
+}
