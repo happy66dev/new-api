@@ -71,6 +71,7 @@ import {
   decodeBillingExprB64,
   getTieredBillingSummary,
   hasAnyCacheTokens,
+  isEstimatedLog,
   isViolationFeeLog,
   getFirstResponseTimeColor,
   getResponseTimeColor,
@@ -410,6 +411,8 @@ function TokenBreakdown(props: { log: UsageLog; other: LogOtherData }) {
 
   const promptTokens = log.prompt_tokens || 0
   const completionTokens = log.completion_tokens || 0
+  // 自定上游/虚拟模型（type=8/9）token 由文本估计时，值右侧标「?」提示喵。
+  const estimated = isEstimatedLog(other)
   // 内部日志读 cache_tokens，自定上游（type=8）读 cached_tokens，两种键都兜底喵。
   const cacheRead = other.cache_tokens || other.cached_tokens || 0
   const cacheWrite = other.cache_creation_tokens || 0
@@ -419,12 +422,28 @@ function TokenBreakdown(props: { log: UsageLog; other: LogOtherData }) {
 
   if (!hasTokens) return null
 
-  const rows: Array<{ label: string; value: string }> = []
+  // 估计时在 token 数字右侧追加「?」与悬停提示，供用户识别估算来源喵。
+  const tokenValueWithMark = (value: string): React.ReactNode =>
+    estimated ? (
+      <span title={t('Estimated tokens (upstream returned no usage)')}>
+        {value}
+        <span className='text-muted-foreground/70 ml-0.5 cursor-help'>
+          ?
+        </span>
+      </span>
+    ) : (
+      value
+    )
 
-  rows.push({ label: t('Input Tokens'), value: promptTokens.toLocaleString() })
+  const rows: Array<{ label: string; value: React.ReactNode }> = []
+
+  rows.push({
+    label: t('Input Tokens'),
+    value: tokenValueWithMark(promptTokens.toLocaleString()),
+  })
   rows.push({
     label: t('Output Tokens'),
-    value: completionTokens.toLocaleString(),
+    value: tokenValueWithMark(completionTokens.toLocaleString()),
   })
 
   if (cacheRead > 0) {
