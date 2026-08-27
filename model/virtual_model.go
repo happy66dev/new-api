@@ -174,6 +174,8 @@ type VirtualModelFailureRule struct {
 	ProbeTotalTimeoutSeconds int `json:"probe_total_timeout_seconds"`
 	// TimeoutSeconds 超时条件判定阈值，单位：秒；零表示沿用候选级执行超时喵。
 	TimeoutSeconds int `json:"timeout_seconds"`
+	// RetryCount 失败规则重试当前候选的最大重试次数，零表示未配置时沿用候选 MaxRetries 喵。
+	RetryCount int `json:"retry_count"`
 	Version    int64                  `json:"version" gorm:"default:1"`
 }
 
@@ -202,6 +204,8 @@ type VirtualModelGlobalFailureRule struct {
 	ProbeTotalTimeoutSeconds int `json:"probe_total_timeout_seconds"`
 	// TimeoutSeconds 超时条件判定阈值，单位：秒；零表示沿用候选级执行超时喵。
 	TimeoutSeconds int `json:"timeout_seconds"`
+	// RetryCount 失败规则重试当前候选的最大重试次数，零表示未配置时沿用候选 MaxRetries 喵。
+	RetryCount int `json:"retry_count"`
 	Version    int64                  `json:"version" gorm:"default:1"`
 }
 
@@ -553,10 +557,10 @@ func GetVirtualModelGlobalFailureRulesWithDB(database *gorm.DB, virtualModelID i
 	if queryError != nil {
 		return nil, queryError
 	}
-	// 将模型级规则字段复制到候选规则结构，字段语义与候选规则完全一致喵。
+	// 将模型级规则字段复制到候选规则结构，字段语义与候选规则完全一致，含规则级重试次数喵。
 	globalFailureRules := make([]VirtualModelFailureRule, 0, len(storedGlobalRules))
 	for _, storedRule := range storedGlobalRules {
-		globalFailureRules = append(globalFailureRules, VirtualModelFailureRule{ID: storedRule.ID, RuleOrder: storedRule.RuleOrder, HTTPStatus: storedRule.HTTPStatus, HTTPStatusMax: storedRule.HTTPStatusMax, ErrorClass: storedRule.ErrorClass, BodyRegex: storedRule.BodyRegex, Action: storedRule.Action, FreezeSeconds: storedRule.FreezeSeconds, FreezeField: storedRule.FreezeField, FreezeUnit: storedRule.FreezeUnit})
+		globalFailureRules = append(globalFailureRules, VirtualModelFailureRule{ID: storedRule.ID, RuleOrder: storedRule.RuleOrder, HTTPStatus: storedRule.HTTPStatus, HTTPStatusMax: storedRule.HTTPStatusMax, ErrorClass: storedRule.ErrorClass, BodyRegex: storedRule.BodyRegex, Action: storedRule.Action, FreezeSeconds: storedRule.FreezeSeconds, FreezeField: storedRule.FreezeField, FreezeUnit: storedRule.FreezeUnit, RetryCount: storedRule.RetryCount})
 	}
 	return globalFailureRules, nil
 }

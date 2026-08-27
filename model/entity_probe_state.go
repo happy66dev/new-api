@@ -23,6 +23,7 @@ const (
 
 // EntityProbeState 存储单个被检测实体的最近一次调用与累计计数喵。
 // 最近一次时间由本表提供（perf_metrics 小时桶太粗），可用性/延迟/24h 序列由 perf_metrics 聚合喵。
+// 最近一次失败单独保留，即使最近一次调用成功也不覆盖，供用户查看失败历史喵。
 type EntityProbeState struct {
 	ID            int64  `json:"id" gorm:"primaryKey"`
 	Scope         string `json:"scope" gorm:"size:32;uniqueIndex:idx_eps_scope_entity,priority:1"`
@@ -33,8 +34,12 @@ type EntityProbeState struct {
 	LastSuccess   bool   `json:"last_success" gorm:"default:false"`
 	LastLatencyMs int64  `json:"last_latency_ms" gorm:"bigint;default:0"`
 	LastError     string `json:"last_error" gorm:"size:512;default:''"`
-	RequestCount  int64  `json:"request_count" gorm:"bigint;default:0"`
-	SuccessCount  int64  `json:"success_count" gorm:"bigint;default:0"`
+	// LastFailureAt 最近一次失败调用的时间戳，最近一次调用成功时保留上次失败时刻喵。
+	LastFailureAt int64 `json:"last_failure_at" gorm:"bigint;default:0"`
+	// LastFailureError 最近一次失败调用的错误分类，最近一次调用成功时保留上次失败原因喵。
+	LastFailureError string `json:"last_failure_error" gorm:"size:512;default:''"`
+	RequestCount     int64  `json:"request_count" gorm:"bigint;default:0"`
+	SuccessCount     int64  `json:"success_count" gorm:"bigint;default:0"`
 }
 
 func (EntityProbeState) TableName() string {
@@ -57,6 +62,14 @@ func RecordEntityProbeCounted(scope string, entityID int64, virtualID int64, own
 	if success {
 		successIncrement = 1
 	}
+	// 新行插入时：失败则立即记录失败时间与错误，成功则留空等待后续失败喵。
+	lastFailureAtForInsert := int64(0)
+	lastFailureErrorForInsert := ""
+	if !success {
+		lastFailureAtForInsert = now
+		lastFailureErrorForInsert = lastError
+	}
+	// 最近一次失败只在失败时更新，成功保留上次失败信息（用户希望即使最近成功也能看到失败历史）喵。
 	return DB.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "scope"}, {Name: "entity_id"}},
 		DoUpdates: clause.Assignments(map[string]any{
@@ -64,20 +77,25 @@ func RecordEntityProbeCounted(scope string, entityID int64, virtualID int64, own
 			"last_success":    success,
 			"last_latency_ms": latencyMs,
 			"last_error":      lastError,
+			// 喵~防御：成功时用 CASE 保留旧失败信息，失败时才写入最新失败，避免成功调用清空失败历史喵。
+			"last_failure_at":   gorm.Expr("CASE WHEN ? = 1 THEN last_failure_at ELSE ? END", successIncrement, now),
+			"last_failure_error": gorm.Expr("CASE WHEN ? = 1 THEN last_failure_error ELSE ? END", successIncrement, lastError),
 			"request_count":   gorm.Expr("request_count + 1"),
 			"success_count":   gorm.Expr("success_count + ?", successIncrement),
 		}),
 	}).Create(&EntityProbeState{
-		Scope:         scope,
-		EntityID:      entityID,
-		VirtualID:     virtualID,
-		OwnerUserID:   ownerUserID,
-		LastAt:        now,
-		LastSuccess:   success,
-		LastLatencyMs: latencyMs,
-		LastError:     lastError,
-		RequestCount:  1,
-		SuccessCount:  int64(successIncrement),
+		Scope:            scope,
+		EntityID:         entityID,
+		VirtualID:        virtualID,
+		OwnerUserID:      ownerUserID,
+		LastAt:           now,
+		LastSuccess:      success,
+		LastLatencyMs:    latencyMs,
+		LastError:        lastError,
+		LastFailureAt:    lastFailureAtForInsert,
+		LastFailureError: lastFailureErrorForInsert,
+		RequestCount:     1,
+		SuccessCount:     int64(successIncrement),
 	}).Error
 }
 

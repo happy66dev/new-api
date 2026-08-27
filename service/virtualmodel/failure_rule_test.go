@@ -88,9 +88,13 @@ func TestDecideCandidateFailureAction(t *testing.T) {
 	// 逐项确认失败规则不会因后续规则或不匹配条件改变决策喵。
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			action, freezeSeconds := DecideCandidateFailureAction(testCase.rules, testCase.failure)
+			action, freezeSeconds, ruleRetryCount := DecideCandidateFailureAction(testCase.rules, testCase.failure)
 			if action != testCase.expectedAction || freezeSeconds != testCase.expectedFreeze {
 				t.Fatalf("DecideCandidateFailureAction() = (%q, %d), want (%q, %d)", action, freezeSeconds, testCase.expectedAction, testCase.expectedFreeze)
+			}
+			// 规则未配置重试次数时返回零，表示沿用候选 MaxRetries 喵。
+			if ruleRetryCount != 0 {
+				t.Fatalf("DecideCandidateFailureAction() retry count = %d, want 0", ruleRetryCount)
 			}
 		})
 	}
@@ -110,16 +114,16 @@ func TestDecideVirtualModelFailureActionGlobalFallback(t *testing.T) {
 		},
 	}
 	// 场景一：候选配置了规则时优先按候选规则决策，不受全局规则影响喵。
-	action, _ := DecideVirtualModelFailureAction(executionSnapshot, 11, CandidateFailure{HTTPStatus: http.StatusTooManyRequests})
+	action, _, _ := DecideVirtualModelFailureAction(executionSnapshot, 11, CandidateFailure{HTTPStatus: http.StatusTooManyRequests})
 	require.Equal(t, model.VirtualModelActionFreeze, action)
 	// 场景二：候选未配置规则时回退到模型级全局兜底规则喵。
-	action, _ = DecideVirtualModelFailureAction(executionSnapshot, 22, CandidateFailure{HTTPStatus: http.StatusInternalServerError})
+	action, _, _ = DecideVirtualModelFailureAction(executionSnapshot, 22, CandidateFailure{HTTPStatus: http.StatusInternalServerError})
 	require.Equal(t, model.VirtualModelActionPassthrough, action)
 	// 场景三：全局规则也未命中时保持默认切换下一候选喵。
-	action, _ = DecideVirtualModelFailureAction(executionSnapshot, 22, CandidateFailure{HTTPStatus: http.StatusBadGateway})
+	action, _, _ = DecideVirtualModelFailureAction(executionSnapshot, 22, CandidateFailure{HTTPStatus: http.StatusBadGateway})
 	require.Equal(t, model.VirtualModelActionNext, action)
 	// 场景四：快照为空时保守回退默认切换下一候选喵。
-	action, _ = DecideVirtualModelFailureAction(nil, 1, CandidateFailure{HTTPStatus: http.StatusInternalServerError})
+	action, _, _ = DecideVirtualModelFailureAction(nil, 1, CandidateFailure{HTTPStatus: http.StatusInternalServerError})
 	require.Equal(t, model.VirtualModelActionNext, action)
 }
 
@@ -424,7 +428,7 @@ func TestDecideCandidateFailureActionErrorClass(t *testing.T) {
 	// 逐项断言错误分类规则不会误命中其它分类或退化为任意状态匹配喵。
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			action, _ := DecideCandidateFailureAction([]model.VirtualModelFailureRule{testCase.rule}, testCase.failure)
+			action, _, _ := DecideCandidateFailureAction([]model.VirtualModelFailureRule{testCase.rule}, testCase.failure)
 			require.Equal(t, testCase.expectedAction, action)
 		})
 	}
@@ -435,11 +439,24 @@ func TestDecideCandidateFailureActionErrorClassBodyRegex(t *testing.T) {
 	// 超时规则同时限定响应体包含 deadline 字样喵。
 	rule := model.VirtualModelFailureRule{ErrorClass: "timeout", BodyRegex: "deadline", Action: model.VirtualModelActionRetry}
 	// 分类命中且响应体正则命中时按规则动作执行喵。
-	action, _ := DecideCandidateFailureAction([]model.VirtualModelFailureRule{rule}, CandidateFailure{HTTPStatus: 0, ErrorClass: "timeout", BodyPreview: "request deadline exceeded"})
+	action, _, _ := DecideCandidateFailureAction([]model.VirtualModelFailureRule{rule}, CandidateFailure{HTTPStatus: 0, ErrorClass: "timeout", BodyPreview: "request deadline exceeded"})
 	require.Equal(t, model.VirtualModelActionRetry, action)
 	// 响应体正则不命中时整条规则视为不匹配，回退默认切换下一候选喵。
-	action, _ = DecideCandidateFailureAction([]model.VirtualModelFailureRule{rule}, CandidateFailure{HTTPStatus: 0, ErrorClass: "timeout", BodyPreview: "slow but alive"})
+	action, _, _ = DecideCandidateFailureAction([]model.VirtualModelFailureRule{rule}, CandidateFailure{HTTPStatus: 0, ErrorClass: "timeout", BodyPreview: "slow but alive"})
 	require.Equal(t, model.VirtualModelActionNext, action)
+}
+
+// TestDecideCandidateFailureActionRetryCount 验证规则级最大重试次数随决策返回喵。
+func TestDecideCandidateFailureActionRetryCount(t *testing.T) {
+	// 命中 retry 规则时返回规则级重试次数，供调用方覆盖候选 MaxRetries 喵。
+	rule := model.VirtualModelFailureRule{HTTPStatus: http.StatusTooManyRequests, Action: model.VirtualModelActionRetry, RetryCount: 3}
+	action, _, retryCount := DecideCandidateFailureAction([]model.VirtualModelFailureRule{rule}, CandidateFailure{HTTPStatus: http.StatusTooManyRequests})
+	require.Equal(t, model.VirtualModelActionRetry, action)
+	require.Equal(t, 3, retryCount)
+	// 未命中时回退默认切换下一候选，并返回零重试次数表示沿用候选 MaxRetries 喵。
+	action, _, retryCount = DecideCandidateFailureAction([]model.VirtualModelFailureRule{rule}, CandidateFailure{HTTPStatus: http.StatusBadGateway})
+	require.Equal(t, model.VirtualModelActionNext, action)
+	require.Equal(t, 0, retryCount)
 }
 
 // TestNormalizeCandidateFailureTimeout 验证 context 超时被独立分类为 timeout 而非 network_error 喵。

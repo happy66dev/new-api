@@ -284,6 +284,10 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 		usage := &dto.Usage{}
 		// 探测缓冲里可能已包含带 usage 的事件，先提取再回放喵。
 		extractUsageFromSSEBytes(precommitBuffer, usage)
+		// 首次有内容的写响应才打点，供请求级首字统计喵。
+		if len(precommitBuffer) > 0 {
+			markVirtualModelFirstWrite(c)
+		}
 		if _, writeError := c.Writer.Write(precommitBuffer); writeError != nil {
 			return &CustomCandidateExecutionResult{Err: fmt.Errorf("write committed custom upstream response: %w", writeError), TtftMs: ttftMs}
 		}
@@ -292,6 +296,8 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 			lineBytes, readError := readLimitedSSELine(responseReader)
 			if len(lineBytes) > 0 {
 				extractUsageFromSSELine(lineBytes, usage)
+				// 幂等打点：探测缓冲为空时首个有内容行才是真正首字节喵。
+				markVirtualModelFirstWrite(c)
 				if _, writeError := c.Writer.Write(lineBytes); writeError != nil {
 					return &CustomCandidateExecutionResult{Err: fmt.Errorf("write committed custom upstream response: %w", writeError), TtftMs: ttftMs}
 				}
@@ -319,6 +325,8 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 		// 超限大响应：不解析 usage，把已读内容与剩余流合并原样转发喵。
 		copyCustomResponseHeaders(c.Writer.Header(), response.Header)
 		c.Status(response.StatusCode)
+		// 超限大响应首次写即首字，供请求级首字统计喵。
+		markVirtualModelFirstWrite(c)
 		if _, copyError := io.Copy(c.Writer, io.MultiReader(bytes.NewReader(responseBody), responseReader)); copyError != nil {
 			return &CustomCandidateExecutionResult{Err: fmt.Errorf("copy committed custom upstream response: %w", copyError), TtftMs: ttftMs}
 		}
@@ -331,6 +339,8 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 	usage := normalizeUpstreamModelUsage(extractUsageFromOpenAIBody(responseBody))
 	copyCustomResponseHeaders(c.Writer.Header(), response.Header)
 	c.Status(response.StatusCode)
+	// 非流式首次写响应即首字，供请求级首字统计喵。
+	markVirtualModelFirstWrite(c)
 	if _, writeError := c.Writer.Write(responseBody); writeError != nil {
 		return &CustomCandidateExecutionResult{Err: fmt.Errorf("write committed custom upstream response: %w", writeError), TtftMs: ttftMs}
 	}

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	relaykitypes "github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
@@ -26,6 +27,20 @@ type UserUpstreamModelExecutionResult struct {
 	Err   error
 	// TtftMs 从发起上游请求到收到响应头的时间（毫秒），响应头到达≈首字节喵。
 	TtftMs int64
+}
+
+// markVirtualModelFirstWrite 记录虚拟模型 custom/user-xxx 候选首次向客户端写响应的时刻喵。
+// 幂等：只有首次写（context 中尚无时间）才打点，供调用方计算请求级首字耗时喵。
+func markVirtualModelFirstWrite(c *gin.Context) {
+	// 喵~防御：空上下文直接返回喵。
+	if c == nil {
+		return
+	}
+	// 已记录过首次写则不再更新，保证首字取第一次写响应的时刻喵。
+	if !common.GetContextKeyTime(c, constant.ContextKeyVirtualModelFirstWriteAt).IsZero() {
+		return
+	}
+	common.SetContextKey(c, constant.ContextKeyVirtualModelFirstWriteAt, time.Now())
 }
 
 // userUpstreamNonStreamingBodyLimit 限制非流式响应正文的最大缓冲，防御异常上游耗尽内存喵。
@@ -59,6 +74,8 @@ func fakeStreamCommitResponse(c *gin.Context, responseReader *bufio.Reader, resp
 	usage := &dto.Usage{}
 	// 回放前先从全量缓存提取 usage 事件喵。
 	extractUsageFromSSEBytes(fakeStreamBuffer, usage)
+	// 伪流一次性回放开始即首次写响应，供请求级首字统计喵。
+	markVirtualModelFirstWrite(c)
 	if _, writeError := c.Writer.Write(fakeStreamBuffer); writeError != nil {
 		return nil, fmt.Errorf("write committed fake stream response: %w", writeError)
 	}
@@ -193,6 +210,10 @@ func ExecuteUserUpstreamModel(c *gin.Context, input CustomCandidateExecutionInpu
 		usage := &dto.Usage{}
 		// 探测缓冲里可能已包含带 usage 的事件，先提取再回放喵。
 		extractUsageFromSSEBytes(precommitBuffer, usage)
+		// 首次有内容的写响应才打点，供请求级首字统计喵。
+		if len(precommitBuffer) > 0 {
+			markVirtualModelFirstWrite(c)
+		}
 		if _, writeError := c.Writer.Write(precommitBuffer); writeError != nil {
 			return &UserUpstreamModelExecutionResult{Err: fmt.Errorf("write committed user upstream response: %w", writeError), TtftMs: ttftMs}
 		}
@@ -201,6 +222,8 @@ func ExecuteUserUpstreamModel(c *gin.Context, input CustomCandidateExecutionInpu
 			lineBytes, readError := readLimitedSSELine(responseReader)
 			if len(lineBytes) > 0 {
 				extractUsageFromSSELine(lineBytes, usage)
+				// 幂等打点：探测缓冲为空时首个有内容行才是真正首字节喵。
+				markVirtualModelFirstWrite(c)
 				if _, writeError := c.Writer.Write(lineBytes); writeError != nil {
 					return &UserUpstreamModelExecutionResult{Err: fmt.Errorf("write committed user upstream response: %w", writeError), TtftMs: ttftMs}
 				}
@@ -235,6 +258,8 @@ func ExecuteUserUpstreamModel(c *gin.Context, input CustomCandidateExecutionInpu
 	usage := normalizeUpstreamModelUsage(extractUsageFromOpenAIBody(responseBody))
 	copyCustomResponseHeaders(c.Writer.Header(), response.Header)
 	c.Status(response.StatusCode)
+	// 非流式首次写响应即首字，供请求级首字统计喵。
+	markVirtualModelFirstWrite(c)
 	if _, writeError := c.Writer.Write(responseBody); writeError != nil {
 		return &UserUpstreamModelExecutionResult{Err: fmt.Errorf("write committed user upstream response: %w", writeError), TtftMs: ttftMs}
 	}

@@ -89,24 +89,26 @@ func ParseRetryAfterSeconds(responseHeaders http.Header) int {
 }
 
 // DecideCandidateFailureAction 按规则顺序决定候选失败后的编排动作喵。
-func DecideCandidateFailureAction(rules []model.VirtualModelFailureRule, failure CandidateFailure) (model.VirtualModelFailureAction, int) {
+// 返回命中规则的动作、冻结秒数与规则级最大重试次数（retryCount 仅在动作 retry 时有意义，零表示未配置）喵。
+func DecideCandidateFailureAction(rules []model.VirtualModelFailureRule, failure CandidateFailure) (model.VirtualModelFailureAction, int, int) {
 	// 规则已由查询层稳定排序；第一条命中规则拥有唯一决策权喵。
 	for _, rule := range rules {
 		if !candidateFailureRuleMatches(rule, failure) {
 			continue
 		}
-		return rule.Action, candidateFreezeSeconds(rule, failure)
+		return rule.Action, candidateFreezeSeconds(rule, failure), rule.RetryCount
 	}
 	// 喵~防御：不存在匹配规则时默认切换下一候选，避免无限重试不可预期故障喵。
-	return model.VirtualModelActionNext, 0
+	return model.VirtualModelActionNext, 0, 0
 }
 
 // DecideVirtualModelFailureAction 决定一次候选失败后的编排动作，并在候选未配置规则时回退到模型级全局兜底规则喵。
+// 返回命中规则的动作、冻结秒数与规则级最大重试次数（retryCount 仅在动作 retry 时有意义，零表示未配置）喵。
 // 候选配置了自己的失效规则时仍按候选规则决策；候选规则集为空时采用模型级全局兜底规则喵。
-func DecideVirtualModelFailureAction(executionSnapshot *model.VirtualModelExecutionSnapshot, candidateID int, failure CandidateFailure) (model.VirtualModelFailureAction, int) {
+func DecideVirtualModelFailureAction(executionSnapshot *model.VirtualModelExecutionSnapshot, candidateID int, failure CandidateFailure) (model.VirtualModelFailureAction, int, int) {
 	// 喵~防御：快照为空时按无规则处理，默认切换下一候选喵。
 	if executionSnapshot == nil {
-		return model.VirtualModelActionNext, 0
+		return model.VirtualModelActionNext, 0, 0
 	}
 	// 读取候选自己的规则，候选没有配置任何规则时为空喵。
 	candidateRules := executionSnapshot.FailureRulesByCandidateID[candidateID]
@@ -452,7 +454,7 @@ func ValidateCandidateFailureRule(rule *model.VirtualModelFailureRule) error {
 		return errors.New("virtual model failure rule is invalid")
 	}
 	// 规则字段边界由共享校验函数统一把关喵。
-	return validateFailureRuleFields(rule.RuleOrder, rule.HTTPStatus, rule.HTTPStatusMax, rule.FreezeSeconds, rule.ErrorClass, rule.BodyRegex, rule.Action, rule.FreezeField, rule.FreezeUnit, rule.StallTimeoutSeconds, rule.MinContentChars, rule.ProbeTotalTimeoutSeconds, rule.TimeoutSeconds)
+	return validateFailureRuleFields(rule.RuleOrder, rule.HTTPStatus, rule.HTTPStatusMax, rule.FreezeSeconds, rule.ErrorClass, rule.BodyRegex, rule.Action, rule.FreezeField, rule.FreezeUnit, rule.StallTimeoutSeconds, rule.MinContentChars, rule.ProbeTotalTimeoutSeconds, rule.TimeoutSeconds, rule.RetryCount)
 }
 
 // ValidateGlobalFailureRule 校验控制面写入的模型级全局兜底失败规则边界喵。
@@ -462,11 +464,11 @@ func ValidateGlobalFailureRule(rule *model.VirtualModelGlobalFailureRule) error 
 		return errors.New("virtual model failure rule is invalid")
 	}
 	// 模型级与候选级规则的字段约束一致，直接复用共享校验喵。
-	return validateFailureRuleFields(rule.RuleOrder, rule.HTTPStatus, rule.HTTPStatusMax, rule.FreezeSeconds, rule.ErrorClass, rule.BodyRegex, rule.Action, rule.FreezeField, rule.FreezeUnit, rule.StallTimeoutSeconds, rule.MinContentChars, rule.ProbeTotalTimeoutSeconds, rule.TimeoutSeconds)
+	return validateFailureRuleFields(rule.RuleOrder, rule.HTTPStatus, rule.HTTPStatusMax, rule.FreezeSeconds, rule.ErrorClass, rule.BodyRegex, rule.Action, rule.FreezeField, rule.FreezeUnit, rule.StallTimeoutSeconds, rule.MinContentChars, rule.ProbeTotalTimeoutSeconds, rule.TimeoutSeconds, rule.RetryCount)
 }
 
 // validateFailureRuleFields 校验失败规则字段的通用边界喵。
-func validateFailureRuleFields(ruleOrder int, httpStatus int, httpStatusMax int, freezeSeconds int, errorClass string, bodyRegex string, action model.VirtualModelFailureAction, freezeField string, freezeUnit model.VirtualModelFreezeUnit, stallTimeoutSeconds int, minContentChars int, probeTotalTimeoutSeconds int, timeoutSeconds int) error {
+func validateFailureRuleFields(ruleOrder int, httpStatus int, httpStatusMax int, freezeSeconds int, errorClass string, bodyRegex string, action model.VirtualModelFailureAction, freezeField string, freezeUnit model.VirtualModelFreezeUnit, stallTimeoutSeconds int, minContentChars int, probeTotalTimeoutSeconds int, timeoutSeconds int, retryCount int) error {
 	// 喵~防御：非法序号、越界状态码、范围上界越界和超长冻结配置必须拒绝持久化喵。
 	if ruleOrder < 0 || httpStatus < 0 || httpStatus > 599 || httpStatusMax < 0 || httpStatusMax > 599 || freezeSeconds < 0 || freezeSeconds > 24*60*60 {
 		return errors.New("virtual model failure rule is invalid")
@@ -478,6 +480,10 @@ func validateFailureRuleFields(ruleOrder int, httpStatus int, httpStatusMax int,
 	// 喵~防御：超时条件判定阈值必须在候选超时安全范围内，零表示沿用候选级执行超时喵。
 	if timeoutSeconds < 0 || timeoutSeconds > 600 {
 		return errors.New("virtual model failure rule timeout is invalid")
+	}
+	// 喵~防御：规则级最大重试次数必须在零到二十之间，零表示未配置沿用候选 MaxRetries，过大重试会耗尽请求预算喵。
+	if retryCount < 0 || retryCount > 20 {
+		return errors.New("virtual model failure rule retry count is invalid")
 	}
 	// 喵~防御：范围上界非零时不得小于下界，否则产生永远无法命中的空范围喵。
 	if httpStatusMax > 0 && httpStatusMax < httpStatus {

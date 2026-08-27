@@ -528,6 +528,10 @@ type upstreamModelStatusPayload struct {
 	LastSuccess    bool                           `json:"last_success"`
 	LastLatencyMs  int64                          `json:"last_latency_ms"`
 	LastError      string                         `json:"last_error"`
+	// LastFailureAt 最近一次失败调用时间戳，即使最近一次调用成功也保留喵。
+	LastFailureAt int64 `json:"last_failure_at"`
+	// LastFailureError 最近一次失败调用错误分类，即使最近一次调用成功也保留喵。
+	LastFailureError string `json:"last_failure_error"`
 	// CurrentRequests 当前处理中的客户端请求数，属主视角自用与共享维度分别为其计数喵。
 	CurrentRequests int64 `json:"current_requests"`
 	// Shared 共享调用维度的聚合，仅属主 include_shared=true 时携带喵。
@@ -671,6 +675,9 @@ func buildUpstreamModelStatusPayload(upstreamModel *model.UserUpstreamModel, pro
 		payload.LastSuccess = state.LastSuccess
 		payload.LastLatencyMs = state.LastLatencyMs
 		payload.LastError = state.LastError
+		// 最近一次失败独立保留，即使最近一次调用成功也能看到失败历史喵。
+		payload.LastFailureAt = state.LastFailureAt
+		payload.LastFailureError = state.LastFailureError
 	}
 	return payload
 }

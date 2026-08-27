@@ -394,10 +394,6 @@ type VirtualModelNativeFailureDecision struct {
 	CustomCandidateCommitted bool
 }
 
-// defaultStreamCutFreezeSeconds 流转伪流断流且处理措施为 freeze 时的默认冻结秒数喵。
-// 断流失败没有响应体可解析冻结时长，使用固定值避免 freeze 动作退化为无意义的跳过喵。
-const defaultStreamCutFreezeSeconds = 60
-
 // AdvanceVirtualModelAfterNativeFailure 在一个内部候选完成全部原生 Channel 重试后按失败规则编排喵。
 func AdvanceVirtualModelAfterNativeFailure(c *gin.Context, nativeError *types.NewAPIError) VirtualModelNativeFailureDecision {
 	decision := VirtualModelNativeFailureDecision{}
@@ -450,32 +446,22 @@ func AdvanceVirtualModelAfterNativeFailure(c *gin.Context, nativeError *types.Ne
 		ElapsedMs:  time.Since(executionState.currentCandidateStartedAt).Milliseconds(),
 		RetryCount: executionState.ruleRetryCounts[currentCandidate.CandidateID],
 	})
-	// 流转伪流断流：开启伪流且配置了断流处理措施时，直接按断流措施决策，跳过常规失败规则喵。
-	isStreamCut := nativeFailure.ErrorClass == "stream_cut" && executionState.streamCutAction != ""
-	action, freezeSeconds := virtualmodelservice.DecideVirtualModelFailureAction(executionState.executionSnapshot, currentCandidate.CandidateID, nativeFailure)
-	if isStreamCut {
-		action = executionState.streamCutAction
-		// 断流 freeze 无响应体可解析冻结时长，使用固定默认冻结秒数避免动作退化为无意义跳过喵。
-		freezeSeconds = defaultStreamCutFreezeSeconds
-	}
+	// 断流失败与普通失败统一走失败规则决策（候选规则优先，无则全局兜底），目标模式断流措施已由全局兜底规则代替喵。
+	action, freezeSeconds, ruleRetryCount := virtualmodelservice.DecideVirtualModelFailureAction(executionState.executionSnapshot, currentCandidate.CandidateID, nativeFailure)
 	if action == model.VirtualModelActionPassthrough {
 		// 实体状态检测：内部候选失败按规则透传错误，记录候选失败与虚拟模型整体失败喵。
 		RecordActiveVirtualModelCandidateProbe(c, false, nativeFailure.ErrorClass)
 		RecordVirtualModelOverallProbe(c, false, nativeFailure.ErrorClass)
 		return decision
 	}
-	// 失败规则 retry：断流按断流重试次数，其余按候选最大重试次数重放当前内部候选喵。
+	// 失败规则 retry：规则级最大重试次数优先，未配置时回退候选 MaxRetries 重放当前内部候选喵。
 	maxInternalRetries := currentCandidate.MaxRetries
-	internalRetryCount := executionState.ruleRetryCounts[currentCandidate.CandidateID]
-	if isStreamCut {
-		maxInternalRetries = executionState.streamCutRetries
-		internalRetryCount = executionState.streamCutRetryCounts[currentCandidate.CandidateID]
+	if ruleRetryCount > 0 {
+		maxInternalRetries = ruleRetryCount
 	}
+	internalRetryCount := executionState.ruleRetryCounts[currentCandidate.CandidateID]
 	if action == model.VirtualModelActionRetry && internalRetryCount < maxInternalRetries {
 		executionState.ruleRetryCounts[currentCandidate.CandidateID]++
-		if isStreamCut {
-			executionState.streamCutRetryCounts[currentCandidate.CandidateID]++
-		}
 		// 恢复客户端原始请求体后重新改写为当前候选，供 relay 循环再次走原生分发喵。
 		if restoreVirtualModelOriginalRequest(c, executionState.originalRequestBody) && applyInternalVirtualModelCandidate(c, executionState.modelRequest, executionState.virtualModelName, &currentCandidate) {
 			decision.RetryCurrentCandidate = true
@@ -759,7 +745,7 @@ func recordVirtualModelCustomSuccess(c *gin.Context, useTimeSeconds int, usage *
 }
 
 // RecordActiveVirtualModelCandidateProbe 记录当前激活候选的被动统计样本喵。
-// 供内部候选原生 relay 成功/失败后由外部调用，候选延迟取该候选激活起的耗时喵。
+// 供内部候选原生 relay 成功/失败后由外部调用，候选延迟取请求级基准（请求入口到本次探测）喵。
 func RecordActiveVirtualModelCandidateProbe(c *gin.Context, success bool, errorClass string) {
 	executionState, foundState := getVirtualModelExecutionState(c)
 	// 喵~防御：无执行状态或候选越界时跳过，普通请求不产生任何记录喵。
@@ -767,7 +753,7 @@ func RecordActiveVirtualModelCandidateProbe(c *gin.Context, success bool, errorC
 		return
 	}
 	candidate := executionState.executionSnapshot.Candidates[executionState.currentCandidateIndex]
-	recordVirtualModelCandidateProbe(c, executionState, candidate.CandidateID, success, errorClass, time.Since(executionState.currentCandidateStartedAt).Milliseconds())
+	recordVirtualModelCandidateProbe(c, executionState, candidate.CandidateID, success, errorClass, time.Since(executionState.startTime).Milliseconds())
 }
 
 // recordVirtualModelCandidateProbe 记录单个候选节点的被动统计样本与最近一次状态喵。
@@ -803,7 +789,8 @@ func recordVirtualModelProbeSuccess(c *gin.Context, executionState *virtualModel
 		extras.CachedTokens = int64(usage.PromptTokensDetails.CachedTokens)
 	}
 	executionState.successExtras = extras
-	latencyMs := time.Since(executionState.currentCandidateStartedAt).Milliseconds()
+	// 候选延迟取请求级基准（请求入口到本次探测），与整体延迟口径一致喵。
+	latencyMs := time.Since(executionState.startTime).Milliseconds()
 	recordVirtualModelCandidateProbe(c, executionState, candidateID, true, "", latencyMs)
 	RecordVirtualModelOverallProbe(c, true, "")
 }
@@ -830,6 +817,31 @@ func ApplyVirtualModelSuccessProbe(c *gin.Context, ttftMs int64) {
 		extras.HasTtft = true
 	}
 	executionState.successExtras = extras
+}
+
+// virtualModelFirstByteMs 计算虚拟模型请求级首字耗时（new-api 接收请求 → 首次向客户端写响应），单位：毫秒喵。
+// 执行函数未打点（非虚拟上下文或响应未写）时返回零，由调用方回退其他口径喵。
+func virtualModelFirstByteMs(c *gin.Context) int64 {
+	// 喵~防御：空上下文直接返回零喵。
+	if c == nil {
+		return 0
+	}
+	firstWriteAt := common.GetContextKeyTime(c, constant.ContextKeyVirtualModelFirstWriteAt)
+	// 未打点或尚未写响应时不提供首字喵。
+	if firstWriteAt.IsZero() {
+		return 0
+	}
+	executionState, foundState := getVirtualModelExecutionState(c)
+	// 喵~防御：缺少执行状态时无法获得请求入口时刻，返回零喵。
+	if !foundState || executionState == nil {
+		return 0
+	}
+	firstByteMs := firstWriteAt.Sub(executionState.startTime).Milliseconds()
+	// 喵~防御：时钟异常导致的负值按零处理喵。
+	if firstByteMs < 0 {
+		return 0
+	}
+	return firstByteMs
 }
 
 // RecordVirtualModelOverallProbe 记录虚拟模型整体的被动统计样本喵。
@@ -860,7 +872,13 @@ func RecordVirtualModelOverallProbe(c *gin.Context, success bool, errorClass str
 // hasResponse 表示候选已写出最终响应（请求终结），此时一并记录虚拟模型整体失败喵。
 func recordCustomCandidateFailureProbe(c *gin.Context, candidate *model.VirtualModelInternalCandidateSnapshot, hasUpstreamReference bool, referencedUpstreamModel *model.UserUpstreamModel, errorClass string, startTime time.Time, hasResponse bool) {
 	executionState, _ := getVirtualModelExecutionState(c)
-	recordVirtualModelCandidateProbe(c, executionState, candidate.CandidateID, false, errorClass, time.Since(startTime).Milliseconds())
+	// 候选失败延迟取请求级基准（请求入口到本次失败探测），与整体延迟口径一致喵。
+	// 喵~防御：缺少执行状态时回退候选级 startTime，保证任何情况下都能记录喵。
+	latencyMs := time.Since(startTime).Milliseconds()
+	if executionState != nil {
+		latencyMs = time.Since(executionState.startTime).Milliseconds()
+	}
+	recordVirtualModelCandidateProbe(c, executionState, candidate.CandidateID, false, errorClass, latencyMs)
 	if hasUpstreamReference && referencedUpstreamModel != nil {
 		recordUpstreamModelProbeState(referencedUpstreamModel, false, true, false, errorClass, startTime, upstreamProbeExtras{})
 	}
@@ -1024,6 +1042,18 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 		}
 		// 成功响应已由透传器直接写出，此时仅清除请求开始前已观察到的历史冻结并中止后续 controller relay 喵。
 		if executionError == nil {
+			// 请求级耗时基准：总耗时取请求入口到当前，首字取首次写响应时刻减请求入口喵。
+			// 喵~防御：缺少执行状态或未打点时回退候选级计时，保证任何情况下都能写日志喵。
+			requestExecutionState, foundRequestState := getVirtualModelExecutionState(c)
+			requestElapsedMs := time.Since(startTime).Milliseconds()
+			if foundRequestState && requestExecutionState != nil && !requestExecutionState.startTime.IsZero() {
+				requestElapsedMs = time.Since(requestExecutionState.startTime).Milliseconds()
+			}
+			requestFirstByteMs := virtualModelFirstByteMs(c)
+			// 喵~防御：未打点（非虚拟上下文或尚未写响应）时回退总耗时近似首字喵。
+			if requestFirstByteMs <= 0 {
+				requestFirstByteMs = requestElapsedMs
+			}
 			// 先记录该 custom 候选成功尝试摘要，确保后续日志写入时候选序列已包含本次成功（否则首个候选直接成功时详情会为空）喵。
 			appendVirtualModelCandidateAttempt(c, model.VirtualModelCandidateAttemptRecord{
 				Seq:         currentVirtualModelCandidateSeq(c),
@@ -1032,37 +1062,30 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 				Label:       buildVirtualModelAttemptLabel(candidate, candidateRealModelName),
 				Success:     true,
 				StatusCode:  http.StatusOK,
-				// 模型级首字耗时取上游 TTFT（毫秒），纯直填与引用上游候选都测到了喵。
-				TtftMs:     executionResult.TtftMs,
-				ElapsedMs:  time.Since(startTime).Milliseconds(),
+				// 请求级首字与总耗时，与虚拟模型日志口径一致喵。
+				TtftMs:     requestFirstByteMs,
+				ElapsedMs:  requestElapsedMs,
 				RetryCount: retryIndex,
 			})
-			// 请求级耗时基准：虚拟模型请求入口 startTime，供日志总耗时与首字展示喵。
-			// 喵~防御：缺少执行状态时回退候选级计时，保证任何情况下都能写日志喵。
-			requestExecutionState, foundRequestState := getVirtualModelExecutionState(c)
-			requestElapsedMs := time.Since(startTime).Milliseconds()
-			if foundRequestState && requestExecutionState != nil {
-				requestElapsedMs = time.Since(requestExecutionState.startTime).Milliseconds()
-			}
 			// 引用上游模型成功时结算独立 RMB 计费并写虚拟模型日志（上下文已把类型覆盖为 9）喵。
 			if hasUpstreamReference && referencedUpstreamModel != nil {
 				requestGroup := ""
 				if executionState, foundState := getVirtualModelExecutionState(c); foundState && executionState.modelRequest != nil {
 					requestGroup = executionState.modelRequest.Group
 				}
-				// 结算耗时与首字都改为请求级：总耗时取请求入口到当前，首字近似同一时刻（毫秒）喵。
-				settleUserUpstreamModelCharge(c, referencedUpstreamModel.OwnerUserID, referencedUpstreamModel, executionUsage, requestGroup, isUpstreamModelRequestStreaming(c), int(requestElapsedMs/1000), false, requestElapsedMs, preConsumedCents)
+				// 结算总耗时取请求入口到当前，首字取请求级首次写响应，与虚拟模型日志口径一致喵。
+				settleUserUpstreamModelCharge(c, referencedUpstreamModel.OwnerUserID, referencedUpstreamModel, executionUsage, requestGroup, isUpstreamModelRequestStreaming(c), int(requestElapsedMs/1000), false, requestFirstByteMs, preConsumedCents)
 				// 已按差额结算完毕，defer 不再退还预扣喵。
 				settled = true
 				// 实体状态检测：引用上游模型成功，同时记录上游模型自用维度成功喵。
 				recordUpstreamModelProbeState(referencedUpstreamModel, false, true, true, "", startTime, buildUpstreamProbeExtras(executionResult))
 			} else {
 				// 纯直填 custom 候选成功：写虚拟模型日志（携带解析出的 usage 与请求级首字，token 计真实值）喵。
-				recordVirtualModelCustomSuccess(c, int(requestElapsedMs/1000), executionUsage, requestElapsedMs)
+				recordVirtualModelCustomSuccess(c, int(requestElapsedMs/1000), executionUsage, requestFirstByteMs)
 			}
-			// 实体状态检测：自定义候选成功，记录候选成功与虚拟模型整体成功（携带 usage/TTFT）喵。
+			// 实体状态检测：自定义候选成功，记录候选成功与虚拟模型整体成功（携带 usage/请求级首字）喵。
 			executionState, _ := getVirtualModelExecutionState(c)
-			recordVirtualModelProbeSuccess(c, executionState, candidate.CandidateID, executionUsage, executionResult.TtftMs)
+			recordVirtualModelProbeSuccess(c, executionState, candidate.CandidateID, executionUsage, requestFirstByteMs)
 			identityDigest := virtualmodelservice.CustomCandidateIdentityDigest(*candidate)
 			// 喵~防御：只清除请求开始时观察到的历史冻结，避免并发失败请求写入的新冻结被成功响应误删喵。
 			expectedUpdatedTime := int64(0)
@@ -1092,21 +1115,8 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 			abortWithOpenAiMessage(c, http.StatusBadGateway, "virtual model custom upstream is unavailable", types.ErrorCode("virtual_model_unavailable"))
 			return false
 		}
-		// 读取执行状态用于断流措施决策；缺失时视为未配置断流处理喵。
-		executionState, foundExecutionState := getVirtualModelExecutionState(c)
-		// 流转伪流断流：开启伪流且配置了断流处理措施时，直接按断流措施决策，跳过常规失败规则喵。
-		isStreamCut := customFailure.Failure.ErrorClass == "stream_cut" && foundExecutionState && executionState.streamCutAction != ""
-		streamCutAction := model.VirtualModelFailureAction("")
-		if isStreamCut {
-			streamCutAction = executionState.streamCutAction
-		}
-		// 候选失败后按规则决策动作；候选未配置规则时回退模型级全局兜底规则喵。
-		action, freezeSeconds := virtualmodelservice.DecideVirtualModelFailureAction(executionSnapshot, candidate.CandidateID, customFailure.Failure)
-		if isStreamCut {
-			action = streamCutAction
-			// 断流 freeze 无响应体可解析冻结时长，使用固定默认冻结秒数避免动作退化为无意义跳过喵。
-			freezeSeconds = defaultStreamCutFreezeSeconds
-		}
+		// 候选失败后按规则决策动作；断流与普通失败统一走失败规则（候选规则优先，无则全局兜底），目标模式断流措施已由全局兜底规则代替喵。
+		action, freezeSeconds, ruleRetryCount := virtualmodelservice.DecideVirtualModelFailureAction(executionSnapshot, candidate.CandidateID, customFailure.Failure)
 		// 记录该 custom 候选的失败尝试摘要，供最终日志展示候选链故障转移过程喵。
 		appendVirtualModelCandidateAttempt(c, model.VirtualModelCandidateAttemptRecord{
 			Seq:          currentVirtualModelCandidateSeq(c),
@@ -1122,10 +1132,10 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 			ElapsedMs:  time.Since(startTime).Milliseconds(),
 			RetryCount: retryIndex,
 		})
-		// 断流 retry 用断流重试次数，其余按候选最大重试次数喵。
+		// 断流 retry 用规则级最大重试次数优先，未配置时回退候选 MaxRetries 喵。
 		maxCustomRetries := maximumRetries
-		if isStreamCut {
-			maxCustomRetries = executionState.streamCutRetries
+		if ruleRetryCount > 0 {
+			maxCustomRetries = ruleRetryCount
 		}
 		if action == model.VirtualModelActionRetry && retryIndex < maxCustomRetries {
 			retryDelay := time.Duration(virtualmodelservice.RetryBackoffSeconds(retryIndex)) * time.Second

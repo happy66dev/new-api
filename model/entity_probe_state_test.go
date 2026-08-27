@@ -26,6 +26,31 @@ func TestRecordEntityProbeStateCounted(t *testing.T) {
 	require.Equal(t, "rate_limited", state.LastError)
 }
 
+// TestEntityProbeStateLastFailureSurvivesSuccess 验证最近一次失败在后续成功时仍保留喵。
+func TestEntityProbeStateLastFailureSurvivesSuccess(t *testing.T) {
+	setupEntityProbeStateTestDB(t)
+
+	// 先失败一次，再成功一次：last_error 反映最近一次成功，但失败历史必须保留喵。
+	require.NoError(t, RecordEntityProbeCounted(EntityProbeScopeUpstream, 7, 0, 1, 2000, false, 900, "rate_limited"))
+	require.NoError(t, RecordEntityProbeCounted(EntityProbeScopeUpstream, 7, 0, 1, 3000, true, 150, ""))
+
+	state, err := GetEntityProbeState(EntityProbeScopeUpstream, 7)
+	require.NoError(t, err)
+	// 最近一次调用是成功，LastError 为空喵。
+	require.True(t, state.LastSuccess)
+	require.Empty(t, state.LastError)
+	// 最近一次失败信息必须保留：时间 2000 与错误分类 rate_limited 喵。
+	require.Equal(t, int64(2000), state.LastFailureAt)
+	require.Equal(t, "rate_limited", state.LastFailureError)
+
+	// 再失败一次：最近失败信息更新为最新失败喵。
+	require.NoError(t, RecordEntityProbeCounted(EntityProbeScopeUpstream, 7, 0, 1, 4000, false, 800, "timeout"))
+	state, err = GetEntityProbeState(EntityProbeScopeUpstream, 7)
+	require.NoError(t, err)
+	require.Equal(t, int64(4000), state.LastFailureAt)
+	require.Equal(t, "timeout", state.LastFailureError)
+}
+
 // TestTouchEntityProbeLastAtDoesNotChangeCounts 验证配置态请求只更新最近时间不改计数喵。
 func TestTouchEntityProbeLastAtDoesNotChangeCounts(t *testing.T) {
 	setupEntityProbeStateTestDB(t)

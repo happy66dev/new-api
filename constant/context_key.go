@@ -28,6 +28,8 @@ const (
 	ContextKeyVirtualCandidateAttempts ContextKey = "virtual_model_candidate_attempts"
 	// ContextKeyVirtualModelSuccessUsage 保存内部候选成功结算后的 usage，供虚拟模型整体/候选状态探测填充 token 喵。
 	ContextKeyVirtualModelSuccessUsage ContextKey = "virtual_model_success_usage"
+	// ContextKeyVirtualModelFirstWriteAt 记录虚拟模型 custom/user-xxx 候选首次向客户端写响应的时刻，供请求级首字统计喵。
+	ContextKeyVirtualModelFirstWriteAt ContextKey = "virtual_model_first_write_at"
 
 	/* token related keys */
 	ContextKeyTokenUnlimited         ContextKey = "token_unlimited_quota"

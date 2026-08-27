@@ -152,7 +152,10 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 		if !inVirtualModelContext {
 			// 实体状态检测：上游 4xx/5xx 透传失败计入失败喵。
 			recordUpstreamModelProbeState(upstreamModel, isShared, true, false, upstreamModelFailureErrorClass(executionResult.Err), startTime, upstreamProbeExtras{})
-			if customFailure.ResponseBody != nil {
+			// 失败日志：记录本次上游错误供日志页排查，与成功结算同口径喵。
+			recordUserUpstreamModelFailureLog(c, upstreamModel, isShared, modelRequest.Group, customFailure, startTime)
+			// 上游返回了 HTTP 错误时按状态码透传（正文可能为空），仅网络类失败才回退通用错误喵。
+			if customFailure.Failure.HTTPStatus >= http.StatusBadRequest {
 				virtualmodelservice.CopyCustomPassthroughResponse(c.Writer, customFailure.ResponseHeaders, customFailure.Failure.HTTPStatus, customFailure.ResponseBody)
 				c.Abort()
 				return false
@@ -179,6 +182,18 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 			return false
 		}
 	}
+	// 耗时口径：虚拟模型上下文取请求级（new-api 接收请求 → 首次写响应 / 请求完成），非虚拟上下文沿用候选级喵。
+	requestElapsedMs := time.Since(startTime).Milliseconds()
+	requestFirstByteMs := executionResult.TtftMs
+	if inVirtualModelContext {
+		if executionState, foundState := getVirtualModelExecutionState(c); foundState && executionState != nil && !executionState.startTime.IsZero() {
+			requestElapsedMs = time.Since(executionState.startTime).Milliseconds()
+		}
+		// 请求级首字：首次向客户端写响应时刻减请求入口时刻；未打点时回退上游 TTFT 兜底喵。
+		if firstByteMs := virtualModelFirstByteMs(c); firstByteMs > 0 {
+			requestFirstByteMs = firstByteMs
+		}
+	}
 	// 虚拟模型 user/xxx 内部候选成功：先追加成功尝试摘要，确保日志写入时候选序列已包含本次成功喵。
 	if inVirtualModelContext {
 		if executionState, foundState := getVirtualModelExecutionState(c); foundState && executionState != nil && executionState.currentCandidateIndex >= 0 && executionState.currentCandidateIndex < len(executionState.executionSnapshot.Candidates) {
@@ -190,22 +205,22 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 				Label:        buildVirtualModelAttemptLabel(&currentCandidate, currentCandidate.RealModelName),
 				Success:      true,
 				StatusCode:   http.StatusOK,
-				// 模型级首字耗时取上游 TTFT（毫秒）喵。
-				TtftMs:    executionResult.TtftMs,
-				ElapsedMs: time.Since(startTime).Milliseconds(),
+				// 请求级首字与总耗时，与虚拟模型日志口径一致喵。
+				TtftMs:    requestFirstByteMs,
+				ElapsedMs: requestElapsedMs,
 			})
 		}
 	}
 	// 成功透传计入成功，随后按独立 RMB 计费系统扣费与写日志；共享调用免费只累计共享消耗喵。
 	recordUpstreamModelProbeState(upstreamModel, isShared, true, true, "", startTime, buildUpstreamProbeExtras(executionResult))
-	settleUserUpstreamModelCharge(c, upstreamModel.OwnerUserID, upstreamModel, executionResult.Usage, modelRequest.Group, isUpstreamModelRequestStreaming(c), int(time.Since(startTime).Seconds()), isShared, executionResult.TtftMs, preConsumedCents)
+	settleUserUpstreamModelCharge(c, upstreamModel.OwnerUserID, upstreamModel, executionResult.Usage, modelRequest.Group, isUpstreamModelRequestStreaming(c), int(requestElapsedMs/1000), isShared, requestFirstByteMs, preConsumedCents)
 	// 已按差额结算完毕，defer 不再退还预扣喵。
 	settled = true
 	// 虚拟模型 user/xxx 内部候选成功：记录候选与整体成功样本，供虚拟模型状态监控展示喵。
 	if inVirtualModelContext {
 		if executionState, foundState := getVirtualModelExecutionState(c); foundState && executionState != nil && executionState.currentCandidateIndex >= 0 && executionState.currentCandidateIndex < len(executionState.executionSnapshot.Candidates) {
 			currentCandidate := executionState.executionSnapshot.Candidates[executionState.currentCandidateIndex]
-			recordVirtualModelProbeSuccess(c, executionState, currentCandidate.CandidateID, executionResult.Usage, executionResult.TtftMs)
+			recordVirtualModelProbeSuccess(c, executionState, currentCandidate.CandidateID, executionResult.Usage, requestFirstByteMs)
 		}
 	}
 	c.Abort()
@@ -251,9 +266,13 @@ func handleVirtualModelUpstreamFailure(c *gin.Context, upstreamModel *model.User
 		RetryCount: executionState.ruleRetryCounts[candidateID],
 	})
 	// 按失败规则决策动作；候选未配置规则时回退模型级全局兜底规则喵。
-	action, freezeSeconds := virtualmodelservice.DecideVirtualModelFailureAction(executionState.executionSnapshot, candidateID, customFailure.Failure)
-	// 失败规则 retry：在候选最大重试次数内重放当前上游请求喵。
-	if action == model.VirtualModelActionRetry && executionState.ruleRetryCounts[candidateID] < currentCandidate.MaxRetries {
+	action, freezeSeconds, ruleRetryCount := virtualmodelservice.DecideVirtualModelFailureAction(executionState.executionSnapshot, candidateID, customFailure.Failure)
+	// 失败规则 retry：规则级最大重试次数优先，未配置时回退候选 MaxRetries，在其内重放当前上游请求喵。
+	maxUpstreamRetries := currentCandidate.MaxRetries
+	if ruleRetryCount > 0 {
+		maxUpstreamRetries = ruleRetryCount
+	}
+	if action == model.VirtualModelActionRetry && executionState.ruleRetryCounts[candidateID] < maxUpstreamRetries {
 		executionState.ruleRetryCounts[candidateID]++
 		return virtualModelUpstreamFailureRetry
 	}
@@ -275,8 +294,14 @@ func handleVirtualModelUpstreamFailure(c *gin.Context, upstreamModel *model.User
 	if action == model.VirtualModelActionPassthrough {
 		// 实体状态检测：透传失败终结请求，记录候选、上游模型与整体失败喵。
 		recordVirtualModelUpstreamFailureProbe(c, executionState, candidateID, upstreamModel, isShared, errorClass, startTime, true)
+		// 失败日志：记录本次透传错误，候选尝试序列由日志落库时注入喵。
+		requestGroup := ""
+		if executionState.modelRequest != nil {
+			requestGroup = executionState.modelRequest.Group
+		}
+		recordUserUpstreamModelFailureLog(c, upstreamModel, isShared, requestGroup, customFailure, startTime)
 		// 喵~防御：仅回传已受限缓冲的上游错误正文和过滤后的响应头，禁止写入 hop-by-hop 字段喵。
-		if customFailure.ResponseBody != nil {
+		if customFailure.Failure.HTTPStatus >= http.StatusBadRequest {
 			virtualmodelservice.CopyCustomPassthroughResponse(c.Writer, customFailure.ResponseHeaders, customFailure.Failure.HTTPStatus, customFailure.ResponseBody)
 		} else {
 			abortWithOpenAiMessage(c, http.StatusBadGateway, "user upstream model is unavailable", types.ErrorCode("upstream_model_unavailable"))
@@ -298,7 +323,14 @@ func handleVirtualModelUpstreamFailure(c *gin.Context, upstreamModel *model.User
 	}
 	// 实体状态检测：候选链彻底耗尽且无后备候选接管，记录候选、上游模型与整体失败喵。
 	recordVirtualModelUpstreamFailureProbe(c, executionState, candidateID, upstreamModel, isShared, errorClass, startTime, true)
-	if customFailure.ResponseBody != nil {
+	// 失败日志：候选链耗尽最终失败，记录错误信息与候选尝试序列喵。
+	requestGroup := ""
+	if executionState.modelRequest != nil {
+		requestGroup = executionState.modelRequest.Group
+	}
+	recordUserUpstreamModelFailureLog(c, upstreamModel, isShared, requestGroup, customFailure, startTime)
+	// 上游返回了 HTTP 错误时按状态码透传（正文可能为空），仅网络类失败才回退通用错误喵。
+	if customFailure.Failure.HTTPStatus >= http.StatusBadRequest {
 		virtualmodelservice.CopyCustomPassthroughResponse(c.Writer, customFailure.ResponseHeaders, customFailure.Failure.HTTPStatus, customFailure.ResponseBody)
 	} else {
 		abortWithOpenAiMessage(c, http.StatusBadGateway, "user upstream model is unavailable", types.ErrorCode("upstream_model_unavailable"))
@@ -549,6 +581,60 @@ func settleUserUpstreamModelCharge(c *gin.Context, ownerUserID int, upstreamMode
 		UseTimeSeconds:   useTimeSeconds,
 		IsStream:         isStream,
 		Other:            other,
+	})
+}
+
+// recordUserUpstreamModelFailureLog 在 user/xxx 候选最终失败（透传错误或候选链耗尽）时记录失败日志喵。
+// 与成功结算口径一致：非虚拟上下文写 type=8，虚拟上下文写 type=9 并注入候选尝试序列喵。
+// 失败也计入成功率与最近失败状态由 recordUpstreamModelProbeState / RecordEntityProbeCounted 负责喵。
+func recordUserUpstreamModelFailureLog(c *gin.Context, upstreamModel *model.UserUpstreamModel, isShared bool, group string, customFailure *virtualmodelservice.CustomCandidateExecutionFailure, startTime time.Time) {
+	// 喵~防御：空模型或空失败对象不写日志，避免脏数据喵。
+	if c == nil || upstreamModel == nil || customFailure == nil {
+		return
+	}
+	// 共享调用日志归属当前调用者，自用归模型属主喵。
+	logUserID := upstreamModel.OwnerUserID
+	if isShared {
+		logUserID = c.GetInt("id")
+	}
+	// 分组：共享固定归入 user-shared，自用沿用请求分组并兜底默认值喵。
+	effectiveGroup := strings.TrimSpace(group)
+	if isShared {
+		effectiveGroup = constant.GroupUserShared
+	} else if effectiveGroup == "" {
+		effectiveGroup = defaultUserUpstreamGroupName
+	}
+	// 错误内容摘要：优先取上游错误正文受限摘要，否则回退稳定错误分类喵。
+	contentText := customFailure.Failure.ErrorClass
+	if bodyPreview := strings.TrimSpace(customFailure.Failure.BodyPreview); bodyPreview != "" {
+		contentText = bodyPreview
+		// 喵~防御：正文摘要过长时截断到日志列宽内，避免拖慢日志存储喵。
+		if len(contentText) > 512 {
+			contentText = contentText[:512]
+		}
+	}
+	other := map[string]interface{}{
+		"custom_cost_rmb": "0.0000",
+		"is_shared_call":  isShared,
+		"error_class":     customFailure.Failure.ErrorClass,
+		"http_status":     customFailure.Failure.HTTPStatus,
+		"final_success":   false,
+	}
+	if virtualModelName := common.GetContextKeyString(c, constant.ContextKeyVirtualModelName); virtualModelName != "" {
+		other["virtual_model"] = virtualModelName
+	}
+	// 总耗时取请求级（虚拟上下文请求入口）或候选级基准，与成功日志口径一致喵。
+	useTimeSeconds := int(time.Since(startTime).Seconds())
+	if executionState, foundState := getVirtualModelExecutionState(c); foundState && executionState != nil && !executionState.startTime.IsZero() {
+		useTimeSeconds = int(time.Since(executionState.startTime).Seconds())
+	}
+	model.RecordUserUpstreamModelLog(c, logUserID, model.RecordUserUpstreamModelLogParams{
+		ModelName:      upstreamModel.UserUpstreamModelName(),
+		Content:        contentText,
+		UseTimeSeconds: useTimeSeconds,
+		IsStream:       isUpstreamModelRequestStreaming(c),
+		Group:          effectiveGroup,
+		Other:          other,
 	})
 }
 

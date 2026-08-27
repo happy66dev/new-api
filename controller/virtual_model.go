@@ -82,6 +82,8 @@ type virtualModelFailureRuleInput struct {
 	ProbeTotalTimeoutSeconds int `json:"probe_total_timeout_seconds"`
 	// TimeoutSeconds 超时条件判定阈值，单位：秒；零表示沿用候选级执行超时喵。
 	TimeoutSeconds int `json:"timeout_seconds"`
+	// RetryCount 规则重试当前候选的最大重试次数，零表示未配置沿用候选 MaxRetries 喵。
+	RetryCount int `json:"retry_count"`
 }
 
 // virtualModelFailureRulesReplaceInput 描述候选失败规则的版本化整体替换请求喵。
@@ -757,7 +759,7 @@ func ReplaceVirtualModelCandidateFailureRules(c *gin.Context) {
 			return deleteError
 		}
 		for ruleOrder, ruleInput := range input.Rules {
-			failureRule := &model.VirtualModelFailureRule{CandidateID: candidateID, RuleOrder: ruleOrder, HTTPStatus: ruleInput.HTTPStatus, HTTPStatusMax: ruleInput.HTTPStatusMax, ErrorClass: strings.TrimSpace(ruleInput.ErrorClass), BodyRegex: strings.TrimSpace(ruleInput.BodyRegex), Action: ruleInput.Action, FreezeSeconds: ruleInput.FreezeSeconds, FreezeField: strings.TrimSpace(ruleInput.FreezeField), FreezeUnit: ruleInput.FreezeUnit, StallTimeoutSeconds: ruleInput.StallTimeoutSeconds, MinContentChars: ruleInput.MinContentChars, ProbeTotalTimeoutSeconds: ruleInput.ProbeTotalTimeoutSeconds, TimeoutSeconds: ruleInput.TimeoutSeconds}
+			failureRule := &model.VirtualModelFailureRule{CandidateID: candidateID, RuleOrder: ruleOrder, HTTPStatus: ruleInput.HTTPStatus, HTTPStatusMax: ruleInput.HTTPStatusMax, ErrorClass: strings.TrimSpace(ruleInput.ErrorClass), BodyRegex: strings.TrimSpace(ruleInput.BodyRegex), Action: ruleInput.Action, FreezeSeconds: ruleInput.FreezeSeconds, FreezeField: strings.TrimSpace(ruleInput.FreezeField), FreezeUnit: ruleInput.FreezeUnit, StallTimeoutSeconds: ruleInput.StallTimeoutSeconds, MinContentChars: ruleInput.MinContentChars, ProbeTotalTimeoutSeconds: ruleInput.ProbeTotalTimeoutSeconds, TimeoutSeconds: ruleInput.TimeoutSeconds, RetryCount: ruleInput.RetryCount}
 			if validateError := virtualmodelservice.ValidateCandidateFailureRule(failureRule); validateError != nil {
 				return validateError
 			}
@@ -823,7 +825,7 @@ func ReplaceVirtualModelGlobalFailureRules(c *gin.Context) {
 			return deleteError
 		}
 		for ruleOrder, ruleInput := range input.Rules {
-			globalFailureRule := &model.VirtualModelGlobalFailureRule{VirtualModelID: modelID, RuleOrder: ruleOrder, HTTPStatus: ruleInput.HTTPStatus, HTTPStatusMax: ruleInput.HTTPStatusMax, ErrorClass: strings.TrimSpace(ruleInput.ErrorClass), BodyRegex: strings.TrimSpace(ruleInput.BodyRegex), Action: ruleInput.Action, FreezeSeconds: ruleInput.FreezeSeconds, FreezeField: strings.TrimSpace(ruleInput.FreezeField), FreezeUnit: ruleInput.FreezeUnit, StallTimeoutSeconds: ruleInput.StallTimeoutSeconds, MinContentChars: ruleInput.MinContentChars, ProbeTotalTimeoutSeconds: ruleInput.ProbeTotalTimeoutSeconds, TimeoutSeconds: ruleInput.TimeoutSeconds}
+			globalFailureRule := &model.VirtualModelGlobalFailureRule{VirtualModelID: modelID, RuleOrder: ruleOrder, HTTPStatus: ruleInput.HTTPStatus, HTTPStatusMax: ruleInput.HTTPStatusMax, ErrorClass: strings.TrimSpace(ruleInput.ErrorClass), BodyRegex: strings.TrimSpace(ruleInput.BodyRegex), Action: ruleInput.Action, FreezeSeconds: ruleInput.FreezeSeconds, FreezeField: strings.TrimSpace(ruleInput.FreezeField), FreezeUnit: ruleInput.FreezeUnit, StallTimeoutSeconds: ruleInput.StallTimeoutSeconds, MinContentChars: ruleInput.MinContentChars, ProbeTotalTimeoutSeconds: ruleInput.ProbeTotalTimeoutSeconds, TimeoutSeconds: ruleInput.TimeoutSeconds, RetryCount: ruleInput.RetryCount}
 			if validateError := virtualmodelservice.ValidateGlobalFailureRule(globalFailureRule); validateError != nil {
 				return validateError
 			}
@@ -1186,7 +1188,11 @@ type virtualModelStatusPayload struct {
 	LastSuccess       bool                             `json:"last_success"`
 	LastLatencyMs     int64                              `json:"last_latency_ms"`
 	LastError         string                             `json:"last_error"`
-	Candidates        []virtualModelCandidateStatusPayload `json:"candidates"`
+	// LastFailureAt 最近一次失败调用时间戳，即使最近一次调用成功也保留喵。
+	LastFailureAt int64 `json:"last_failure_at"`
+	// LastFailureError 最近一次失败调用错误分类，即使最近一次调用成功也保留喵。
+	LastFailureError string                            `json:"last_failure_error"`
+	Candidates       []virtualModelCandidateStatusPayload `json:"candidates"`
 	// CurrentRequests 当前处理中的客户端请求数喵。
 	CurrentRequests int64 `json:"current_requests"`
 	// ActiveRequests 活跃请求详情列表，展示当前调用链喵。
@@ -1207,6 +1213,10 @@ type virtualModelCandidateStatusPayload struct {
 	LastAt       int64                            `json:"last_at"`
 	LastSuccess  bool                             `json:"last_success"`
 	LastError    string                           `json:"last_error"`
+	// LastFailureAt 最近一次失败调用时间戳，即使最近一次调用成功也保留喵。
+	LastFailureAt int64 `json:"last_failure_at"`
+	// LastFailureError 最近一次失败调用错误分类，即使最近一次调用成功也保留喵。
+	LastFailureError string `json:"last_failure_error"`
 }
 
 // resolveVirtualCandidateUpstreamLabel 候选引用用户上游模型且直填真实模型名为空时，回退解析上游模型显示名喵。
@@ -1257,6 +1267,9 @@ func buildVirtualModelStatusPayload(virtualModel *model.VirtualModel, snapshot *
 		payload.LastSuccess = state.LastSuccess
 		payload.LastLatencyMs = state.LastLatencyMs
 		payload.LastError = state.LastError
+		// 最近一次失败独立保留，即使最近一次调用成功也能看到失败历史喵。
+		payload.LastFailureAt = state.LastFailureAt
+		payload.LastFailureError = state.LastFailureError
 	}
 	// 启用候选快照逐个生成节点摘要喵。
 	if snapshot != nil {
@@ -1303,6 +1316,9 @@ func buildVirtualModelCandidateStatusPayload(virtualModel *model.VirtualModel, c
 		candidatePayload.LastAt = state.LastAt
 		candidatePayload.LastSuccess = state.LastSuccess
 		candidatePayload.LastError = state.LastError
+		// 最近一次失败独立保留，即使最近一次调用成功也能看到失败历史喵。
+		candidatePayload.LastFailureAt = state.LastFailureAt
+		candidatePayload.LastFailureError = state.LastFailureError
 	}
 	return candidatePayload
 }
