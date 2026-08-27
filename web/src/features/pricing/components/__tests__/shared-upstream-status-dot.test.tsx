@@ -37,7 +37,7 @@ function renderDot(modelName: string) {
 }
 
 describe('SharedUpstreamStatusDot', () => {
-  test('queries the shared status with the upstream/ prefix stripped off', async () => {
+  test('queries the shared status with the canonical user/ prefix stripped off', async () => {
     vi.mocked(getSharedUpstreamModelStatus).mockResolvedValue({
       success: true,
       data: {
@@ -48,7 +48,8 @@ describe('SharedUpstreamStatusDot', () => {
         last_success: true,
       },
     })
-    renderDot('upstream/my-shared-model')
+    // 模型广场条目的 model_name 形如 user/<name>，必须剥离 user/ 前缀才能命中共享状态接口喵。
+    renderDot('user/my-shared-model')
     // 请求携带剥离前缀后的规范名喵。
     await waitFor(() => {
       expect(getSharedUpstreamModelStatus).toHaveBeenCalledWith(
@@ -63,7 +64,18 @@ describe('SharedUpstreamStatusDot', () => {
     })
   })
 
-  test('falls back to the full name when the upstream/ prefix is missing', async () => {
+  test('also strips the legacy upstream/ prefix for historical model names', async () => {
+    vi.mocked(getSharedUpstreamModelStatus).mockResolvedValue({
+      success: true,
+      data: undefined,
+    })
+    renderDot('upstream/legacy-model')
+    await waitFor(() => {
+      expect(getSharedUpstreamModelStatus).toHaveBeenCalledWith('legacy-model')
+    })
+  })
+
+  test('falls back to the full name when no known prefix is present', async () => {
     vi.mocked(getSharedUpstreamModelStatus).mockResolvedValue({
       success: true,
       data: undefined,
