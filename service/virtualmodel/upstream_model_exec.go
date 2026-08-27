@@ -23,6 +23,8 @@ import (
 type UserUpstreamModelExecutionResult struct {
 	Usage *dto.Usage
 	Err   error
+	// TtftMs 从发起上游请求到收到响应头的时间（毫秒），响应头到达≈首字节喵。
+	TtftMs int64
 }
 
 // userUpstreamNonStreamingBodyLimit 限制非流式响应正文的最大缓冲，防御异常上游耗尽内存喵。
@@ -68,28 +70,35 @@ func ExecuteUserUpstreamModel(c *gin.Context, input CustomCandidateExecutionInpu
 	}
 	upstreamRequest.ContentLength = int64(len(requestBody))
 	upstreamRequest.Header.Set("Content-Length", strconv.FormatInt(upstreamRequest.ContentLength, 10))
+	// 发起上游请求前打点，用于测量首字节（TTFT）喵。
+	execStart := time.Now()
 	response, responseError := strictCustomHTTPClient(candidateTimeout).Do(upstreamRequest)
+	// 响应头到达即首字节，流式与非流式都成立喵。
+	ttftMs := int64(0)
+	if responseError == nil {
+		ttftMs = time.Since(execStart).Milliseconds()
+	}
 	if responseError != nil {
-		return &UserUpstreamModelExecutionResult{Err: &CustomCandidateExecutionFailure{Failure: NormalizeCandidateFailure(0, nil, nil, responseError), Cause: responseError}}
+		return &UserUpstreamModelExecutionResult{Err: &CustomCandidateExecutionFailure{Failure: NormalizeCandidateFailure(0, nil, nil, responseError), Cause: responseError}, TtftMs: ttftMs}
 	}
 	defer response.Body.Close()
 	// 喵~防御：仅 2xx 状态可提交为成功，其余状态进入受控错误透传喵。
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		responseBody, readError := io.ReadAll(io.LimitReader(response.Body, 64*1024+1))
 		if readError != nil {
-			return &UserUpstreamModelExecutionResult{Err: &CustomCandidateExecutionFailure{Failure: NormalizeCandidateFailure(response.StatusCode, response.Header, nil, readError), Cause: readError}}
+			return &UserUpstreamModelExecutionResult{Err: &CustomCandidateExecutionFailure{Failure: NormalizeCandidateFailure(response.StatusCode, response.Header, nil, readError), Cause: readError}, TtftMs: ttftMs}
 		}
 		if len(responseBody) > 64*1024 {
 			responseBody = responseBody[:64*1024]
 		}
-		return &UserUpstreamModelExecutionResult{Err: &CustomCandidateExecutionFailure{Failure: NormalizeCandidateFailure(response.StatusCode, response.Header, responseBody, nil), ResponseHeaders: response.Header.Clone(), ResponseBody: responseBody, Cause: errors.New("user upstream returned an error status")}}
+		return &UserUpstreamModelExecutionResult{Err: &CustomCandidateExecutionFailure{Failure: NormalizeCandidateFailure(response.StatusCode, response.Header, responseBody, nil), ResponseHeaders: response.Header.Clone(), ResponseBody: responseBody, Cause: errors.New("user upstream returned an error status")}, TtftMs: ttftMs}
 	}
 	responseReader := bufio.NewReader(response.Body)
 	// 流式请求逐事件转发并累积最后的 usage 事件喵。
 	if isStreamingCustomRequest(c) {
 		precommitBuffer, precommitError := probeCustomStreamingResponse(responseReader)
 		if precommitError != nil {
-			return &UserUpstreamModelExecutionResult{Err: customCandidatePrecommitFailure(precommitError)}
+			return &UserUpstreamModelExecutionResult{Err: customCandidatePrecommitFailure(precommitError), TtftMs: ttftMs}
 		}
 		copyCustomResponseHeaders(c.Writer.Header(), response.Header)
 		c.Status(response.StatusCode)
@@ -97,7 +106,7 @@ func ExecuteUserUpstreamModel(c *gin.Context, input CustomCandidateExecutionInpu
 		// 探测缓冲里可能已包含带 usage 的事件，先提取再回放喵。
 		extractUsageFromSSEBytes(precommitBuffer, usage)
 		if _, writeError := c.Writer.Write(precommitBuffer); writeError != nil {
-			return &UserUpstreamModelExecutionResult{Err: fmt.Errorf("write committed user upstream response: %w", writeError)}
+			return &UserUpstreamModelExecutionResult{Err: fmt.Errorf("write committed user upstream response: %w", writeError), TtftMs: ttftMs}
 		}
 		// 逐行转发剩余 SSE 事件，同时从 data 载荷提取 usage 喵。
 		for {
@@ -105,42 +114,42 @@ func ExecuteUserUpstreamModel(c *gin.Context, input CustomCandidateExecutionInpu
 			if len(lineBytes) > 0 {
 				extractUsageFromSSELine(lineBytes, usage)
 				if _, writeError := c.Writer.Write(lineBytes); writeError != nil {
-					return &UserUpstreamModelExecutionResult{Err: fmt.Errorf("write committed user upstream response: %w", writeError)}
+					return &UserUpstreamModelExecutionResult{Err: fmt.Errorf("write committed user upstream response: %w", writeError), TtftMs: ttftMs}
 				}
 			}
 			if readError != nil {
 				if errors.Is(readError, io.EOF) {
 					break
 				}
-				return &UserUpstreamModelExecutionResult{Err: fmt.Errorf("read committed user upstream stream: %w", readError)}
+				return &UserUpstreamModelExecutionResult{Err: fmt.Errorf("read committed user upstream stream: %w", readError), TtftMs: ttftMs}
 			}
 		}
 		// 只有真正解析到 token 计数才返回 usage，避免空 usage 对象混入日志喵。
 		if usage.PromptTokens == 0 && usage.CompletionTokens == 0 && usage.TotalTokens == 0 {
-			return &UserUpstreamModelExecutionResult{Usage: nil}
+			return &UserUpstreamModelExecutionResult{Usage: nil, TtftMs: ttftMs}
 		}
-		return &UserUpstreamModelExecutionResult{Usage: usage}
+		return &UserUpstreamModelExecutionResult{Usage: usage, TtftMs: ttftMs}
 	}
 	// 非流式：读完整正文并解析顶层 usage 后原样转发喵。
 	responseBody, readBodyError := io.ReadAll(io.LimitReader(response.Body, userUpstreamNonStreamingBodyLimit+1))
 	if readBodyError != nil {
-		return &UserUpstreamModelExecutionResult{Err: customCandidatePrecommitFailure(readBodyError)}
+		return &UserUpstreamModelExecutionResult{Err: customCandidatePrecommitFailure(readBodyError), TtftMs: ttftMs}
 	}
 	// 喵~防御：正文超过缓冲上限视为异常上游，返回可编排失败喵。
 	if len(responseBody) > userUpstreamNonStreamingBodyLimit {
-		return &UserUpstreamModelExecutionResult{Err: customCandidatePrecommitFailure(errors.New("user upstream non-streaming response is too large"))}
+		return &UserUpstreamModelExecutionResult{Err: customCandidatePrecommitFailure(errors.New("user upstream non-streaming response is too large")), TtftMs: ttftMs}
 	}
 	// 喵~防御：空正文成功响应视为异常，不提交空业务结果喵。
 	if len(responseBody) == 0 {
-		return &UserUpstreamModelExecutionResult{Err: customCandidatePrecommitFailure(errors.New("user upstream returned an empty success response"))}
+		return &UserUpstreamModelExecutionResult{Err: customCandidatePrecommitFailure(errors.New("user upstream returned an empty success response")), TtftMs: ttftMs}
 	}
 	usage := extractUsageFromOpenAIBody(responseBody)
 	copyCustomResponseHeaders(c.Writer.Header(), response.Header)
 	c.Status(response.StatusCode)
 	if _, writeError := c.Writer.Write(responseBody); writeError != nil {
-		return &UserUpstreamModelExecutionResult{Err: fmt.Errorf("write committed user upstream response: %w", writeError)}
+		return &UserUpstreamModelExecutionResult{Err: fmt.Errorf("write committed user upstream response: %w", writeError), TtftMs: ttftMs}
 	}
-	return &UserUpstreamModelExecutionResult{Usage: usage}
+	return &UserUpstreamModelExecutionResult{Usage: usage, TtftMs: ttftMs}
 }
 
 // readLimitedSSELine 读取一行 SSE 数据并限制最大长度，超长时截断返回喵。

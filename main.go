@@ -231,6 +231,8 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		common.SysError(fmt.Sprintf("server forced to shutdown: %v", err))
 	}
+	// 持久化内存中的性能指标（含当前小时桶与实体检测分组），避免干净退出丢失未落库数据喵。
+	perfmetrics.FlushAll()
 	// 内存中的看板数据保存入库，避免重启丢失未落库数据 (issue #5679)
 	if common.DataExportEnabled {
 		model.SaveQuotaDataCache()

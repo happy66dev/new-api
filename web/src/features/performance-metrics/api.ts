@@ -32,10 +32,15 @@ export async function getStatusCheck(): Promise<StatusCheckData> {
 }
 
 export async function getPerfMetricsSummary(
-  hours = 24
+  hours = 24,
+  includeShared = false
 ): Promise<PerfSummaryAllData> {
   const res = await api.get<PerfSummaryAllData>('/api/perf-metrics/summary', {
-    params: { hours },
+    params: {
+      hours,
+      // 模型广场需要把共享模型维度纳入汇总；管理端默认不传保持看板干净喵。
+      ...(includeShared ? { include_shared: '1' } : {}),
+    },
   })
   return res.data
 }

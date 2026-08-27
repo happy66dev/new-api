@@ -75,8 +75,8 @@ func TestGetVirtualModelStatusOwnerView(t *testing.T) {
 	virtualModel := createStatusTestVirtualModel(t, 7, "vm-alpha")
 
 	// 整体维度：一次成功一次失败喵。
-	perfmetrics.RecordEntityProbe("virtual/vm-alpha", 200, true)
-	perfmetrics.RecordEntityProbe("virtual/vm-alpha", 400, false)
+	perfmetrics.RecordEntityProbe("virtual/vm-alpha", 200, true, perfmetrics.EntityProbeExtras{})
+	perfmetrics.RecordEntityProbe("virtual/vm-alpha", 400, false, perfmetrics.EntityProbeExtras{})
 	require.NoError(t, model.RecordEntityProbeCounted(model.EntityProbeScopeVirtual, int64(virtualModel.ID), 0, 7, 1000, true, 200, ""))
 	require.NoError(t, model.RecordEntityProbeCounted(model.EntityProbeScopeVirtual, int64(virtualModel.ID), 0, 7, 2000, false, 400, "rate_limited"))
 
@@ -126,7 +126,7 @@ func TestGetVirtualModelCandidateStatus(t *testing.T) {
 	virtualModel := createStatusTestVirtualModel(t, 7, "vm-beta")
 
 	// 记录候选失败喵。
-	perfmetrics.RecordEntityProbe("virtual/vm-beta/candidate/1", 350, false)
+	perfmetrics.RecordEntityProbe("virtual/vm-beta/candidate/1", 350, false, perfmetrics.EntityProbeExtras{})
 	require.NoError(t, model.RecordEntityProbeCounted(model.EntityProbeScopeVirtualCandidate, 1, int64(virtualModel.ID), 7, 1000, false, 350, "timeout"))
 
 	recorder := httptest.NewRecorder()

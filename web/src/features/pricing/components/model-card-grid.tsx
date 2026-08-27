@@ -53,8 +53,9 @@ export function ModelCardGrid(props: ModelCardGridProps) {
   const currentPage = Math.min(page, totalPages)
 
   const perfQuery = useQuery({
-    queryKey: ['perf-metrics-summary', 24],
-    queryFn: () => getPerfMetricsSummary(24),
+    queryKey: ['perf-metrics-summary', 24, true],
+    // 模型广场包含共享模型，请求汇总时携带 include_shared 让 user/<name> 条目获得原生性能数据喵。
+    queryFn: () => getPerfMetricsSummary(24, true),
     staleTime: 60 * 1000,
     retry: false,
   })

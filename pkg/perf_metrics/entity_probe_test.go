@@ -46,11 +46,11 @@ func TestRecordEntityProbeAndQueryStatus(t *testing.T) {
 	setupEntityProbeTestDB(t)
 
 	// 自用维度：一次成功一次失败，成功率应为 50% 喵。
-	RecordEntityProbe("user/demo", 200, true)
-	RecordEntityProbe("user/demo", 400, false)
+	RecordEntityProbe("user/demo", 200, true, EntityProbeExtras{})
+	RecordEntityProbe("user/demo", 400, false, EntityProbeExtras{})
 
 	// 共享维度：只有一次成功，与自用维度互不混用喵。
-	RecordEntityProbeShared("user/demo", 100, true)
+	RecordEntityProbeShared("user/demo", 100, true, EntityProbeExtras{})
 
 	selfStatus, selfErr := QueryEntityProbeStatus("user/demo", EntityProbeGroupSelf, 24)
 	require.NoError(t, selfErr)
@@ -71,9 +71,26 @@ func TestRecordEntityProbeRequiresEnabledSetting(t *testing.T) {
 	setupEntityProbeTestDB(t)
 
 	// 直接调用底层 Record 的空模型保护：空模型名被忽略喵。
-	RecordEntityProbe("", 200, true)
+	RecordEntityProbe("", 200, true, EntityProbeExtras{})
 
 	emptyStatus, emptyErr := QueryEntityProbeStatus("", EntityProbeGroupSelf, 24)
 	require.NoError(t, emptyErr)
 	require.Equal(t, int64(0), emptyStatus.RequestCount)
+}
+
+// TestRecordEntityProbeSharedTracksThroughputAndTTFT 验证共享探针携带 TTFT 与吞吐后可被 perf 查询聚合喵。
+func TestRecordEntityProbeSharedTracksThroughputAndTTFT(t *testing.T) {
+	setupEntityProbeTestDB(t)
+
+	// 共享维度一次成功：TTFT 30ms、输出 100 token、生成时长 70ms（延迟 100ms 减 TTFT）喵。
+	RecordEntityProbeShared("user/ttft-demo", 100, true, EntityProbeExtras{TtftMs: 30, HasTtft: true, OutputTokens: 100, GenerationMs: 70})
+
+	// 通过 perf 查询聚合，验证 TTFT 均值与吞吐（100 token / 0.07s ≈ 1428.57）喵。
+	result, queryErr := Query(QueryParams{Model: "user/ttft-demo", Group: EntityProbeGroupShared, Hours: 24})
+	require.NoError(t, queryErr)
+	require.Len(t, result.Groups, 1)
+	group := result.Groups[0]
+	require.Equal(t, EntityProbeGroupShared, group.Group)
+	require.Equal(t, int64(30), group.AvgTtftMs)
+	require.InDelta(t, 1428.57, group.AvgTps, 0.01)
 }

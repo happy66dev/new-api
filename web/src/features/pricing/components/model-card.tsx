@@ -35,7 +35,6 @@ import { formatPrice, formatRequestPrice } from '../lib/price'
 import type { PricingModel, TokenUnit } from '../types'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
 import { ModelPerfBadge, type ModelPerfBadgeData } from './model-perf-badge'
-import { SharedUpstreamStatusDot } from './shared-upstream-status-dot'
 
 export interface ModelCardProps {
   model: PricingModel
@@ -223,12 +222,6 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
               <h3 className='text-foreground truncate font-mono text-[15px] leading-tight font-bold'>
                 {props.model.model_name}
               </h3>
-              {/* 用户共享模型：在模型名旁展示共享维度健康圆点喵。 */}
-              {props.model.owner_by === 'user-shared' && (
-                <SharedUpstreamStatusDot
-                  modelName={props.model.model_name || ''}
-                />
-              )}
             </div>
             <div className='mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm sm:mt-1 sm:gap-x-3'>
               {priceSummary}

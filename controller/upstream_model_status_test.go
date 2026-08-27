@@ -75,13 +75,13 @@ func TestGetUserUpstreamModelStatusOwnerView(t *testing.T) {
 	upstreamModel := createStatusTestUpstreamModel(t, 7, "alpha", true)
 
 	// 属主自用维度：一次成功一次失败喵。
-	perfmetrics.RecordEntityProbe("user/alpha", 200, true)
-	perfmetrics.RecordEntityProbe("user/alpha", 400, false)
+	perfmetrics.RecordEntityProbe("user/alpha", 200, true, perfmetrics.EntityProbeExtras{})
+	perfmetrics.RecordEntityProbe("user/alpha", 400, false, perfmetrics.EntityProbeExtras{})
 	require.NoError(t, model.RecordEntityProbeCounted(model.EntityProbeScopeUpstream, upstreamModel.ID, 0, 7, 1000, true, 200, ""))
 	require.NoError(t, model.RecordEntityProbeCounted(model.EntityProbeScopeUpstream, upstreamModel.ID, 0, 7, 2000, false, 400, "rate_limited"))
 
 	// 共享维度：一次成功喵。
-	perfmetrics.RecordEntityProbeShared("user/alpha", 300, true)
+	perfmetrics.RecordEntityProbeShared("user/alpha", 300, true, perfmetrics.EntityProbeExtras{})
 	require.NoError(t, model.RecordEntityProbeCounted(model.EntityProbeScopeUpstreamShared, upstreamModel.ID, 0, 7, 3000, true, 300, ""))
 
 	recorder := httptest.NewRecorder()
@@ -132,8 +132,8 @@ func TestGetSharedUserUpstreamModelStatus(t *testing.T) {
 	upstreamModel := createStatusTestUpstreamModel(t, 7, "beta", true)
 
 	// 共享维度：一次成功一次失败喵。
-	perfmetrics.RecordEntityProbeShared("user/beta", 300, true)
-	perfmetrics.RecordEntityProbeShared("user/beta", 500, false)
+	perfmetrics.RecordEntityProbeShared("user/beta", 300, true, perfmetrics.EntityProbeExtras{})
+	perfmetrics.RecordEntityProbeShared("user/beta", 500, false, perfmetrics.EntityProbeExtras{})
 	require.NoError(t, model.RecordEntityProbeCounted(model.EntityProbeScopeUpstreamShared, upstreamModel.ID, 0, 7, 3000, true, 300, ""))
 	require.NoError(t, model.RecordEntityProbeCounted(model.EntityProbeScopeUpstreamShared, upstreamModel.ID, 0, 7, 4000, false, 500, "rate_limited"))
 

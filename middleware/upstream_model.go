@@ -68,12 +68,12 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 	if !isShared {
 		if upstreamModel.BalanceCents <= 0 {
 			// 配置态：余额耗尽不计入成功率，只更新最近调用时间喵。
-			recordUpstreamModelProbeState(upstreamModel, false, false, false, "", startTime)
+			recordUpstreamModelProbeState(upstreamModel, false, false, false, "", startTime, upstreamProbeExtras{})
 			abortUpstreamModelQuotaExhausted(c)
 			return false
 		}
 		if upstreamModel.AvailableCents <= 0 {
-			recordUpstreamModelProbeState(upstreamModel, false, false, false, "", startTime)
+			recordUpstreamModelProbeState(upstreamModel, false, false, false, "", startTime, upstreamProbeExtras{})
 			abortUpstreamModelQuotaExhausted(c)
 			return false
 		}
@@ -83,7 +83,7 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 	// 喵~防御：凭据密文篡改、主密钥缺失或解密失败均只返回受控不可用错误，不泄露秘密或密文状态喵。
 	if decryptBaseURLError != nil || decryptAPIKeyError != nil {
 		// 凭据解密失败计入失败（反映配置问题），记录受控错误分类喵。
-		recordUpstreamModelProbeState(upstreamModel, isShared, true, false, "credential_error", startTime)
+		recordUpstreamModelProbeState(upstreamModel, isShared, true, false, "credential_error", startTime, upstreamProbeExtras{})
 		abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "user upstream model is not available", types.ErrorCode("upstream_model_unavailable"))
 		return false
 	}
@@ -97,7 +97,7 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 	// 透传失败：不计费、不写日志，返回受控错误或透传上游错误喵。
 	if executionResult.Err != nil {
 		// 实体状态检测：上游 4xx/5xx、超时、连接失败等透传失败计入失败喵。
-		recordUpstreamModelProbeState(upstreamModel, isShared, true, false, upstreamModelFailureErrorClass(executionResult.Err), startTime)
+		recordUpstreamModelProbeState(upstreamModel, isShared, true, false, upstreamModelFailureErrorClass(executionResult.Err), startTime, upstreamProbeExtras{})
 		customFailure := &virtualmodelservice.CustomCandidateExecutionFailure{}
 		// 喵~防御：非结构化异常不能透传；若响应已提交则只中止，避免重复错误响应喵。
 		if !errors.As(executionResult.Err, &customFailure) {
@@ -118,20 +118,47 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 		return false
 	}
 	// 成功透传计入成功，随后按独立 RMB 计费系统扣费与写日志；共享调用免费只累计共享消耗喵。
-	recordUpstreamModelProbeState(upstreamModel, isShared, true, true, "", startTime)
+	recordUpstreamModelProbeState(upstreamModel, isShared, true, true, "", startTime, buildUpstreamProbeExtras(executionResult))
 	settleUserUpstreamModelCharge(c, upstreamModel.OwnerUserID, upstreamModel, executionResult.Usage, modelRequest.Group, isUpstreamModelRequestStreaming(c), int(time.Since(startTime).Seconds()), isShared)
 	c.Abort()
 	return false
 }
 
+// upstreamProbeExtras 携带实体探测需要补记的吞吐与首字节明细喵。
+type upstreamProbeExtras struct {
+	// ttftMs 从发起上游请求到收到响应头的时间，单位：毫秒喵。
+	ttftMs int64
+	// outputTokens 本次调用的完成 token 数，用于吞吐计算喵。
+	outputTokens int64
+}
+
+// buildUpstreamProbeExtras 从透传执行结果提取 TTFT 与完成 token 数喵。
+// 空 usage 时 outputTokens 为零，吞吐自然跳过喵。
+func buildUpstreamProbeExtras(result *virtualmodelservice.UserUpstreamModelExecutionResult) upstreamProbeExtras {
+	// 喵~防御：空结果对象直接返回空 extras，避免空指针喵。
+	if result == nil {
+		return upstreamProbeExtras{}
+	}
+	extras := upstreamProbeExtras{ttftMs: result.TtftMs}
+	if result.Usage != nil {
+		extras.outputTokens = int64(result.Usage.CompletionTokens)
+	}
+	return extras
+}
+
 // recordUpstreamModelProbeState 记录一次上游模型真实调用的被动统计与最近一次状态喵。
 // counted 为 true 时计入成功率（成功/失败都累计请求数），为 false 时只更新最近一次时间喵。
-func recordUpstreamModelProbeState(upstreamModel *model.UserUpstreamModel, isShared bool, counted bool, success bool, errorClass string, startTime time.Time) {
+func recordUpstreamModelProbeState(upstreamModel *model.UserUpstreamModel, isShared bool, counted bool, success bool, errorClass string, startTime time.Time, extras upstreamProbeExtras) {
 	// 喵~防御：空模型对象直接返回，避免空指针喵。
 	if upstreamModel == nil {
 		return
 	}
 	latencyMs := time.Since(startTime).Milliseconds()
+	// 吞吐口径：有 TTFT 时生成时长近似为 latency - ttft，否则取总延迟，与内部模型语义对齐喵。
+	generationMs := latencyMs
+	if extras.ttftMs > 0 && latencyMs > extras.ttftMs {
+		generationMs = latencyMs - extras.ttftMs
+	}
 	probeModelName := upstreamModel.UserUpstreamModelName()
 	// 自用与共享维度使用不同的作用域与固定隔离分组，互不混用喵。
 	scope := model.EntityProbeScopeUpstream
@@ -144,10 +171,16 @@ func recordUpstreamModelProbeState(upstreamModel *model.UserUpstreamModel, isSha
 		_ = model.TouchEntityProbeLastAt(scope, upstreamModel.ID, 0, upstreamModel.OwnerUserID, now)
 		return
 	}
+	probeExtras := perfmetrics.EntityProbeExtras{
+		TtftMs:       extras.ttftMs,
+		HasTtft:      extras.ttftMs > 0,
+		OutputTokens: extras.outputTokens,
+		GenerationMs: generationMs,
+	}
 	if isShared {
-		perfmetrics.RecordEntityProbeShared(probeModelName, latencyMs, success)
+		perfmetrics.RecordEntityProbeShared(probeModelName, latencyMs, success, probeExtras)
 	} else {
-		perfmetrics.RecordEntityProbe(probeModelName, latencyMs, success)
+		perfmetrics.RecordEntityProbe(probeModelName, latencyMs, success, probeExtras)
 	}
 	_ = model.RecordEntityProbeCounted(scope, upstreamModel.ID, 0, upstreamModel.OwnerUserID, now, success, latencyMs, errorClass)
 }

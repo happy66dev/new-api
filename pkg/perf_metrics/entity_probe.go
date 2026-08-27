@@ -16,15 +16,34 @@ const (
 	EntityProbeGroupShared = "__entity_probe_shared__"
 )
 
+// EntityProbeExtras 携带实体调用的吞吐与首字节（TTFT）明细喵。
+// 空值时自然跳过吞吐/TTFT 累加，与内部模型语义对齐喵。
+type EntityProbeExtras struct {
+	// TtftMs 从发起请求到收到响应头的时间，单位：毫秒喵。
+	TtftMs int64
+	// HasTtft 标记是否测量到有效的 TTFT（失败分支记零）喵。
+	HasTtft bool
+	// OutputTokens 本次调用的完成 token 数，用于吞吐计算喵。
+	OutputTokens int64
+	// GenerationMs 生成时长（毫秒），有 TTFT 时近似为 latency - ttft 喵。
+	GenerationMs int64
+}
+
 // RecordEntityProbe 记录一次实体真实调用的被动统计（自用维度）喵。
 // 直接复用 perf_metrics.Record，跟随 perf_metrics_setting 的 Enabled 开关，不新增独立开关喵。
-func RecordEntityProbe(modelName string, latencyMs int64, success bool) {
-	Record(Sample{Model: modelName, Group: EntityProbeGroupSelf, LatencyMs: latencyMs, Success: success})
+func RecordEntityProbe(modelName string, latencyMs int64, success bool, extras EntityProbeExtras) {
+	Record(Sample{
+		Model: modelName, Group: EntityProbeGroupSelf, LatencyMs: latencyMs, Success: success,
+		TtftMs: extras.TtftMs, HasTtft: extras.HasTtft, OutputTokens: extras.OutputTokens, GenerationMs: extras.GenerationMs,
+	})
 }
 
 // RecordEntityProbeShared 记录一次共享调用的被动统计（共享维度），供共享使用者的聚合视图使用喵。
-func RecordEntityProbeShared(modelName string, latencyMs int64, success bool) {
-	Record(Sample{Model: modelName, Group: EntityProbeGroupShared, LatencyMs: latencyMs, Success: success})
+func RecordEntityProbeShared(modelName string, latencyMs int64, success bool, extras EntityProbeExtras) {
+	Record(Sample{
+		Model: modelName, Group: EntityProbeGroupShared, LatencyMs: latencyMs, Success: success,
+		TtftMs: extras.TtftMs, HasTtft: extras.HasTtft, OutputTokens: extras.OutputTokens, GenerationMs: extras.GenerationMs,
+	})
 }
 
 // EntityProbeStatus 单个实体在窗口内的被动统计聚合喵。

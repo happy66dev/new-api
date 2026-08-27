@@ -122,17 +122,6 @@ export async function getUpstreamModelStatus(
   return response.data
 }
 
-// getSharedUpstreamModelStatus 以共享使用者身份查询某上游模型的共享维度聚合状态喵。
-export async function getSharedUpstreamModelStatus(
-  name: string
-): Promise<UserUpstreamModelApiResponse<UpstreamModelSharedStatus>> {
-  // 喵~防御：名称编码避免特殊字符破坏路由喵。
-  const response = await api.get(
-    `/api/upstream-models/shared/${encodeURIComponent(name)}/status`
-  )
-  return response.data
-}
-
 export async function getUserUpstreamModels(): Promise<
   UserUpstreamModelApiResponse<UserUpstreamModel[]>
 > {

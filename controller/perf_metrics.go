@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
@@ -22,6 +23,10 @@ func GetPerfMetricsSummary(c *gin.Context) {
 	}
 
 	activeGroups := append(lo.Keys(ratio_setting.GetGroupRatioCopy()), "auto")
+	// 模型广场需要把共享实体探测分组纳入汇总；管理端默认不传 include_shared，保持看板干净喵。
+	if v := c.Query("include_shared"); v == "1" || v == "true" {
+		activeGroups = append(activeGroups, perfmetrics.EntityProbeGroupShared)
+	}
 	result, err := perfmetrics.QuerySummaryAll(hours, activeGroups)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -68,6 +73,12 @@ func GetPerfMetrics(c *gin.Context) {
 	}
 
 	result.Groups = filterActiveGroups(result.Groups)
+	for i := range result.Groups {
+		// 共享实体探测分组映射为可读的 user-shared，前端 GroupBadge 已本地化"用户共享"喵。
+		if result.Groups[i].Group == perfmetrics.EntityProbeGroupShared {
+			result.Groups[i].Group = constant.GroupUserShared
+		}
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -169,6 +180,11 @@ func statusCheckFlexibleProbeGroups() []statusCheckFlexibleProbeGroup {
 func filterActiveGroups(groups []perfmetrics.GroupResult) []perfmetrics.GroupResult {
 	activeRatios := ratio_setting.GetGroupRatioCopy()
 	return lo.Filter(groups, func(g perfmetrics.GroupResult, _ int) bool {
+		// 共享实体探测分组只出现在 user/<name> 模型上，全局放行安全；
+		// __entity_probe__（属主自用）绝不能放行，防止泄露属主私有用量喵。
+		if g.Group == perfmetrics.EntityProbeGroupShared {
+			return true
+		}
 		_, ok := activeRatios[g.Group]
 		return ok || g.Group == "auto"
 	})

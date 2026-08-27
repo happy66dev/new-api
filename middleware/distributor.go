@@ -691,7 +691,7 @@ func recordVirtualModelCandidateProbe(c *gin.Context, executionState *virtualMod
 	}
 	// 候选节点的聚合键为 virtual/<name>/candidate/<id>，全部归入自用固定分组喵。
 	probeModelName := fmt.Sprintf("%s/candidate/%d", executionState.virtualModelName, candidateID)
-	perfmetrics.RecordEntityProbe(probeModelName, latencyMs, success)
+	perfmetrics.RecordEntityProbe(probeModelName, latencyMs, success, perfmetrics.EntityProbeExtras{})
 	now := time.Now().Unix()
 	// 候选节点状态行的 EntityID 为候选 id、VirtualID 为所属虚拟模型 id，供按模型聚合查询喵。
 	_ = model.RecordEntityProbeCounted(model.EntityProbeScopeVirtualCandidate, int64(candidateID), int64(executionState.virtualModelID), executionState.ownerUserID, now, success, latencyMs, errorClass)
@@ -711,7 +711,7 @@ func RecordVirtualModelOverallProbe(c *gin.Context, success bool, errorClass str
 	}
 	executionState.overallProbeRecorded = true
 	latencyMs := time.Since(executionState.startTime).Milliseconds()
-	perfmetrics.RecordEntityProbe(executionState.virtualModelName, latencyMs, success)
+	perfmetrics.RecordEntityProbe(executionState.virtualModelName, latencyMs, success, perfmetrics.EntityProbeExtras{})
 	now := time.Now().Unix()
 	_ = model.RecordEntityProbeCounted(model.EntityProbeScopeVirtual, int64(executionState.virtualModelID), 0, executionState.ownerUserID, now, success, latencyMs, errorClass)
 }
@@ -722,7 +722,7 @@ func recordCustomCandidateFailureProbe(c *gin.Context, candidate *model.VirtualM
 	executionState, _ := getVirtualModelExecutionState(c)
 	recordVirtualModelCandidateProbe(c, executionState, candidate.CandidateID, false, errorClass, time.Since(startTime).Milliseconds())
 	if hasUpstreamReference && referencedUpstreamModel != nil {
-		recordUpstreamModelProbeState(referencedUpstreamModel, false, true, false, errorClass, startTime)
+		recordUpstreamModelProbeState(referencedUpstreamModel, false, true, false, errorClass, startTime, upstreamProbeExtras{})
 	}
 	if hasResponse {
 		RecordVirtualModelOverallProbe(c, false, errorClass)
@@ -806,9 +806,11 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 		}
 		var executionError error
 		var executionUsage *dto.Usage
+		// 引用上游模型分支的透传结果提升到外层作用域，供成功路径提取 TTFT/usage 喵。
+		var executionResult *virtualmodelservice.UserUpstreamModelExecutionResult
 		if hasUpstreamReference {
 			// 引用用户上游模型：走带 usage 解析的独立透传，返回解析结果供结算喵。
-			executionResult := virtualmodelservice.ExecuteUserUpstreamModel(c, virtualmodelservice.CustomCandidateExecutionInput{
+			executionResult = virtualmodelservice.ExecuteUserUpstreamModel(c, virtualmodelservice.CustomCandidateExecutionInput{
 				CandidateID:    candidate.CandidateID,
 				BaseURL:        baseURL,
 				APIKey:         apiKey,
@@ -838,7 +840,7 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 				}
 				settleUserUpstreamModelCharge(c, referencedUpstreamModel.OwnerUserID, referencedUpstreamModel, executionUsage, requestGroup, isUpstreamModelRequestStreaming(c), int(time.Since(startTime).Seconds()), false)
 				// 实体状态检测：引用上游模型成功，同时记录上游模型自用维度成功喵。
-				recordUpstreamModelProbeState(referencedUpstreamModel, false, true, true, "", startTime)
+				recordUpstreamModelProbeState(referencedUpstreamModel, false, true, true, "", startTime, buildUpstreamProbeExtras(executionResult))
 			} else {
 				// 纯直填 custom 候选成功：写虚拟模型日志（无 usage 解析，token 计 0）喵。
 				recordVirtualModelCustomSuccess(c, int(time.Since(startTime).Seconds()))
