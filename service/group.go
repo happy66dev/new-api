@@ -248,14 +248,15 @@ func GetRequestAutoRoute(c *gin.Context, modelName string) ([]string, bool) {
 	return chain, true
 }
 
-// GetGroupsEnabledModels 按 groups 顺序获取各分组启用的模型并去重
-func GetGroupsEnabledModels(groups []string) []string {
+// GetGroupsEnabledModels 按 groups 顺序获取各分组启用的模型并去重喵。
+// viewerID 用于用户共享分组：白名单/黑名单过滤对查看者不可见的模型喵。
+func GetGroupsEnabledModels(groups []string, viewerID int) []string {
 	seen := make(map[string]struct{})
 	models := make([]string, 0)
 	for _, group := range groups {
 		// 用户共享分组直接查询共享中的用户上游模型，不走 abilities 表喵。
 		if group == constant.GroupUserShared {
-			for _, modelName := range model.GetSharedUserUpstreamModelNames() {
+			for _, modelName := range model.GetSharedUserUpstreamModelNames(viewerID) {
 				if _, ok := seen[modelName]; !ok {
 					seen[modelName] = struct{}{}
 					models = append(models, modelName)

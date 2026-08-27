@@ -100,16 +100,17 @@ func GetPricing(c *gin.Context) {
 
 // appendSharedUpstreamPricing 把共享中的用户上游模型追加为定价条目喵。
 func appendSharedUpstreamPricing(pricing []model.Pricing, viewerUserID any) []model.Pricing {
-	sharedModels, err := model.GetSharedUserUpstreamModels()
-	// 喵~防御：共享模型查询失败不影响普通定价返回喵。
-	if err != nil {
-		return pricing
-	}
 	viewerID := -1
 	if viewerUserID != nil {
 		if id, ok := viewerUserID.(int); ok {
 			viewerID = id
 		}
+	}
+	// 按查看者 id 过滤白名单/黑名单，被挡用户看不到对应共享模型喵。
+	sharedModels, err := model.GetSharedUserUpstreamModels(viewerID)
+	// 喵~防御：共享模型查询失败不影响普通定价返回喵。
+	if err != nil {
+		return pricing
 	}
 	for _, sharedModel := range sharedModels {
 		pricing = append(pricing, buildSharedUpstreamPricing(sharedModel, viewerID))

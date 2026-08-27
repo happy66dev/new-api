@@ -3,10 +3,12 @@ package model
 import (
 	"errors"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"gorm.io/gorm"
 )
 
@@ -58,6 +60,9 @@ type UserUpstreamModel struct {
 	ShareLimitCents    int64 `json:"share_limit_cents"`
 	ShareSpentCents    int64 `json:"share_spent_cents"`
 	ShowBalanceEnabled bool  `json:"show_balance_enabled"`
+	// 共享白名单/黑名单：逗号分隔的用户 id，白名单非空时仅白名单用户可见可调用；黑名单用户一律被挡喵。
+	ShareWhitelist string `json:"share_whitelist" gorm:"type:text"`
+	ShareBlacklist string `json:"share_blacklist" gorm:"type:text"`
 	// 版本与时间喵。
 	Version     int   `json:"version"`
 	CreatedTime int64 `json:"created_time"`
@@ -240,24 +245,65 @@ type SharedUserUpstreamModelView struct {
 	ShowBalanceEnabled bool
 	BalanceCents       int64
 	AvailableCents     int64
+	// 共享白名单/黑名单：逗号分隔的用户 id，供可见性过滤使用喵。
+	ShareWhitelist string
+	ShareBlacklist string
+}
+
+// isUserAllowedShared 判断 viewerID 是否被共享白名单/黑名单允许喵。
+// 黑名单优先：黑名单含 viewerID → 禁止；白名单非空且不含 viewerID → 禁止；否则允许喵。
+// viewerID <= 0（未登录）视为"非白名单用户"，白名单非空即被挡喵。
+func isUserAllowedShared(viewerID int, whitelist string, blacklist string) bool {
+	// 黑名单命中即禁止喵。
+	if containsSharedUserID(blacklist, viewerID) {
+		return false
+	}
+	// 白名单为空表示不限制；非空时必须包含 viewerID 喵。
+	if strings.TrimSpace(whitelist) == "" {
+		return true
+	}
+	return containsSharedUserID(whitelist, viewerID)
+}
+
+// containsSharedUserID 判断逗号分隔的用户 id 串是否包含目标 id 喵。
+func containsSharedUserID(ids string, targetID int) bool {
+	// 目标 id 非正（未登录）时不可能在白名单/黑名单中喵。
+	if targetID <= 0 || strings.TrimSpace(ids) == "" {
+		return false
+	}
+	for _, part := range strings.Split(ids, ",") {
+		parsed, parseError := strconv.Atoi(strings.TrimSpace(part))
+		if parseError == nil && parsed == targetID {
+			return true
+		}
+	}
+	return false
 }
 
 // GetSharedUserUpstreamModels 返回当前共享中（余额>0、可用>0、共享额度>0）的全部上游模型喵。
-func GetSharedUserUpstreamModels() ([]SharedUserUpstreamModelView, error) {
+// viewerID 用于白名单/黑名单过滤：被挡用户看不到对应模型喵。
+func GetSharedUserUpstreamModels(viewerID int) ([]SharedUserUpstreamModelView, error) {
 	var views []SharedUserUpstreamModelView
 	// 三账户都是递减账户，任一耗尽即自动停止共享（从共享列表消失）喵。
 	if err := DB.Model(&UserUpstreamModel{}).
-		Select("id", "owner_user_id", "normalized_name", "display_name", "description", "real_model_name", "model_ratio", "completion_ratio", "share_limit_cents", "show_balance_enabled", "balance_cents", "available_cents").
+		Select("id", "owner_user_id", "normalized_name", "display_name", "description", "real_model_name", "model_ratio", "completion_ratio", "share_limit_cents", "show_balance_enabled", "balance_cents", "available_cents", "share_whitelist", "share_blacklist").
 		Where("share_enabled = ? AND balance_cents > 0 AND available_cents > 0 AND share_limit_cents > 0", true).
 		Find(&views).Error; err != nil {
 		return nil, err
 	}
-	return views, nil
+	// 白名单/黑名单在 Go 侧过滤（逗号分隔的 id 串不适合跨库 SQL 表达）喵。
+	filtered := make([]SharedUserUpstreamModelView, 0, len(views))
+	for _, view := range views {
+		if isUserAllowedShared(viewerID, view.ShareWhitelist, view.ShareBlacklist) {
+			filtered = append(filtered, view)
+		}
+	}
+	return filtered, nil
 }
 
-// GetSharedUserUpstreamModelNames 返回共享中上游模型的对外调用名称列表喵。
-func GetSharedUserUpstreamModelNames() []string {
-	views, err := GetSharedUserUpstreamModels()
+// GetSharedUserUpstreamModelNames 返回共享中且对 viewerID 可见的上游模型对外调用名称列表喵。
+func GetSharedUserUpstreamModelNames(viewerID int) []string {
+	views, err := GetSharedUserUpstreamModels(viewerID)
 	// 喵~防御：查询失败按空列表处理，避免把错误泄漏到模型列表接口喵。
 	if err != nil {
 		return []string{}
@@ -284,8 +330,8 @@ func GetSharedUserUpstreamModelByNormalizedName(normalizedName string) (*UserUps
 }
 
 // GetEnabledSharedUserUpstreamModelByName 返回指定名称的共享启用上游模型，供共享调用授权用喵。
-// 不限定属主：任何用户都可调用共享中的模型；任一账户耗尽时按记录不存在处理喵。
-func GetEnabledSharedUserUpstreamModelByName(normalizedName string) (*UserUpstreamModel, error) {
+// 不限定属主：任何用户都可调用共享中的模型；任一账户耗尽或被白名单/黑名单挡时按记录不存在处理喵。
+func GetEnabledSharedUserUpstreamModelByName(normalizedName string, viewerID int) (*UserUpstreamModel, error) {
 	// 喵~防御：空名称直接返回记录不存在喵。
 	if strings.TrimSpace(normalizedName) == "" {
 		return nil, gorm.ErrRecordNotFound
@@ -296,7 +342,78 @@ func GetEnabledSharedUserUpstreamModelByName(normalizedName string) (*UserUpstre
 	if err := DB.Where("normalized_name = ? AND enabled = ? AND share_enabled = ? AND balance_cents > 0 AND available_cents > 0 AND share_limit_cents > 0", normalizedName, true, true).Order("id asc").First(&upstreamModel).Error; err != nil {
 		return nil, err
 	}
+	// 白名单/黑名单过滤：被挡用户按记录不存在处理，避免泄露模型存在性喵。
+	if !isUserAllowedShared(viewerID, upstreamModel.ShareWhitelist, upstreamModel.ShareBlacklist) {
+		return nil, gorm.ErrRecordNotFound
+	}
 	return &upstreamModel, nil
+}
+
+// SharedModelUserUsage 描述某个共享上游模型按用户聚合的使用量喵。
+type SharedModelUserUsage struct {
+	UserID           int    `json:"user_id"`
+	Username         string `json:"username"`
+	RequestCount     int64  `json:"request_count"`
+	PromptTokens     int64  `json:"prompt_tokens"`
+	CompletionTokens int64  `json:"completion_tokens"`
+	LastAt           int64  `json:"last_at"`
+}
+
+// sharedModelUserUsageLimit 限制共享模型使用情况返回的最大用户数，防止大表拖慢接口喵。
+const sharedModelUserUsageLimit = 100
+
+// GetSharedModelUserUsage 聚合共享调用日志（type=8 且 group=user-shared）按用户统计喵。
+// 属主校验由控制器负责，这里按模型编号与属主归属查询喵。
+func GetSharedModelUserUsage(upstreamModelID int64, ownerUserID int) ([]SharedModelUserUsage, error) {
+	// 喵~防御：无效参数返回空结果喵。
+	if upstreamModelID <= 0 || ownerUserID <= 0 {
+		return []SharedModelUserUsage{}, nil
+	}
+	// 先定位属主名下模型，防止越权聚合他人模型的日志喵。
+	upstreamModel, err := GetUserUpstreamModelByOwnerID(upstreamModelID, ownerUserID)
+	if err != nil {
+		return []SharedModelUserUsage{}, err
+	}
+	modelName := upstreamModel.UserUpstreamModelName()
+	rows := make([]SharedModelUserUsage, 0, sharedModelUserUsageLimit)
+	// 共享调用日志固定归入 user-shared 分组且 type=8，按 user_id 聚合喵。
+	queryError := LOG_DB.Table("logs").
+		Select("user_id, count(*) as request_count, sum(prompt_tokens) as prompt_tokens, sum(completion_tokens) as completion_tokens, max(created_at) as last_at").
+		Where("model_name = ? AND "+commonGroupCol+" = ? AND type = ? AND user_id > 0", modelName, constant.GroupUserShared, LogTypeCustomUpstream).
+		Group("user_id").
+		Order("last_at DESC").
+		Limit(sharedModelUserUsageLimit).
+		Find(&rows).Error
+	if queryError != nil {
+		return nil, queryError
+	}
+	// 从主库批量补齐用户名，避免跨库 JOIN（日志库可能是独立实例）喵。
+	fillSharedModelUsernames(rows)
+	return rows, nil
+}
+
+// fillSharedModelUsernames 批量从主库用户表补齐使用情况的用户名喵。
+func fillSharedModelUsernames(rows []SharedModelUserUsage) {
+	// 喵~防御：空结果直接返回喵。
+	if len(rows) == 0 {
+		return
+	}
+	userIDs := make([]int, 0, len(rows))
+	for _, row := range rows {
+		userIDs = append(userIDs, row.UserID)
+	}
+	var users []User
+	// 喵~防御：用户查询失败按空名处理，不阻塞使用情况返回喵。
+	if err := DB.Where("id IN ?", userIDs).Find(&users).Error; err != nil {
+		return
+	}
+	usernameByID := make(map[int]string, len(users))
+	for _, user := range users {
+		usernameByID[user.Id] = user.Username
+	}
+	for i := range rows {
+		rows[i].Username = usernameByID[rows[i].UserID]
+	}
 }
 
 // DeductUserUpstreamModelCharge 请求后按实际费用扣减三个递减账户，事务加行锁防止并发超扣喵。

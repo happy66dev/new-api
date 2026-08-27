@@ -181,7 +181,7 @@ func setTokenAutoRoutes(c *gin.Context, token *model.Token, routes map[string][]
 		autoGroups = service.GetUserAutoGroupForUser(c.GetInt("id"), userGroup)
 	}
 	availableModels := make(map[string]struct{})
-	for _, modelName := range service.GetGroupsEnabledModels(autoGroups) {
+	for _, modelName := range service.GetGroupsEnabledModels(autoGroups, c.GetInt("id")) {
 		availableModels[modelName] = struct{}{}
 	}
 	normalized := make(map[string][]string, len(routes))

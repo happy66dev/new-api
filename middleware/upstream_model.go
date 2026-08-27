@@ -54,8 +54,8 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 	upstreamModel, queryError := model.GetEnabledUserUpstreamModelByOwnerName(ownerUserID, normalizedName)
 	isShared := false
 	if queryError != nil {
-		// 属主名下没有该模型时，查询共享中的同名模型，供其他用户免费共享调用喵。
-		upstreamModel, queryError = model.GetEnabledSharedUserUpstreamModelByName(normalizedName)
+		// 属主名下没有该模型时，查询共享中的同名模型（按调用者白名单/黑名单过滤），供共享调用喵。
+		upstreamModel, queryError = model.GetEnabledSharedUserUpstreamModelByName(normalizedName, ownerUserID)
 		if queryError != nil {
 			// 喵~防御：模型不存在或停用时只更新其最近调用时间，不改变成功率喵。
 			touchUpstreamModelConfigState(c, ownerUserID, normalizedName, startTime)

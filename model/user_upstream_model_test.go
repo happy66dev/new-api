@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -186,7 +187,7 @@ func TestSharedUserUpstreamModels(t *testing.T) {
 	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "not-shared", Enabled: true, ShareEnabled: false, BalanceCents: 100, AvailableCents: 100, ShareLimitCents: 1000}).Error)
 
 	// 共享中的模型名只包含三账户都未耗尽的共享模型喵。
-	names := GetSharedUserUpstreamModelNames()
+	names := GetSharedUserUpstreamModelNames(0)
 	assert.Contains(t, names, "user/shared-ok")
 	assert.NotContains(t, names, "user/shared-balance-empty")
 	assert.NotContains(t, names, "user/shared-available-empty")
@@ -194,28 +195,145 @@ func TestSharedUserUpstreamModels(t *testing.T) {
 	assert.NotContains(t, names, "user/not-shared")
 
 	// 共享视图只包含共享中的模型喵。
-	views, err := GetSharedUserUpstreamModels()
+	views, err := GetSharedUserUpstreamModels(0)
 	require.NoError(t, err)
 	assert.Len(t, views, 1)
 
 	// 任一账户耗尽的模型按名称查询返回记录不存在（自动停止共享）喵。
-	_, err = GetEnabledSharedUserUpstreamModelByName("shared-exhausted")
+	_, err = GetEnabledSharedUserUpstreamModelByName("shared-exhausted", 0)
 	require.Error(t, err)
-	_, err = GetEnabledSharedUserUpstreamModelByName("shared-balance-empty")
+	_, err = GetEnabledSharedUserUpstreamModelByName("shared-balance-empty", 0)
 	require.Error(t, err)
-	_, err = GetEnabledSharedUserUpstreamModelByName("shared-available-empty")
+	_, err = GetEnabledSharedUserUpstreamModelByName("shared-available-empty", 0)
 	require.Error(t, err)
 
 	// 共享中模型可被任意用户按名称查找到喵。
-	shared, err := GetEnabledSharedUserUpstreamModelByName("shared-ok")
+	shared, err := GetEnabledSharedUserUpstreamModelByName("shared-ok", 0)
 	require.NoError(t, err)
 	assert.Equal(t, 7, shared.OwnerUserID)
 	assert.Equal(t, int64(1000), shared.ShareLimitCents)
 
 	// 空名称与未开启共享的名称都查不到喵。
-	_, err = GetEnabledSharedUserUpstreamModelByName("")
+	_, err = GetEnabledSharedUserUpstreamModelByName("", 0)
 	require.Error(t, err)
-	_, err = GetEnabledSharedUserUpstreamModelByName("not-shared")
+	_, err = GetEnabledSharedUserUpstreamModelByName("not-shared", 0)
+	require.Error(t, err)
+}
+
+// TestSharedUserWhitelistBlacklist 验证白名单/黑名单同时过滤可见性与调用授权喵。
+func TestSharedUserWhitelistBlacklist(t *testing.T) {
+	truncateTables(t)
+	require.NoError(t, DB.AutoMigrate(&UserUpstreamModel{}))
+	require.NoError(t, DB.Exec("DELETE FROM user_upstream_models").Error)
+
+	// 三个共享中模型：无名单、白名单限 7、白名单限 7 且黑名单含 9 喵。
+	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "open", Enabled: true, ShareEnabled: true, BalanceCents: 100, AvailableCents: 100, ShareLimitCents: 1000}).Error)
+	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "wl", Enabled: true, ShareEnabled: true, BalanceCents: 100, AvailableCents: 100, ShareLimitCents: 1000, ShareWhitelist: "5, 7"}).Error)
+	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "wl-bl", Enabled: true, ShareEnabled: true, BalanceCents: 100, AvailableCents: 100, ShareLimitCents: 1000, ShareWhitelist: "7,8", ShareBlacklist: "8,9"}).Error)
+
+	// 未登录（0）与名单外用户只能看到无名单模型喵。
+	assert.Contains(t, GetSharedUserUpstreamModelNames(0), "user/open")
+	assert.NotContains(t, GetSharedUserUpstreamModelNames(0), "user/wl")
+	assert.NotContains(t, GetSharedUserUpstreamModelNames(0), "user/wl-bl")
+	assert.NotContains(t, GetSharedUserUpstreamModelNames(8), "user/wl-bl")
+
+	// 白名单命中用户（7）可见全部三个模型喵。
+	names7 := GetSharedUserUpstreamModelNames(7)
+	assert.Contains(t, names7, "user/open")
+	assert.Contains(t, names7, "user/wl")
+	assert.Contains(t, names7, "user/wl-bl")
+
+	// 白名单视图过滤同样生效喵。
+	views8, err := GetSharedUserUpstreamModels(8)
+	require.NoError(t, err)
+	assert.Len(t, views8, 1)
+	assert.Equal(t, "open", views8[0].NormalizedName)
+
+	// 调用授权：白名单外与黑名单用户按 404 处理，不泄露存在性喵。
+	_, err = GetEnabledSharedUserUpstreamModelByName("wl", 8)
+	require.Error(t, err)
+	_, err = GetEnabledSharedUserUpstreamModelByName("wl-bl", 8)
+	require.Error(t, err)
+	_, err = GetEnabledSharedUserUpstreamModelByName("wl-bl", 9)
+	require.Error(t, err)
+	// 白名单命中用户可正常调用喵。
+	shared, err := GetEnabledSharedUserUpstreamModelByName("wl", 7)
+	require.NoError(t, err)
+	assert.Equal(t, "wl", shared.NormalizedName)
+	// 无名单模型对所有用户开放喵。
+	open, err := GetEnabledSharedUserUpstreamModelByName("open", 8)
+	require.NoError(t, err)
+	assert.Equal(t, "open", open.NormalizedName)
+}
+
+// TestIsUserAllowedShared 表驱动验证白名单/黑名单判定规则喵。
+func TestIsUserAllowedShared(t *testing.T) {
+	cases := []struct {
+		name      string
+		viewerID  int
+		whitelist string
+		blacklist string
+		want      bool
+	}{
+		{name: "无名单任意用户放行", viewerID: 8, whitelist: "", blacklist: "", want: true},
+		{name: "无名单未登录放行", viewerID: 0, whitelist: "", blacklist: "", want: true},
+		{name: "白名单命中放行", viewerID: 7, whitelist: "5,7,9", blacklist: "", want: true},
+		{name: "白名单外被挡", viewerID: 8, whitelist: "5,7", blacklist: "", want: false},
+		{name: "未登录遇白名单被挡", viewerID: 0, whitelist: "5,7", blacklist: "", want: false},
+		{name: "黑名单命中被挡", viewerID: 9, whitelist: "", blacklist: "8,9", want: false},
+		{name: "白名单与黑名单都命中时黑名单优先", viewerID: 9, whitelist: "9", blacklist: "9", want: false},
+		{name: "黑名单带空格分隔命中", viewerID: 6, whitelist: "", blacklist: " 5 , 6 ", want: false},
+		{name: "黑名单未命中放行", viewerID: 4, whitelist: "", blacklist: "8,9", want: true},
+		{name: "空白名单串视为不限制", viewerID: 8, whitelist: "  ", blacklist: "", want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isUserAllowedShared(tc.viewerID, tc.whitelist, tc.blacklist))
+		})
+	}
+}
+
+// TestGetSharedModelUserUsage 验证共享模型按用户聚合使用情况喵。
+func TestGetSharedModelUserUsage(t *testing.T) {
+	truncateTables(t)
+	require.NoError(t, DB.AutoMigrate(&UserUpstreamModel{}))
+	require.NoError(t, DB.Exec("DELETE FROM user_upstream_models").Error)
+	require.NoError(t, LOG_DB.Exec("DELETE FROM logs").Error)
+	require.NoError(t, LOG_DB.Exec("DELETE FROM users").Error)
+
+	// 属主 7 的共享模型，用户名 8/9 供日志聚合回填喵。
+	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "usage-model", Enabled: true, ShareEnabled: true, BalanceCents: 100, AvailableCents: 100, ShareLimitCents: 1000}).Error)
+	var created UserUpstreamModel
+	require.NoError(t, DB.Where("normalized_name = ?", "usage-model").First(&created).Error)
+	require.NoError(t, DB.Create(&User{Id: 8, Username: "user8", AffCode: "u8"}).Error)
+	require.NoError(t, DB.Create(&User{Id: 9, Username: "user9", AffCode: "u9"}).Error)
+
+	// 两条共享调用日志（用户 8 两次），一条共享调用（用户 9）喵。
+	require.NoError(t, LOG_DB.Create(&Log{UserId: 8, Username: "user8", Type: LogTypeCustomUpstream, ModelName: "user/usage-model", Group: constant.GroupUserShared, PromptTokens: 100, CompletionTokens: 20, CreatedAt: 1000}).Error)
+	require.NoError(t, LOG_DB.Create(&Log{UserId: 8, Username: "user8", Type: LogTypeCustomUpstream, ModelName: "user/usage-model", Group: constant.GroupUserShared, PromptTokens: 50, CompletionTokens: 10, CreatedAt: 2000}).Error)
+	require.NoError(t, LOG_DB.Create(&Log{UserId: 9, Username: "user9", Type: LogTypeCustomUpstream, ModelName: "user/usage-model", Group: constant.GroupUserShared, PromptTokens: 30, CompletionTokens: 5, CreatedAt: 1500}).Error)
+	// 非 user-shared 分组的日志不计入使用情况喵。
+	require.NoError(t, LOG_DB.Create(&Log{UserId: 9, Username: "user9", Type: LogTypeCustomUpstream, ModelName: "user/usage-model", Group: "default", PromptTokens: 999, CompletionTokens: 99, CreatedAt: 1600}).Error)
+
+	usage, err := GetSharedModelUserUsage(created.ID, 7)
+	require.NoError(t, err)
+	require.Len(t, usage, 2)
+	// 用户 8 聚合两次：请求 2、输入 150、输出 30，最近调用 2000，用户名回填 user8 喵。
+	var row8 *SharedModelUserUsage
+	for i := range usage {
+		if usage[i].UserID == 8 {
+			row8 = &usage[i]
+		}
+	}
+	require.NotNil(t, row8)
+	assert.Equal(t, "user8", row8.Username)
+	assert.Equal(t, int64(2), row8.RequestCount)
+	assert.Equal(t, int64(150), row8.PromptTokens)
+	assert.Equal(t, int64(30), row8.CompletionTokens)
+	assert.Equal(t, int64(2000), row8.LastAt)
+
+	// 非属主查询被拒，避免越权查看他人模型使用情况喵。
+	_, err = GetSharedModelUserUsage(created.ID, 8)
 	require.Error(t, err)
 }
 

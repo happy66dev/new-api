@@ -7,7 +7,7 @@
  (at your option) any later version.
 */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Pencil, Plus, RefreshCw, Settings2, Target, Trash2, Wallet } from 'lucide-react'
+import { Pencil, Plus, RefreshCw, Settings2, Target, Trash2, Users, Wallet } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -36,6 +36,7 @@ import {
 } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { formatTimestampToDate } from '@/lib/format'
 import { EntityStatusDot, type EntityStatusSummary } from '@/features/status-check/entity-status-dot'
 import { EntityPerformanceDrawer } from '@/features/status-check/entity-performance-drawer'
 
@@ -44,6 +45,7 @@ import {
   createUserUpstreamModel,
   deleteUserUpstreamModel,
   getUpstreamModelStatus,
+  getUpstreamModelUserUsage,
   getUserUpstreamModels,
   syncUserUpstreamModelAvailable,
   syncUserUpstreamModelBalance,
@@ -52,6 +54,7 @@ import {
 import type {
   UpstreamModelSharedStatus,
   UpstreamModelStatus,
+  UpstreamModelUserUsage,
   UserUpstreamModel,
   UserUpstreamModelInput,
 } from './api'
@@ -99,6 +102,9 @@ function UpstreamModelDrawer({
   const [availableYuan, setAvailableYuan] = useState('0')
   const [shareEnabled, setShareEnabled] = useState(false)
   const [shareLimitYuan, setShareLimitYuan] = useState('0')
+  // 共享白名单/黑名单：逗号分隔的用户 id，白名单非空时仅名单内用户可见可调用喵。
+  const [shareWhitelist, setShareWhitelist] = useState('')
+  const [shareBlacklist, setShareBlacklist] = useState('')
   const [showBalanceEnabled, setShowBalanceEnabled] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
 
@@ -127,6 +133,8 @@ function UpstreamModelDrawer({
     setAvailableYuan(centsToYuan(model?.available_cents ?? model?.spend_limit_cents ?? 0))
     setShareEnabled(model?.share_enabled ?? false)
     setShareLimitYuan(centsToYuan(model?.share_limit_cents ?? 0))
+    setShareWhitelist(model?.share_whitelist ?? '')
+    setShareBlacklist(model?.share_blacklist ?? '')
     setShowBalanceEnabled(model?.show_balance_enabled ?? false)
   }, [model, open])
 
@@ -171,6 +179,8 @@ function UpstreamModelDrawer({
       available_cents: yuanToCents(availableYuan),
       share_enabled: shareEnabled,
       share_limit_cents: yuanToCents(shareLimitYuan),
+      share_whitelist: shareWhitelist,
+      share_blacklist: shareBlacklist,
       show_balance_enabled: showBalanceEnabled,
       ...(model ? { version: model.version } : {}),
     }
@@ -385,6 +395,29 @@ function UpstreamModelDrawer({
               {t('Share limit (yuan)')}
               <Input inputMode='decimal' value={shareLimitYuan} onChange={(event) => setShareLimitYuan(event.target.value)} disabled={isSaving || !shareEnabled} />
             </label>
+            <label className='grid gap-1 text-sm font-medium'>
+              {t('Share whitelist (user ids)')}
+              <Textarea
+                value={shareWhitelist}
+                onChange={(event) => setShareWhitelist(event.target.value)}
+                placeholder='1, 2, 3'
+                disabled={isSaving || !shareEnabled}
+                rows={2}
+              />
+            </label>
+            <label className='grid gap-1 text-sm font-medium'>
+              {t('Share blacklist (user ids)')}
+              <Textarea
+                value={shareBlacklist}
+                onChange={(event) => setShareBlacklist(event.target.value)}
+                placeholder='4, 5, 6'
+                disabled={isSaving || !shareEnabled}
+                rows={2}
+              />
+            </label>
+            <p className='text-muted-foreground text-xs'>
+              {t('Whitelist users can view and call this model; blacklisted users are always blocked. Leave empty for all users. Unauthenticated users are treated as not in any list.')}
+            </p>
           </SideDrawerSection>
         </div>
 
@@ -466,6 +499,81 @@ function UpstreamModelStatusIndicator({ model }: { model: UserUpstreamModel }) {
   )
 }
 
+// UpstreamModelUsageDrawer 展示某个共享上游模型按用户聚合的使用情况喵。
+// 属主可见每用户 user id/用户名/请求数/token/最近调用喵。
+export function UpstreamModelUsageDrawer({
+  open,
+  onOpenChange,
+  model,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  model: UserUpstreamModel | null
+}) {
+  const { t } = useTranslation()
+  // 以模型 id 为键拉取使用情况，仅在抽屉打开且选中模型时请求喵。
+  const usageQuery = useQuery({
+    queryKey: ['upstream-model-usage', model?.id],
+    queryFn: () => (model ? getUpstreamModelUserUsage(model.id) : Promise.resolve({ success: false, data: [] })),
+    // 喵~防御：没有选中模型或抽屉未打开时禁用请求，避免无效查询喵。
+    enabled: Boolean(model) && open,
+    retry: false,
+  })
+  // 喵~防御：接口失败或无数据时按空列表处理，避免空指针喵。
+  const usage: UpstreamModelUserUsage[] = usageQuery.data?.data ?? []
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent className={sideDrawerContentClassName('max-w-none sm:!max-w-[640px]')}>
+        <SheetHeader className={sideDrawerHeaderClassName()}>
+          <SheetTitle>{t('Shared model usage')}</SheetTitle>
+          <SheetDescription>
+            {model ? `${model.display_name || model.normalized_name} · user/${model.normalized_name}` : ''}
+          </SheetDescription>
+        </SheetHeader>
+        <div className={sideDrawerFormClassName()}>
+          {usageQuery.isLoading && <p className='text-sm text-muted-foreground'>{t('Loading')}</p>}
+          {usageQuery.isError && <p className='text-sm text-destructive'>{t('Unable to load shared usage')}</p>}
+          {!usageQuery.isLoading && !usageQuery.isError && usage.length === 0 && (
+            <p className='text-sm text-muted-foreground'>{t('No shared usage yet')}</p>
+          )}
+          {usage.length > 0 && (
+            <div className='overflow-auto rounded-md border'>
+              <table className='w-full text-sm'>
+                <thead>
+                  <tr className='border-b bg-muted/50 text-left text-xs text-muted-foreground'>
+                    <th className='px-3 py-2'>ID</th>
+                    <th className='px-3 py-2'>{t('Username')}</th>
+                    <th className='px-3 py-2'>{t('Requests')}</th>
+                    <th className='px-3 py-2'>{t('Prompt tokens')}</th>
+                    <th className='px-3 py-2'>{t('Completion tokens')}</th>
+                    <th className='px-3 py-2'>{t('Last call')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {usage.map((row) => (
+                    <tr key={row.user_id} className='border-b last:border-b-0'>
+                      {/* 明确展示用户 id，供属主识别谁在使用共享模型喵。 */}
+                      <td className='px-3 py-2'>{row.user_id}</td>
+                      <td className='px-3 py-2'>{row.username || '-'}</td>
+                      <td className='px-3 py-2'>{row.request_count}</td>
+                      <td className='px-3 py-2'>{row.prompt_tokens.toLocaleString()}</td>
+                      <td className='px-3 py-2'>{row.completion_tokens.toLocaleString()}</td>
+                      <td className='px-3 py-2'>{formatTimestampToDate(row.last_at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+        <SheetFooter className={sideDrawerFooterClassName()}>
+          <SheetClose render={<Button variant='outline' className='w-full sm:w-auto' />}>{t('Close')}</SheetClose>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
+  )
+}
+
 // UpstreamModels 提供用户上游模型的管理列表页喵。
 export function UpstreamModels() {
   const { t } = useTranslation()
@@ -473,6 +581,8 @@ export function UpstreamModels() {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false)
   const [editingModel, setEditingModel] = useState<UserUpstreamModel | null>(null)
   const [deletingModel, setDeletingModel] = useState<UserUpstreamModel | null>(null)
+  // usageModel 记录当前正在查看使用情况的上游模型喵。
+  const [usageModel, setUsageModel] = useState<UserUpstreamModel | null>(null)
   // 正在执行嗅探或同步操作的模型 id，用于展示按钮加载态喵。
   const [balanceActionId, setBalanceActionId] = useState<number | null>(null)
   const upstreamModelsQuery = useQuery({
@@ -645,6 +755,15 @@ export function UpstreamModels() {
                   <Pencil className='size-3.5' />
                   {t('Edit')}
                 </Button>
+                <Button
+                  size='sm'
+                  variant='outline'
+                  onClick={() => setUsageModel(item)}
+                  title={t('View per-user usage of this shared model')}
+                >
+                  <Users className='size-3.5' />
+                  {t('Usage')}
+                </Button>
                 <Button size='sm' variant='outline' onClick={() => setDeletingModel(item)}>
                   <Trash2 className='size-3.5' />
                   {t('Delete')}
@@ -658,6 +777,13 @@ export function UpstreamModels() {
           open={isDrawerOpen}
           onOpenChange={setIsDrawerOpen}
           model={editingModel}
+        />
+
+        {/* 使用情况抽屉：展示该共享模型的每用户调用统计喵。 */}
+        <UpstreamModelUsageDrawer
+          open={Boolean(usageModel)}
+          onOpenChange={(open) => !open && setUsageModel(null)}
+          model={usageModel}
         />
 
       <AlertDialog open={Boolean(deletingModel)} onOpenChange={(open) => !open && setDeletingModel(null)}>

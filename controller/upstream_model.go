@@ -512,6 +512,27 @@ type upstreamModelStatusPayload struct {
 	Shared *upstreamModelStatusPayload `json:"shared,omitempty"`
 }
 
+// GetUpstreamModelUserUsage 返回某个共享上游模型按用户的共享调用使用情况喵。
+// 仅属主可查看，含 user id/用户名/请求数/token/最近调用喵。
+func GetUpstreamModelUserUsage(c *gin.Context) {
+	upstreamModelID, ok := parseUpstreamModelID(c)
+	if !ok {
+		return
+	}
+	// 属主校验：非属主一律按资源不存在处理喵。
+	upstreamModel, ok := loadOwnedUpstreamModel(c, upstreamModelID)
+	if !ok {
+		return
+	}
+	usage, usageError := model.GetSharedModelUserUsage(upstreamModel.ID, upstreamModel.OwnerUserID)
+	// 喵~防御：聚合失败返回通用错误，不阻塞其余管理功能喵。
+	if usageError != nil {
+		common.ApiError(c, usageError)
+		return
+	}
+	common.ApiSuccess(c, usage)
+}
+
 // GetUserUpstreamModelStatus 返回属主视角的上游模型状态（自用统计 + 最近一次）喵。
 // ?include_shared=true 时额外携带共享调用维度的聚合，供属主切换查看喵。
 func GetUserUpstreamModelStatus(c *gin.Context) {
@@ -544,7 +565,8 @@ func GetSharedUserUpstreamModelStatus(c *gin.Context) {
 		return
 	}
 	// 只有共享中（启用）的模型才可被共享使用者查询，否则统一按 404 处理喵。
-	upstreamModel, err := model.GetEnabledSharedUserUpstreamModelByName(normalizedName)
+	// 白名单/黑名单：被挡使用者同样按 404，避免泄露模型存在性喵。
+	upstreamModel, err := model.GetEnabledSharedUserUpstreamModelByName(normalizedName, c.GetInt("id"))
 	if err != nil {
 		upstreamModelNotFound(c)
 		return

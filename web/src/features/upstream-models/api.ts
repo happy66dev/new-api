@@ -38,6 +38,9 @@ export type UserUpstreamModel = {
   share_enabled: boolean
   share_limit_cents: number
   share_spent_cents: number
+  // 共享白名单/黑名单：逗号分隔的用户 id，非白名单或黑名单用户不可见不可调用喵。
+  share_whitelist: string
+  share_blacklist: string
   show_balance_enabled: boolean
   version: number
   created_time: number
@@ -71,6 +74,9 @@ export type UserUpstreamModelInput = {
   balance_check_path?: string
   share_enabled: boolean
   share_limit_cents: number
+  // 共享白名单/黑名单：逗号分隔的用户 id，编辑时可选喵。
+  share_whitelist?: string
+  share_blacklist?: string
   show_balance_enabled: boolean
   version?: number
 }
@@ -196,5 +202,23 @@ export async function syncUserUpstreamModelAvailable(
   id: number
 ): Promise<UserUpstreamModelApiResponse<{ available_cents: number; upstream_remaining_cents: number }>> {
   const response = await api.post(`/api/upstream-models/${id}/balance/sync-available`)
+  return response.data
+}
+
+// UpstreamModelUserUsage 是共享模型按用户聚合的使用情况单行喵。
+export type UpstreamModelUserUsage = {
+  user_id: number
+  username: string
+  request_count: number
+  prompt_tokens: number
+  completion_tokens: number
+  last_at: number
+}
+
+// getUpstreamModelUserUsage 查询共享上游模型按用户的使用情况，仅属主可访问喵。
+export async function getUpstreamModelUserUsage(
+  id: number
+): Promise<UserUpstreamModelApiResponse<UpstreamModelUserUsage[]>> {
+  const response = await api.get(`/api/upstream-models/${id}/usage`)
   return response.data
 }
