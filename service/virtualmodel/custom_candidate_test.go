@@ -164,7 +164,9 @@ func TestCustomStreamingPrecommitProbe(t *testing.T) {
 	}{
 		{name: "business content", stream: ": keepalive\ndata: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n", expected: ": keepalive\ndata: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n"},
 		{name: "upstream error", stream: "data: {\"error\":{\"message\":\"busy\"}}\n", expectError: true},
-		{name: "heartbeat only", stream: ": ping\ndata: ping\n", expectError: true},
+		// 已缓冲任何事件字节的流在 EOF 前结束都放流：兼容短回复、仅心跳或非标准 SSE 上游，仅零字节空响应判定故障喵。
+		{name: "heartbeat only", stream: ": ping\ndata: ping\n", expected: ": ping\ndata: ping\n"},
+		{name: "short content below threshold", stream: "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n", expected: "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n"},
 		{name: "empty stream", stream: "", expectError: true},
 	}
 	// 逐项使用同一个 buffered reader 验证探测结果可回放且错误不会提交任何响应字节喵。

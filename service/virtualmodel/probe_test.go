@@ -68,11 +68,18 @@ func TestProbeCustomStreamingResponseStallTimeout(t *testing.T) {
 	require.True(t, errors.Is(err, relaykitypes.ErrStalledStream))
 }
 
-// TestProbeCustomStreamingResponseEmptyStream 验证流在达门槛前结束视为空流失败喵。
+// TestProbeCustomStreamingResponseEmptyStream 验证仅零字节空响应判定空流失败喵。
+// 已缓冲任何事件字节（含 [DONE]）的流视为合法空回复放流，兼容上游返回空 choices 的场景喵。
 func TestProbeCustomStreamingResponseEmptyStream(t *testing.T) {
-	// 只有 [DONE] 事件的行在探测阶段被跳过，EOF 后内容不足判定空流喵。
+	// 仅 [DONE] 事件：缓冲非空，按新语义放流为空回复喵。
 	reader := bufio.NewReader(strings.NewReader("data: [DONE]\n"))
-	_, err := probeCustomStreamingResponse(reader, ProbeParameters{StallTimeoutSeconds: 60, MinContentChars: 10, ProbeTotalTimeoutSeconds: 60})
+	precommitBytes, err := probeCustomStreamingResponse(reader, ProbeParameters{StallTimeoutSeconds: 60, MinContentChars: 10, ProbeTotalTimeoutSeconds: 60})
+	require.NoError(t, err)
+	require.Equal(t, "data: [DONE]\n", string(precommitBytes))
+
+	// 零字节空响应：没有任何可回放字节，判定空流故障喵。
+	emptyReader := bufio.NewReader(strings.NewReader(""))
+	_, err = probeCustomStreamingResponse(emptyReader, ProbeParameters{StallTimeoutSeconds: 60, MinContentChars: 10, ProbeTotalTimeoutSeconds: 60})
 	require.Error(t, err)
 }
 

@@ -176,7 +176,11 @@ func probeCustomStreamingResponse(responseReader *bufio.Reader, params ProbePara
 		}
 		if readError != nil {
 			if errors.Is(readError, io.EOF) {
-				// 喵~防御：流在达到内容门槛前结束视为空流，不提交给客户端喵。
+				// 喵~防御：流在达到内容门槛前结束但已缓冲任何事件字节时视为成功放流，
+				// 兼容短回复、仅心跳或非标准 SSE 的上游；仅零字节空响应判定故障喵。
+				if len(bufferedBytes) > 0 {
+					return bufferedBytes, nil
+				}
 				return nil, errors.New("custom upstream returned an empty streaming response")
 			}
 			return nil, readError
