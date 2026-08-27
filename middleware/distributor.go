@@ -794,12 +794,28 @@ func recordVirtualModelProbeSuccess(c *gin.Context, executionState *virtualModel
 		extras.InputTokens = int64(usage.PromptTokens)
 		extras.OutputTokens = int64(usage.CompletionTokens)
 		extras.CachedTokens = int64(usage.PromptTokensDetails.CachedTokens)
+		// 诊断日志：成功调用却输出 token 为零时输出上游 usage 明细，定位虚拟模型输出 token 丢失问题喵。
+		if usage.CompletionTokens == 0 && usage.OutputTokens == 0 {
+			common.SysError(fmt.Sprintf("virtual model probe success with zero output tokens: model=%s candidate=%d prompt=%d completion=%d input=%d output=%d", executionState.virtualModelName, candidateID, usage.PromptTokens, usage.CompletionTokens, usage.InputTokens, usage.OutputTokens))
+		}
 	}
-	executionState.successExtras = extras
 	// 候选延迟取请求级基准（请求入口到本次探测），与整体延迟口径一致喵。
 	latencyMs := time.Since(executionState.startTime).Milliseconds()
+	// 输出 token 吞吐需要生成时长（首字节后耗时）：有 TTFT 时近似为 latency - ttft，否则取总延迟，与内部模型语义对齐喵。
+	extras.GenerationMs = virtualModelGenerationMs(latencyMs, ttftMs)
+	executionState.successExtras = extras
 	recordVirtualModelCandidateProbe(c, executionState, candidateID, true, "", latencyMs)
 	RecordVirtualModelOverallProbe(c, true, "")
+}
+
+// virtualModelGenerationMs 计算虚拟模型探测样本的生成时长（毫秒），供输出 token 吞吐统计使用喵。
+// 有 TTFT 时近似为 latency - ttft，否则取总延迟，与内部模型语义对齐喵。
+func virtualModelGenerationMs(latencyMs int64, ttftMs int64) int64 {
+	generationMs := latencyMs
+	if ttftMs > 0 && latencyMs > ttftMs {
+		generationMs = latencyMs - ttftMs
+	}
+	return generationMs
 }
 
 // ApplyVirtualModelSuccessProbe 从 context 读取内部候选成功结算的 usage，并携带 TTFT 填充整体探测样本喵。
@@ -823,6 +839,8 @@ func ApplyVirtualModelSuccessProbe(c *gin.Context, ttftMs int64) {
 		extras.TtftMs = ttftMs
 		extras.HasTtft = true
 	}
+	// 输出 token 吞吐需要生成时长（首字节后耗时）：有 TTFT 时近似为 latency - ttft，否则取总延迟，与内部模型语义对齐喵。
+	extras.GenerationMs = virtualModelGenerationMs(time.Since(executionState.startTime).Milliseconds(), ttftMs)
 	executionState.successExtras = extras
 }
 

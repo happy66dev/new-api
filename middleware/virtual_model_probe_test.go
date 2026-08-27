@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -72,6 +73,7 @@ func TestRecordVirtualModelOverallProbe(t *testing.T) {
 func TestRecordVirtualModelProbeSuccessCarriesUsage(t *testing.T) {
 	newProbeTestDB(t)
 	executionState := newProbeTestState()
+	executionState.startTime = time.Now().Add(-200 * time.Millisecond)
 	executionState.executionSnapshot.Candidates = []model.VirtualModelCandidateSnapshot{
 		{CandidateID: 71, VirtualModelID: 9, RealModelName: "gpt-probe"},
 	}
@@ -83,12 +85,14 @@ func TestRecordVirtualModelProbeSuccessCarriesUsage(t *testing.T) {
 	usage := &dto.Usage{PromptTokens: 100, CompletionTokens: 20, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 30}}
 	recordVirtualModelProbeSuccess(ctx, executionState, 71, usage, 88)
 
-	// 成功样本应携带输入/输出/缓存 token 与 TTFT 喵。
+	// 成功样本应携带输入/输出/缓存 token、TTFT 与生成时长（输出 token 吞吐的前提）喵。
 	require.Equal(t, int64(100), executionState.successExtras.InputTokens)
 	require.Equal(t, int64(20), executionState.successExtras.OutputTokens)
 	require.Equal(t, int64(30), executionState.successExtras.CachedTokens)
 	require.Equal(t, int64(88), executionState.successExtras.TtftMs)
 	require.True(t, executionState.successExtras.HasTtft)
+	// 生成时长 = 总延迟（约 200ms）- TTFT(88)，大于零才会进入输出 token 桶喵。
+	require.Greater(t, executionState.successExtras.GenerationMs, int64(0))
 
 	// 候选与整体状态行应记录成功喵。
 	candidateState, candidateErr := model.GetEntityProbeState(model.EntityProbeScopeVirtualCandidate, 71)
@@ -103,6 +107,7 @@ func TestRecordVirtualModelProbeSuccessCarriesUsage(t *testing.T) {
 func TestApplyVirtualModelSuccessProbe(t *testing.T) {
 	newProbeTestDB(t)
 	executionState := newProbeTestState()
+	executionState.startTime = time.Now().Add(-200 * time.Millisecond)
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	common.SetContextKey(ctx, constant.ContextKeyVirtualModelExecutionState, executionState)
 
@@ -110,6 +115,8 @@ func TestApplyVirtualModelSuccessProbe(t *testing.T) {
 	ApplyVirtualModelSuccessProbe(ctx, 77)
 	require.Equal(t, int64(77), executionState.successExtras.TtftMs)
 	require.True(t, executionState.successExtras.HasTtft)
+	// 生成时长 = 总延迟（约 200ms）- TTFT(77)，大于零才会进入输出 token 桶喵。
+	require.Greater(t, executionState.successExtras.GenerationMs, int64(0))
 
 	// 带 usage 的 context 覆盖 token 喵。
 	common.SetContextKey(ctx, constant.ContextKeyVirtualModelSuccessUsage, &dto.Usage{PromptTokens: 50, CompletionTokens: 5, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 2}})
@@ -117,6 +124,8 @@ func TestApplyVirtualModelSuccessProbe(t *testing.T) {
 	require.Equal(t, int64(50), executionState.successExtras.InputTokens)
 	require.Equal(t, int64(5), executionState.successExtras.OutputTokens)
 	require.Equal(t, int64(2), executionState.successExtras.CachedTokens)
+	// 无 TTFT 时生成时长回退为总延迟，仍大于零喵。
+	require.Greater(t, executionState.successExtras.GenerationMs, int64(0))
 }
 
 // TestRecordVirtualModelCandidateProbe 验证候选节点状态记录喵。
@@ -173,4 +182,45 @@ func TestAdvanceVirtualModelAfterNativeFailureRecordsProbe(t *testing.T) {
 	require.NoError(t, overallErr)
 	require.Equal(t, int64(1), overallState.RequestCount)
 	require.False(t, overallState.LastSuccess)
+}
+
+// TestVirtualModelGenerationMs 验证生成时长口径：有 TTFT 时 latency - ttft，否则取总延迟喵。
+func TestVirtualModelGenerationMs(t *testing.T) {
+	require.Equal(t, int64(70), virtualModelGenerationMs(100, 30))
+	require.Equal(t, int64(100), virtualModelGenerationMs(100, 0))
+	// TTFT 异常大于总延迟时回退总延迟，避免生成时长为负喵。
+	require.Equal(t, int64(30), virtualModelGenerationMs(30, 100))
+}
+
+// TestRecordVirtualModelProbeSuccessAccumulatesOutputTokens 验证成功探测的输出 token 真的进入桶喵。
+// 回归：此前缺 GenerationMs，atomicBucket.add 的 outputTokens 累计被跳过，导致运行状态 Output 恒 0 喵。
+func TestRecordVirtualModelProbeSuccessAccumulatesOutputTokens(t *testing.T) {
+	newProbeTestDB(t)
+	// 初始化 group 列名（commonGroupCol），富系列聚合的 WHERE 条件依赖它喵。
+	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	require.NoError(t, model.InitLogDB())
+	// 富系列聚合会查询 perf_metrics 表，测试库补建该表喵。
+	require.NoError(t, model.DB.AutoMigrate(&model.PerfMetric{}))
+
+	executionState := newProbeTestState()
+	executionState.startTime = time.Now().Add(-200 * time.Millisecond)
+	executionState.executionSnapshot.Candidates = []model.VirtualModelCandidateSnapshot{
+		{CandidateID: 72, VirtualModelID: 9, RealModelName: "gpt-probe"},
+	}
+	executionState.currentCandidateIndex = 0
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	common.SetContextKey(ctx, constant.ContextKeyVirtualModelExecutionState, executionState)
+
+	// 带输入/输出/缓存 token 的成功调用喵。
+	usage := &dto.Usage{PromptTokens: 100, CompletionTokens: 20, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 30}}
+	recordVirtualModelProbeSuccess(ctx, executionState, 72, usage, 88)
+
+	// 候选层富系列聚合应累计输出 token（输入 100 + 输出 20）喵。
+	detailed, err := perfmetrics.QueryEntityProbeStatusDetailed("vm-probe/candidate/72", perfmetrics.EntityProbeGroupSelf, 1)
+	require.NoError(t, err)
+	require.Len(t, detailed.Series, 1)
+	require.Equal(t, int64(20), detailed.Series[0].OutputTokens)
+	require.Equal(t, int64(100), detailed.Series[0].InputTokens)
+	require.Equal(t, int64(30), detailed.Series[0].CachedTokens)
+	require.Equal(t, int64(120), detailed.TotalTokens)
 }
