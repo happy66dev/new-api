@@ -7,7 +7,7 @@
  License, or (at your option) any later version.
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import { api } from '@/lib/api'
@@ -21,9 +21,10 @@ vi.mock('@/lib/use-chart-theme', () => ({
 import { UpstreamModelUsageDrawer } from '../index'
 import type { UserUpstreamModel } from '../api'
 
-// 模拟 api.get 让使用情况接口返回在测试里可控喵。
-const apiClient = api as unknown as { get: (...args: unknown[]) => Promise<unknown> }
+// 模拟 api.get/delete 让使用情况接口与清空接口在测试里可控喵。
+const apiClient = api as unknown as { get: (...args: unknown[]) => Promise<unknown>; delete: (...args: unknown[]) => Promise<unknown> }
 const originalGet = apiClient.get
+const originalDelete = apiClient.delete
 
 // sharedModelFixture 是一个已开启共享的上游模型行喵。
 const sharedModelFixture: UserUpstreamModel = {
@@ -79,8 +80,9 @@ function renderUsage() {
 }
 
 afterEach(() => {
-  // 恢复 api.get 原始实现，避免用例间互相污染喵。
+  // 恢复 api.get/delete 原始实现，避免用例间互相污染喵。
   apiClient.get = originalGet
+  apiClient.delete = originalDelete
 })
 
 describe('UpstreamModelUsageDrawer', () => {
@@ -120,5 +122,30 @@ describe('UpstreamModelUsageDrawer', () => {
     apiClient.get = vi.fn().mockResolvedValue({ data: { success: true, data: [] } })
     renderUsage()
     expect(await screen.findByText(/user\/usage-model/)).toBeInTheDocument()
+  })
+
+  test('clears shared usage after a confirmation dialog', async () => {
+    // 模拟使用情况返回一行数据，让清空按钮可用喵。
+    apiClient.get = vi.fn().mockResolvedValue({
+      data: { success: true, data: [{ user_id: 8, username: 'user8', request_count: 2, prompt_tokens: 150, completion_tokens: 30, last_at: 2000 }] },
+    })
+    // 模拟清空接口成功喵。
+    const deleteMock = vi.fn().mockResolvedValue({ data: { success: true, data: { id: 5 } } })
+    apiClient.delete = deleteMock
+    renderUsage()
+    // 先等待数据渲染完成，确保清空按钮解除禁用喵。
+    expect(await screen.findByText('user8')).toBeInTheDocument()
+    // 点击清空按钮打开二次确认对话框喵。
+    fireEvent.click(screen.getByText('Clear usage'))
+    // 二次确认对话框出现，点确认清空喵。
+    fireEvent.click(await screen.findByText('Clear'))
+    // 断言清空接口被调用且路径含模型 id 喵。
+    await waitFor(() => {
+      expect(deleteMock).toHaveBeenCalledWith('/api/upstream-models/5/usage')
+    })
+    // 清空成功后抽屉通过 invalidate 重新拉取使用情况，get 应至少被调用两次喵。
+    await waitFor(() => {
+      expect(apiClient.get).toHaveBeenCalledTimes(2)
+    })
   })
 })

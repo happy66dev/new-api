@@ -225,3 +225,11 @@ export async function getUpstreamModelUserUsage(
   const response = await api.get(`/api/upstream-models/${id}/usage`)
   return response.data
 }
+
+// clearUpstreamModelUserUsage 清空共享上游模型的按用户使用记录，仅属主可访问喵。
+export async function clearUpstreamModelUserUsage(
+  id: number
+): Promise<UserUpstreamModelApiResponse<{ id: number }>> {
+  const response = await api.delete(`/api/upstream-models/${id}/usage`)
+  return response.data
+}

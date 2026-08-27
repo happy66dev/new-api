@@ -533,6 +533,28 @@ func GetUpstreamModelUserUsage(c *gin.Context) {
 	common.ApiSuccess(c, usage)
 }
 
+// ClearUpstreamModelUserUsage 清空某个共享上游模型的按用户使用记录喵。
+// 仅属主可操作；同时清日志、共享维度统计与内存热桶残留喵。
+func ClearUpstreamModelUserUsage(c *gin.Context) {
+	upstreamModelID, ok := parseUpstreamModelID(c)
+	if !ok {
+		return
+	}
+	// 属主校验：非属主一律按资源不存在处理喵。
+	upstreamModel, ok := loadOwnedUpstreamModel(c, upstreamModelID)
+	if !ok {
+		return
+	}
+	// 清空日志、共享维度统计与状态行喵。
+	if err := model.DeleteSharedModelUserUsage(upstreamModel.ID, upstreamModel.OwnerUserID); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	// 清理内存热桶中尚未落库的共享维度样本，保证清空立即生效喵。
+	perfmetrics.ClearEntityProbeHotBucket(upstreamModel.UserUpstreamModelName(), perfmetrics.EntityProbeGroupShared)
+	common.ApiSuccess(c, gin.H{"id": upstreamModel.ID})
+}
+
 // GetUserUpstreamModelStatus 返回属主视角的上游模型状态（自用统计 + 最近一次）喵。
 // ?include_shared=true 时额外携带共享调用维度的聚合，供属主切换查看喵。
 func GetUserUpstreamModelStatus(c *gin.Context) {

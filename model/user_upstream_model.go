@@ -416,6 +416,34 @@ func fillSharedModelUsernames(rows []SharedModelUserUsage) {
 	}
 }
 
+// DeleteSharedModelUserUsage 清空某个共享上游模型的按用户使用记录喵。
+// 属主校验由控制器负责，这里按模型编号与属主归属查询；清空日志、共享维度统计与内存热桶喵。
+func DeleteSharedModelUserUsage(upstreamModelID int64, ownerUserID int) error {
+	// 喵~防御：无效参数直接返回记录不存在，避免空值进入删除喵。
+	if upstreamModelID <= 0 || ownerUserID <= 0 {
+		return gorm.ErrRecordNotFound
+	}
+	// 先定位属主名下模型，防止越权清空他人模型的日志喵。
+	upstreamModel, err := GetUserUpstreamModelByOwnerID(upstreamModelID, ownerUserID)
+	if err != nil {
+		return err
+	}
+	modelName := upstreamModel.UserUpstreamModelName()
+	// 删除共享调用日志（type=8 且 group=user-shared），即使用情况聚合的数据源喵。
+	if err := LOG_DB.Where("model_name = ? AND "+commonGroupCol+" = ? AND type = ?", modelName, constant.GroupUserShared, LogTypeCustomUpstream).Delete(&Log{}).Error; err != nil {
+		return err
+	}
+	// 删除共享维度 perf_metrics 落库桶，避免状态卡片残留历史数据喵。
+	if err := DB.Where("model_name = ? AND "+commonGroupCol+" = ?", modelName, EntityProbeSharedGroupName).Delete(&PerfMetric{}).Error; err != nil {
+		return err
+	}
+	// 删除共享维度状态行（最近一次调用），与删除模型时的联动清理范围一致喵。
+	if err := DB.Where("scope = ? AND entity_id = ?", EntityProbeScopeUpstreamShared, upstreamModelID).Delete(&EntityProbeState{}).Error; err != nil {
+		return err
+	}
+	return nil
+}
+
 // DeductUserUpstreamModelCharge 请求后按实际费用扣减三个递减账户，事务加行锁防止并发超扣喵。
 // isShared 为 true 时扣「余额+可用+共享」，为 false 时扣「余额+可用」喵。
 func DeductUserUpstreamModelCharge(upstreamModelID int64, ownerUserID int, costCents int64, isShared bool) error {

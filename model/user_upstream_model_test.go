@@ -337,6 +337,38 @@ func TestGetSharedModelUserUsage(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestDeleteSharedModelUserUsage 验证清空共享模型使用记录后日志与统计归零喵。
+func TestDeleteSharedModelUserUsage(t *testing.T) {
+	truncateTables(t)
+	require.NoError(t, DB.AutoMigrate(&UserUpstreamModel{}, &PerfMetric{}, &EntityProbeState{}))
+	require.NoError(t, DB.Exec("DELETE FROM user_upstream_models").Error)
+	require.NoError(t, LOG_DB.Exec("DELETE FROM logs").Error)
+	require.NoError(t, LOG_DB.Exec("DELETE FROM users").Error)
+
+	// 属主 7 的共享模型与一条共享调用日志喵。
+	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "clear-usage", Enabled: true, ShareEnabled: true, BalanceCents: 100, AvailableCents: 100, ShareLimitCents: 1000}).Error)
+	var created UserUpstreamModel
+	require.NoError(t, DB.Where("normalized_name = ?", "clear-usage").First(&created).Error)
+	require.NoError(t, LOG_DB.Create(&Log{UserId: 8, Username: "user8", Type: LogTypeCustomUpstream, ModelName: "user/clear-usage", Group: constant.GroupUserShared, PromptTokens: 100, CompletionTokens: 20, CreatedAt: 1000}).Error)
+
+	// 清空前能聚合出使用情况喵。
+	usage, usageErr := GetSharedModelUserUsage(created.ID, 7)
+	require.NoError(t, usageErr)
+	require.Len(t, usage, 1)
+
+	// 属主清空成功，日志与统计归零喵。
+	require.NoError(t, DeleteSharedModelUserUsage(created.ID, 7))
+	usage, usageErr = GetSharedModelUserUsage(created.ID, 7)
+	require.NoError(t, usageErr)
+	require.Empty(t, usage)
+
+	// 非属主清空被拒，防越权删除他人日志喵。
+	require.Error(t, DeleteSharedModelUserUsage(created.ID, 8))
+	// 无效参数清空被拒喵。
+	require.Error(t, DeleteSharedModelUserUsage(0, 7))
+	require.Error(t, DeleteSharedModelUserUsage(created.ID, 0))
+}
+
 // TestGetSharedUserUpstreamModelByNormalizedName 验证共享命名池查询：共享开启才占用名字喵。
 func TestGetSharedUserUpstreamModelByNormalizedName(t *testing.T) {
 	truncateTables(t)

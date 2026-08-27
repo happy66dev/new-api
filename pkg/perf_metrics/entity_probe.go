@@ -41,6 +41,26 @@ type EntityProbeExtras struct {
 	CacheCreation1hTokens int64
 }
 
+// ClearEntityProbeHotBucket 清空某个实体分组在内存热桶中的全部桶，供「清空使用记录」时同步清掉尚未落库的残留喵。
+func ClearEntityProbeHotBucket(modelName string, group string) {
+	// 喵~防御：空模型名直接返回，避免误删所有桶喵。
+	if modelName == "" {
+		return
+	}
+	hotBuckets.Range(func(key, value any) bool {
+		bucket := key.(bucketKey)
+		// 只删除匹配模型与分组的桶；group 为空表示不限定分组喵。
+		if bucket.model != modelName {
+			return true
+		}
+		if group != "" && bucket.group != group {
+			return true
+		}
+		hotBuckets.Delete(key)
+		return true
+	})
+}
+
 // RecordEntityProbe 记录一次实体真实调用的被动统计（自用维度）喵。
 // 直接复用 perf_metrics.Record，跟随 perf_metrics_setting 的 Enabled 开关，不新增独立开关喵。
 func RecordEntityProbe(modelName string, latencyMs int64, success bool, extras EntityProbeExtras) {

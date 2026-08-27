@@ -17,6 +17,8 @@ const (
 	EntityProbeScopeVirtual = "virtual"
 	// EntityProbeScopeVirtualCandidate 虚拟模型候选节点喵。
 	EntityProbeScopeVirtualCandidate = "virtual_candidate"
+	// EntityProbeSharedGroupName 实体探测共享维度在 perf_metrics 表的固定分组名，与 perf_metrics 包常量对齐喵。
+	EntityProbeSharedGroupName = "__entity_probe_shared__"
 )
 
 // EntityProbeState 存储单个被检测实体的最近一次调用与累计计数喵。

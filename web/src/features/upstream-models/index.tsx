@@ -42,6 +42,7 @@ import { EntityPerformanceDrawer } from '@/features/status-check/entity-performa
 
 import {
   checkUserUpstreamModelBalance,
+  clearUpstreamModelUserUsage,
   createUserUpstreamModel,
   deleteUserUpstreamModel,
   getUpstreamModelStatus,
@@ -511,6 +512,7 @@ export function UpstreamModelUsageDrawer({
   model: UserUpstreamModel | null
 }) {
   const { t } = useTranslation()
+  const queryClient = useQueryClient()
   // 以模型 id 为键拉取使用情况，仅在抽屉打开且选中模型时请求喵。
   const usageQuery = useQuery({
     queryKey: ['upstream-model-usage', model?.id],
@@ -521,6 +523,32 @@ export function UpstreamModelUsageDrawer({
   })
   // 喵~防御：接口失败或无数据时按空列表处理，避免空指针喵。
   const usage: UpstreamModelUserUsage[] = usageQuery.data?.data ?? []
+  // isClearConfirmOpen 控制清空记录的二次确认对话框喵。
+  const [isClearConfirmOpen, setIsClearConfirmOpen] = useState(false)
+  // isClearing 标记清空请求进行中，禁用按钮避免重复提交喵。
+  const [isClearing, setIsClearing] = useState(false)
+
+  // handleClearUsage 清空共享使用记录并刷新当前抽屉数据喵。
+  const handleClearUsage = async () => {
+    // 喵~防御：没有选中模型时不执行清空喵。
+    if (!model) return
+    setIsClearing(true)
+    try {
+      const response = await clearUpstreamModelUserUsage(model.id)
+      // 喵~防御：业务失败必须展示后端消息喵。
+      if (!response.success) {
+        throw new Error(response.message || t('Unable to clear shared usage'))
+      }
+      toast.success(t('Shared usage cleared'))
+      setIsClearConfirmOpen(false)
+      void queryClient.invalidateQueries({ queryKey: ['upstream-model-usage', model.id] })
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('Unable to clear shared usage'))
+    } finally {
+      setIsClearing(false)
+    }
+  }
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className={sideDrawerContentClassName('max-w-none sm:!max-w-[640px]')}>
@@ -568,7 +596,34 @@ export function UpstreamModelUsageDrawer({
         </div>
         <SheetFooter className={sideDrawerFooterClassName()}>
           <SheetClose render={<Button variant='outline' className='w-full sm:w-auto' />}>{t('Close')}</SheetClose>
+          {/* 清空记录按钮：二次确认后删除全部共享调用统计喵。 */}
+          <Button
+            type='button'
+            variant='destructive'
+            className='w-full sm:w-auto'
+            disabled={isClearing || usage.length === 0}
+            onClick={() => setIsClearConfirmOpen(true)}
+          >
+            {isClearing ? t('Clearing') : t('Clear usage')}
+          </Button>
         </SheetFooter>
+        {/* 清空记录二次确认对话框喵。 */}
+        <AlertDialog open={isClearConfirmOpen} onOpenChange={setIsClearConfirmOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{t('Clear shared usage')}</AlertDialogTitle>
+              <AlertDialogDescription>
+                {t('This will permanently delete all shared usage records for this model. This action cannot be undone.')}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={isClearing}>{t('Cancel')}</AlertDialogCancel>
+              <AlertDialogAction onClick={() => void handleClearUsage()} disabled={isClearing}>
+                {isClearing ? t('Clearing') : t('Clear')}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </SheetContent>
     </Sheet>
   )
