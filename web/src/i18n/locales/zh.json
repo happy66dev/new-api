@@ -6150,6 +6150,7 @@
     "Unable to sync upstream model balance": "无法同步上游余额",
     "Unable to sync upstream model available": "无法同步可用额度",
     "Check remaining quota from upstream": "从上游嗅探剩余额度",
+    "Sync checked remaining quota into balance": "把嗅探到的剩余额度同步为余额",
     "Sync checked remaining quota into available balance": "把嗅探到的剩余额度同步为可用余额",
     "Sync checked remaining quota into available": "把嗅探到的剩余额度同步为可用额度",
     "Shared remaining": "共享剩余",

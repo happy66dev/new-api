@@ -6150,6 +6150,7 @@
     "Unable to sync upstream model balance": "Unable to sync upstream model balance",
     "Unable to sync upstream model available": "Unable to sync upstream model available",
     "Check remaining quota from upstream": "Check remaining quota from upstream",
+    "Sync checked remaining quota into balance": "Sync checked remaining quota into balance",
     "Sync checked remaining quota into available balance": "Sync checked remaining quota into available balance",
     "Sync checked remaining quota into available": "Sync checked remaining quota into available",
     "Shared remaining": "Shared remaining",
