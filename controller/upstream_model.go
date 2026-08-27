@@ -26,6 +26,8 @@ type upstreamModelInput struct {
 	APIKey               string `json:"api_key"`
 	RealModelName        string `json:"real_model_name"`
 	AuthStyle            string `json:"auth_style"`
+	// TimeoutSeconds 自用调用超时，单位：秒；零表示使用默认 60 秒喵。
+	TimeoutSeconds       int    `json:"timeout_seconds"`
 	CustomHeaders        string `json:"custom_headers"`
 	FieldReplacements    string `json:"field_replacements"`
 	ModelRatio           string `json:"model_ratio"`
@@ -177,6 +179,11 @@ func saveUpstreamModelFields(input upstreamModelInput, ownerUserID int, existing
 		return err
 	}
 	existing.CustomHeaders = input.CustomHeaders
+	// 喵~防御：超时必须在安全范围内，零表示使用默认 60 秒喵。
+	if input.TimeoutSeconds < 0 || input.TimeoutSeconds > 600 {
+		return errors.New("超时必须在 0 到 600 秒之间")
+	}
+	existing.TimeoutSeconds = input.TimeoutSeconds
 	// 字段替换映射表必须可通过安全校验（禁止 messages 路径），否则拒绝保存喵。
 	if err := virtualmodelservice.ValidateFieldReplacementsJSON(input.FieldReplacements); err != nil {
 		return err

@@ -52,3 +52,49 @@ func TestValidateSharedNameGlobalUniqueness(t *testing.T) {
 	require.NoError(t, model.DB.Model(&model.UserUpstreamModel{}).Where("id = ?", 1).Update("share_enabled", false).Error)
 	require.NoError(t, validateSharedNameGlobalUniqueness(8, "alpha", 0))
 }
+
+// TestSaveUpstreamModelFieldsTimeoutBounds 验证自用上游模型超时秒数的边界校验喵。
+func TestSaveUpstreamModelFieldsTimeoutBounds(t *testing.T) {
+	// 复用自建内存库避免依赖全局 model.DB 喵。
+	oldDB := model.DB
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	model.DB = db
+	// 喵~防御：清理时关闭自建库并恢复调用前的全局 DB，避免污染同包后续测试喵。
+	t.Cleanup(func() {
+		sqlDB, dbErr := db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+		model.DB = oldDB
+	})
+	require.NoError(t, db.AutoMigrate(&model.UserUpstreamModel{}))
+
+	// 每次保存前重建既有模型对象，避免 saveUpstreamModelFields 递增版本触发乐观锁冲突喵。
+	newExisting := func() *model.UserUpstreamModel {
+		return &model.UserUpstreamModel{ID: 1, Version: 1}
+	}
+	validInput := upstreamModelInput{
+		NormalizedName: "timeout-model",
+		DisplayName:    "Timeout Model",
+		RealModelName:  "gpt-4o",
+		AuthStyle:      "bearer",
+		Version:        1,
+	}
+	// 零值表示沿用默认 60 秒，必须允许保存喵。
+	validInput.TimeoutSeconds = 0
+	zeroExisting := newExisting()
+	require.NoError(t, saveUpstreamModelFields(validInput, 7, zeroExisting))
+	require.Equal(t, 0, zeroExisting.TimeoutSeconds)
+	// 合法上界 600 秒允许保存喵。
+	validInput.TimeoutSeconds = 600
+	maxExisting := newExisting()
+	require.NoError(t, saveUpstreamModelFields(validInput, 7, maxExisting))
+	require.Equal(t, 600, maxExisting.TimeoutSeconds)
+	// 喵~防御：负数与超过 600 秒的超时必须拒绝保存喵。
+	invalidInput := validInput
+	invalidInput.TimeoutSeconds = -1
+	require.Error(t, saveUpstreamModelFields(invalidInput, 7, newExisting()))
+	invalidInput.TimeoutSeconds = 601
+	require.Error(t, saveUpstreamModelFields(invalidInput, 7, newExisting()))
+}

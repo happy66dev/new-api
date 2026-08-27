@@ -6179,6 +6179,9 @@
     "Upstream model performance over the last 24 hours": "Upstream model performance over the last 24 hours",
     "No token usage data available": "No token usage data available",
     "Seconds before a candidate is judged timed out (default: candidate timeout)": "Seconds before a candidate is judged timed out (default: candidate timeout)",
-    "Failure rule {{index}} timeout must be between 0 and 600 seconds": "Failure rule {{index}} timeout must be between 0 and 600 seconds"
+    "Failure rule {{index}} timeout must be between 0 and 600 seconds": "Failure rule {{index}} timeout must be between 0 and 600 seconds",
+    "0 = default 60 seconds": "0 = default 60 seconds",
+    "Seconds before an upstream request is judged timed out": "Seconds before an upstream request is judged timed out",
+    "Timeout must be between 0 and 600 seconds": "Timeout must be between 0 and 600 seconds"
   }
 }

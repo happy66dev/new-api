@@ -34,6 +34,8 @@ type UserUpstreamModel struct {
 	CredentialVersion  int    `json:"-"`
 	RealModelName      string `json:"real_model_name" gorm:"type:varchar(128)"`
 	AuthStyle          string `json:"auth_style" gorm:"type:varchar(32)"`
+	// TimeoutSeconds 自用调用超时，单位：秒；零表示使用默认 60 秒喵。
+	TimeoutSeconds int `json:"timeout_seconds"`
 	// 自定义请求头：结构化 JSON，如 {"*": true, "User-Agent": "Kilo-Code/7.3.50"}，* 表示对全部请求生效喵。
 	// 认证头与 hop-by-hop 头禁止设置（由 auth_style 与代理语义管理），其余键会覆盖客户端同名头喵。
 	CustomHeaders string `json:"custom_headers" gorm:"type:text"`

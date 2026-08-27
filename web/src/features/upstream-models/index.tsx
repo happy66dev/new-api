@@ -130,6 +130,8 @@ function UpstreamModelDrawer({
   // 请求定制：自定义请求头与字段替换的 JSON 文本，保存时校验合法性喵。
   const [customHeadersJSON, setCustomHeadersJSON] = useState('')
   const [fieldReplacementsJSON, setFieldReplacementsJSON] = useState('')
+  // timeoutSeconds 自用调用超时（秒），空串表示使用默认 60 秒喵。
+  const [timeoutSeconds, setTimeoutSeconds] = useState('')
   const [isSaving, setIsSaving] = useState(false)
 
   // 打开状态或编辑对象变化时重置本地草稿，避免把上一次字段带入新模型喵。
@@ -175,6 +177,8 @@ function UpstreamModelDrawer({
     setShowBalanceEnabled(model?.show_balance_enabled ?? false)
     setCustomHeadersJSON(model?.custom_headers ?? '')
     setFieldReplacementsJSON(model?.field_replacements ?? '')
+    // 超时秒数回填，零视为默认显示空串喵。
+    setTimeoutSeconds(model?.timeout_seconds && model.timeout_seconds > 0 ? String(model.timeout_seconds) : '')
   }, [model, open])
 
   // saveModel 校验并保存用户上游模型，成功后刷新列表喵。
@@ -205,6 +209,16 @@ function UpstreamModelDrawer({
       toast.error(t('Request customization JSON is invalid'))
       return
     }
+    // 喵~防御：超时秒数必须是非负整数且不超过 600，空串表示使用默认 60 秒喵。
+    let resolvedTimeoutSeconds = 0
+    if (timeoutSeconds.trim() !== '') {
+      const parsedTimeout = Number(timeoutSeconds)
+      if (!Number.isInteger(parsedTimeout) || parsedTimeout < 0 || parsedTimeout > 600) {
+        toast.error(t('Timeout must be between 0 and 600 seconds'))
+        return
+      }
+      resolvedTimeoutSeconds = parsedTimeout
+    }
     // 组装创建或更新请求载荷，编辑模式携带版本号做乐观并发控制喵。
     const input: UserUpstreamModelInput = {
       normalized_name: trimmedNormalizedName,
@@ -215,6 +229,7 @@ function UpstreamModelDrawer({
       api_key: apiKey,
       real_model_name: realModelName.trim(),
       auth_style: authStyle,
+      timeout_seconds: resolvedTimeoutSeconds,
       custom_headers: trimmedCustomHeaders,
       field_replacements: trimmedFieldReplacements,
       model_ratio: modelRatio,
@@ -352,6 +367,13 @@ function UpstreamModelDrawer({
               icon={<Settings2 className='size-4' />}
               iconTone='info'
             />
+            <label className='grid gap-1 text-sm font-medium'>
+              {t('Timeout seconds')}
+              <Input inputMode='numeric' value={timeoutSeconds} disabled={isSaving} placeholder={t('0 = default 60 seconds')} onChange={(event) => setTimeoutSeconds(event.target.value)} />
+              <span className='text-muted-foreground text-xs'>
+                {t('Seconds before an upstream request is judged timed out')}
+              </span>
+            </label>
             <div className='flex items-center justify-between gap-3'>
               <span className='text-sm font-medium'>{t('Custom request headers')}</span>
               <Button

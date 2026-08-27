@@ -109,12 +109,17 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 		abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "user upstream model is not available", types.ErrorCode("upstream_model_unavailable"))
 		return false
 	}
+	// 超时：模型配置了超时秒数时使用配置值，否则回退默认 60 秒喵。
+	requestTimeoutSeconds := userUpstreamModelDefaultTimeoutSeconds
+	if upstreamModel.TimeoutSeconds > 0 {
+		requestTimeoutSeconds = upstreamModel.TimeoutSeconds
+	}
 	executionResult := virtualmodelservice.ExecuteUserUpstreamModel(c, virtualmodelservice.CustomCandidateExecutionInput{
 		BaseURL:        baseURL,
 		APIKey:         apiKey,
 		RealModelName:  upstreamModel.RealModelName,
 		AuthStyle:      model.VirtualModelAuthStyle(upstreamModel.AuthStyle),
-		TimeoutSeconds: userUpstreamModelDefaultTimeoutSeconds,
+		TimeoutSeconds: requestTimeoutSeconds,
 		// 请求定制：自定义请求头与字段替换随模型配置传入，供透传时应用喵。
 		CustomHeaders:     upstreamModel.CustomHeaders,
 		FieldReplacements: upstreamModel.FieldReplacements,
