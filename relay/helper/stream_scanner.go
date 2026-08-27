@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
@@ -74,10 +75,12 @@ func ExtendWriteDeadline(c *gin.Context) {
 	_ = http.NewResponseController(c.Writer).SetWriteDeadline(time.Now().Add(streamWriteTimeout))
 }
 
-func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, dataHandler func(data string, sr *StreamResult)) {
+// StreamScannerHandler 处理上游 SSE 流并转发给客户端喵。
+// 虚拟模型内部候选开启探测模式时，先缓存内容字符达到门槛才放流；探测失败返回带卡流哨兵的错误喵。
+func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, dataHandler func(data string, sr *StreamResult)) *types.NewAPIError {
 
 	if resp == nil || dataHandler == nil {
-		return
+		return nil
 	}
 
 	// 无条件新建 StreamStatus
@@ -86,6 +89,9 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	ctx, cancel := context.WithCancel(context.Background())
 
 	streamingTimeout := time.Duration(constant.StreamingTimeout) * time.Second
+
+	// 虚拟模型内部候选的流式探测参数：仅内部候选开启，普通请求为 nil 不启用探测喵。
+	probeConfig := streamProbeConfigFromContext(c)
 
 	var (
 		stopChan    = make(chan bool, 3) // 增加缓冲区避免阻塞
@@ -97,6 +103,17 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		cleanupOnce sync.Once
 		stopOnce    sync.Once
 	)
+	// 探测运行状态、失败信号通道与探测总预算计时器，仅探测模式使用喵。
+	var probeState *streamProbeState
+	var probeFailedChan chan error
+	var probeTotalChan <-chan time.Time
+	if probeConfig != nil {
+		probeFailedChan = make(chan error, 1)
+		probeState = &streamProbeState{config: probeConfig, failedChan: probeFailedChan}
+		probeTotalTimer := time.NewTimer(probeConfig.ProbeTotalTimeout)
+		defer probeTotalTimer.Stop()
+		probeTotalChan = probeTotalTimer.C
+	}
 
 	stop := func() {
 		stopOnce.Do(func() {
@@ -106,6 +123,10 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 
 	generalSettings := operation_setting.GetGeneralSetting()
 	pingEnabled := generalSettings.PingIntervalEnabled && !info.DisablePing
+	// 探测阶段禁止发送心跳，避免提前向客户端写入字节破坏探测失败回切候选喵。
+	if probeConfig != nil {
+		pingEnabled = false
+	}
 	pingInterval := time.Duration(generalSettings.PingIntervalSeconds) * time.Second
 	if pingInterval <= 0 {
 		pingInterval = DefaultPingInterval
@@ -247,7 +268,12 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			default:
 			}
 
-			ticker.Reset(streamingTimeout)
+			// 探测阶段用静默超时计时，放流后恢复普通流式空闲超时喵。
+			if probeState != nil && !probeState.passed {
+				ticker.Reset(probeState.config.StallTimeout)
+			} else {
+				ticker.Reset(streamingTimeout)
+			}
 			data := scanner.Text()
 			logger.LogDebug(c, "stream scanner data: %s", data)
 
@@ -263,6 +289,32 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				continue
 			}
 			if !strings.HasPrefix(data, "[DONE]") {
+				// 探测阶段：先缓存数据直到内容字符达到门槛，避免“假成功流”喵。
+				if probeState != nil && !probeState.passed {
+					probeState.buffer = append(probeState.buffer, data)
+					// 心跳不构成业务内容，只缓存重放不参与门槛计数喵。
+					if !isProbeHeartbeat(data) {
+						probeState.bufferedContentChars += common.StreamProbeContentChars(data)
+					}
+					if probeState.bufferedContentChars >= probeState.config.MinContentChars {
+						// 放流：先重放已缓存数据，再继续正常边收边放喵。
+						probeState.passed = true
+						ticker.Reset(streamingTimeout)
+						for _, bufferedData := range probeState.buffer {
+							info.SetFirstResponseTime()
+							info.ReceivedResponseCount++
+							select {
+							case dataChan <- bufferedData:
+							case <-ctx.Done():
+								return
+							case <-stopChan:
+								return
+							}
+						}
+						probeState.buffer = nil
+					}
+					continue
+				}
 				info.SetFirstResponseTime()
 				info.ReceivedResponseCount++
 
@@ -274,6 +326,12 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 					return
 				}
 			} else {
+				if probeState != nil && !probeState.passed {
+					// 探测阶段收到 [DONE] 而内容不足：空流失败喵。
+					probeState.fail(errProbeEndedBeforeContent)
+					info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonEOF, errProbeEndedBeforeContent)
+					return
+				}
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
 				logger.LogDebug(c, "received [DONE], stopping scanner")
 				return
@@ -286,15 +344,44 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonScannerErr, err)
 			}
 		}
+		if probeState != nil && !probeState.passed {
+			// 探测阶段 EOF 而内容不足：空流失败喵。
+			probeState.fail(errProbeEndedBeforeContent)
+			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonEOF, errProbeEndedBeforeContent)
+			return
+		}
 		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonEOF, nil)
 	})
 
-	// 主循环等待完成或超时
+	// 主循环等待完成或超时喵。
+	var probeFailedError error
 	select {
 	case <-ticker.C:
-		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, nil)
+		if probeState != nil && !probeState.passed {
+			// 探测阶段静默超时：判定为卡流，不向客户端写任何字节喵。
+			probeFailure := fmt.Errorf("%w: stream silent before business content", types.ErrStalledStream)
+			probeFailedError = probeFailure
+			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, probeFailure)
+		} else {
+			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, nil)
+		}
+	case probeFailure := <-probeFailedChan:
+		// scanner goroutine 报告的探测失败（空流、内容不足等）喵。
+		probeFailedError = probeFailure
+	case <-probeTotalChan:
+		if probeState != nil && !probeState.passed {
+			// 探测总预算耗尽：判定探测失败喵。
+			probeFailure := fmt.Errorf("%w: probe phase exceeded total budget", types.ErrStalledStream)
+			probeFailedError = probeFailure
+			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, probeFailure)
+		}
 	case <-stopChan:
-		// EndReason already set by the goroutine that triggered stopChan
+		// scanner goroutine 触发停止后，探测失败错误从通道非阻塞取一次喵。
+		select {
+		case probeFailure := <-probeFailedChan:
+			probeFailedError = probeFailure
+		default:
+		}
 	case <-c.Request.Context().Done():
 		// 客户端断开：立即 cleanup 关闭上游 resp.Body，解除 scanner 阻塞并让上游停止生成，
 		// 避免为已放弃的请求继续消费上游 token。
@@ -307,4 +394,9 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	} else {
 		logger.LogError(c, fmt.Sprintf("stream ended: %s, received=%d", info.StreamStatus.Summary(), info.ReceivedResponseCount))
 	}
+	if probeFailedError != nil {
+		// 探测失败返回带卡流哨兵的错误，供虚拟模型候选链按失败规则编排喵。
+		return types.NewError(probeFailedError, types.ErrorCodeVirtualModelProbeFailed, types.ErrOptionWithStatusCode(http.StatusBadGateway))
+	}
+	return nil
 }

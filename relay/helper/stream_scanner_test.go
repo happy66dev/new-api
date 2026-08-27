@@ -3,6 +3,7 @@ package helper
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,8 +14,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relaykit/types"
+	virtualmodelservice "github.com/QuantumNous/new-api/service/virtualmodel"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -570,4 +574,120 @@ func TestStreamScannerHandler_StreamStatus_ReplacesPreInitialized(t *testing.T) 
 
 	assert.Equal(t, relaycommon.StreamEndReasonDone, info.StreamStatus.EndReason)
 	assert.Equal(t, 0, info.StreamStatus.TotalErrorCount())
+}
+
+// ---------- Virtual-model streaming probe ----------
+
+// closableBlockingStreamBody 模拟静默上游：Read 阻塞直到 Close 触发，供卡流测试使用喵。
+type closableBlockingStreamBody struct {
+	release chan struct{}
+	once    sync.Once
+}
+
+func (body *closableBlockingStreamBody) Read(_ []byte) (int, error) {
+	<-body.release
+	return 0, io.EOF
+}
+
+func (body *closableBlockingStreamBody) Close() error {
+	body.once.Do(func() { close(body.release) })
+	return nil
+}
+
+// slowHeartbeatBody 每次 Read 停顿后返回一行心跳，模拟持续但缓慢的无内容流喵。
+type slowHeartbeatBody struct {
+	content []byte
+	offset  int
+	release chan struct{}
+	once    sync.Once
+}
+
+func (body *slowHeartbeatBody) Read(buffer []byte) (int, error) {
+	select {
+	case <-time.After(50 * time.Millisecond):
+	case <-body.release:
+		return 0, io.EOF
+	}
+	n := copy(buffer, body.content[body.offset:])
+	body.offset = (body.offset + n) % len(body.content)
+	return n, nil
+}
+
+func (body *slowHeartbeatBody) Close() error {
+	body.once.Do(func() { close(body.release) })
+	return nil
+}
+
+// setupProbeStreamTest 构造带探测参数的流式测试环境喵。
+func setupProbeStreamTest(t *testing.T, body io.ReadCloser, params virtualmodelservice.ProbeParameters) (*gin.Context, *http.Response, *relaycommon.RelayInfo, *httptest.ResponseRecorder) {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	common.SetContextKey(c, constant.ContextKeyVirtualModelProbeParameters, params)
+	resp := &http.Response{Body: body}
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}}
+	return c, resp, info, recorder
+}
+
+// TestStreamScannerHandler_ProbeBuffersUntilThreshold 验证探测阶段先缓存内容达到门槛再放流喵。
+func TestStreamScannerHandler_ProbeBuffersUntilThreshold(t *testing.T) {
+	// 两行内容合计 11 字符，门槛 8 时第二行后放流，两个事件都送达客户端喵。
+	params := virtualmodelservice.ProbeParameters{StallTimeoutSeconds: 60, MinContentChars: 8, ProbeTotalTimeoutSeconds: 60}
+	body := io.NopCloser(strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n" +
+		"data: [DONE]\n"))
+	c, resp, info, _ := setupProbeStreamTest(t, body, params)
+	var received []string
+	probeErr := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+		received = append(received, data)
+	})
+	require.Nil(t, probeErr)
+	require.Len(t, received, 2)
+	require.Contains(t, strings.Join(received, ""), "Hello")
+	require.Contains(t, strings.Join(received, ""), "world")
+}
+
+// TestStreamScannerHandler_ProbeStallTimeout 验证静默超过 stall 秒数返回卡流哨兵且不写字节喵。
+func TestStreamScannerHandler_ProbeStallTimeout(t *testing.T) {
+	params := virtualmodelservice.ProbeParameters{StallTimeoutSeconds: 1, MinContentChars: 10, ProbeTotalTimeoutSeconds: 60}
+	c, resp, info, recorder := setupProbeStreamTest(t, &closableBlockingStreamBody{release: make(chan struct{})}, params)
+	probeErr := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
+	require.NotNil(t, probeErr)
+	require.True(t, errors.Is(probeErr, types.ErrStalledStream))
+	require.Empty(t, recorder.Body.String())
+}
+
+// TestStreamScannerHandler_ProbeEmptyStream 验证只有 [DONE] 的空流在放流前被判定失败喵。
+func TestStreamScannerHandler_ProbeEmptyStream(t *testing.T) {
+	params := virtualmodelservice.ProbeParameters{StallTimeoutSeconds: 60, MinContentChars: 10, ProbeTotalTimeoutSeconds: 60}
+	c, resp, info, recorder := setupProbeStreamTest(t, io.NopCloser(strings.NewReader("data: [DONE]\n")), params)
+	probeErr := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
+	require.NotNil(t, probeErr)
+	require.True(t, errors.Is(probeErr, types.ErrStalledStream))
+	require.Empty(t, recorder.Body.String())
+}
+
+// TestStreamScannerHandler_ProbeTotalBudget 验证探测总预算耗尽返回卡流哨兵喵。
+func TestStreamScannerHandler_ProbeTotalBudget(t *testing.T) {
+	// 缓慢心跳持续但无业务内容，1 秒总预算耗尽喵。
+	params := virtualmodelservice.ProbeParameters{StallTimeoutSeconds: 60, MinContentChars: 10, ProbeTotalTimeoutSeconds: 1}
+	body := &slowHeartbeatBody{content: []byte("data: ping\n"), release: make(chan struct{})}
+	c, resp, info, recorder := setupProbeStreamTest(t, body, params)
+	probeErr := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
+	require.NotNil(t, probeErr)
+	require.True(t, errors.Is(probeErr, types.ErrStalledStream))
+	require.Empty(t, recorder.Body.String())
+}
+
+// TestStreamScannerHandler_NoProbeForRegularRequests 验证普通请求（无探测参数）行为不变喵。
+func TestStreamScannerHandler_NoProbeForRegularRequests(t *testing.T) {
+	body := buildSSEBody(3)
+	c, resp, info := setupStreamTest(t, strings.NewReader(body))
+	receivedCount := 0
+	probeErr := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+		receivedCount++
+	})
+	require.Nil(t, probeErr)
+	require.Equal(t, 3, receivedCount)
 }
