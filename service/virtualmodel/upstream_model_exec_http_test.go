@@ -73,6 +73,8 @@ func TestExecuteUserUpstreamModelUsageNonStreaming(t *testing.T) {
 	require.NotNil(t, result.Usage)
 	assert.Equal(t, 10, result.Usage.PromptTokens)
 	assert.Equal(t, 5, result.Usage.CompletionTokens)
+	// 上游真实提供 usage 时不得误标为估计喵。
+	assert.Nil(t, result.Usage.BillingUsage)
 }
 
 // TestExecuteUserUpstreamModelNoUsage 验证上游不返回 usage 时结果不带 nil 混淆喵。
@@ -98,8 +100,10 @@ func TestExecuteUserUpstreamModelNoUsage(t *testing.T) {
 		TimeoutSeconds: 10,
 	})
 	require.NoError(t, result.Err)
-	// 无 usage 时返回 nil，供调用方按零 token 处理，不混入空对象喵。
-	assert.Nil(t, result.Usage)
+	// 上游不返回 usage 时按请求/响应文本估计 token，打上 Estimated 标记供日志与前端「?」展示喵。
+	require.NotNil(t, result.Usage)
+	assert.True(t, result.Usage.BillingUsage != nil && result.Usage.BillingUsage.Estimated)
+	assert.Positive(t, result.Usage.TotalTokens)
 	// 透传响应仍写入客户端，不因缺 usage 而失败喵。
 	assert.Equal(t, http.StatusOK, recorder.Code)
 	assert.Contains(t, recorder.Body.String(), "hi")

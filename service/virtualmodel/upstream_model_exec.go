@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	relaykitypes "github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
@@ -54,8 +55,8 @@ const userUpstreamStreamLineLimit = 1024 * 1024
 const fakeStreamBufferLimit = 16 * 1024 * 1024
 
 // fakeStreamCommitResponse 伪流模式：全量缓存到 [DONE] 后一次性流式回放喵。
-// 返回解析出的 usage（无 token 时为 nil）；失败返回断流/写入错误供调用方编排喵。
-func fakeStreamCommitResponse(c *gin.Context, responseReader *bufio.Reader, responseHeaders http.Header, statusCode int, input CustomCandidateExecutionInput) (*dto.Usage, error) {
+// 返回解析出的 usage（无 token 时按请求/响应文本估计，估计不出时为 nil）；失败返回断流/写入错误供调用方编排喵。
+func fakeStreamCommitResponse(c *gin.Context, responseReader *bufio.Reader, responseHeaders http.Header, statusCode int, input CustomCandidateExecutionInput, requestBody []byte) (*dto.Usage, error) {
 	stallTimeout := time.Duration(DefaultProbeStallTimeoutSeconds) * time.Second
 	if input.StallTimeoutSeconds > 0 {
 		stallTimeout = time.Duration(input.StallTimeoutSeconds) * time.Second
@@ -80,8 +81,11 @@ func fakeStreamCommitResponse(c *gin.Context, responseReader *bufio.Reader, resp
 		return nil, fmt.Errorf("write committed fake stream response: %w", writeError)
 	}
 	usage = normalizeUpstreamModelUsage(usage)
+	// 无 token 时用全量缓存里的响应文本估计，供计费与日志展示喵。
 	if !usageHasTokens(usage) {
-		return nil, nil
+		var responseTextBuilder strings.Builder
+		appendResponseContentFromSSEBytes(&responseTextBuilder, fakeStreamBuffer)
+		return service.EstimateUsageFromTexts(input.RealModelName, requestBody, responseTextBuilder.String()), nil
 	}
 	return usage, nil
 }
@@ -191,7 +195,7 @@ func ExecuteUserUpstreamModel(c *gin.Context, input CustomCandidateExecutionInpu
 	if isStreamingCustomRequest(c) {
 		// 流转伪流：全量缓存到 [DONE] 后一次性流式回放，抵抗上游网络波动断流喵。
 		if input.FakeStreamEnabled {
-			usage, fakeStreamError := fakeStreamCommitResponse(c, responseReader, response.Header, response.StatusCode, input)
+			usage, fakeStreamError := fakeStreamCommitResponse(c, responseReader, response.Header, response.StatusCode, input, requestBody)
 			if fakeStreamError != nil {
 				return &UserUpstreamModelExecutionResult{Err: customCandidatePrecommitFailure(fakeStreamError), TtftMs: ttftMs}
 			}
@@ -217,8 +221,11 @@ func ExecuteUserUpstreamModel(c *gin.Context, input CustomCandidateExecutionInpu
 		copyCustomResponseHeaders(c.Writer.Header(), response.Header)
 		c.Status(response.StatusCode)
 		usage := &dto.Usage{}
+		// 累积响应文本用于 token 估计（上游无 usage 时的兜底计费素材）喵。
+		var responseTextBuilder strings.Builder
 		// 探测缓冲里可能已包含带 usage 的事件，先提取再回放喵。
 		extractUsageFromSSEBytes(precommitBuffer, usage)
+		appendResponseContentFromSSEBytes(&responseTextBuilder, precommitBuffer)
 		// 首次有内容的写响应才打点，供请求级首字统计喵。
 		if len(precommitBuffer) > 0 {
 			markVirtualModelFirstWrite(c)
@@ -231,6 +238,7 @@ func ExecuteUserUpstreamModel(c *gin.Context, input CustomCandidateExecutionInpu
 			lineBytes, readError := readLimitedSSELine(responseReader)
 			if len(lineBytes) > 0 {
 				extractUsageFromSSELine(lineBytes, usage)
+				appendResponseContentFromLine(&responseTextBuilder, lineBytes)
 				// 幂等打点：探测缓冲为空时首个有内容行才是真正首字节喵。
 				markVirtualModelFirstWrite(c)
 				if _, writeError := c.Writer.Write(lineBytes); writeError != nil {
@@ -244,10 +252,10 @@ func ExecuteUserUpstreamModel(c *gin.Context, input CustomCandidateExecutionInpu
 				return &UserUpstreamModelExecutionResult{Err: fmt.Errorf("read committed user upstream stream: %w", readError), TtftMs: ttftMs}
 			}
 		}
-		// 只有真正解析到 token 计数才返回 usage，避免空 usage 对象混入日志喵。
+		// 只有真正解析到 token 计数才返回 usage，否则按请求/响应文本估计参与计费喵。
 		usage = normalizeUpstreamModelUsage(usage)
 		if !usageHasTokens(usage) {
-			return &UserUpstreamModelExecutionResult{Usage: nil, TtftMs: ttftMs}
+			usage = service.EstimateUsageFromTexts(input.RealModelName, requestBody, responseTextBuilder.String())
 		}
 		return &UserUpstreamModelExecutionResult{Usage: usage, TtftMs: ttftMs}
 	}
@@ -265,6 +273,10 @@ func ExecuteUserUpstreamModel(c *gin.Context, input CustomCandidateExecutionInpu
 		return &UserUpstreamModelExecutionResult{Err: customCandidatePrecommitFailure(errors.New("user upstream returned an empty success response")), TtftMs: ttftMs}
 	}
 	usage := normalizeUpstreamModelUsage(extractUsageFromOpenAIBody(responseBody))
+	// 上游未提供 token 时按响应文本估计 completion，配合请求体估计 prompt 参与计费喵。
+	if !usageHasTokens(usage) {
+		usage = service.EstimateUsageFromTexts(input.RealModelName, requestBody, responseContentFromBody(responseBody))
+	}
 	copyCustomResponseHeaders(c.Writer.Header(), response.Header)
 	c.Status(response.StatusCode)
 	// 非流式首次写响应即首字，供请求级首字统计喵。

@@ -545,6 +545,8 @@ func settleUserUpstreamModelCharge(c *gin.Context, ownerUserID int, upstreamMode
 		logUserID = c.GetInt("id")
 	}
 	promptTokens, completionTokens, cachedTokens, cacheCreationTokens, imageTokens, audioTokens, cacheCreation5mTokens, cacheCreation1hTokens := splitUpstreamModelUsage(usage)
+	// 估计标记：usage 由文本估算而来（上游未返回 token 计数），供日志与前端展示「?」喵。
+	estimatedTokens := usage != nil && usage.BillingUsage != nil && usage.BillingUsage.Estimated
 	// Other 记录独立 RMB 计费明细，供日志详情与筛选展示喵。
 	other := map[string]interface{}{
 		"custom_cost_rmb":          fmt.Sprintf("%.4f", float64(costCents)/100.0),
@@ -567,6 +569,7 @@ func settleUserUpstreamModelCharge(c *gin.Context, ownerUserID int, upstreamMode
 		"image_tokens":             imageTokens,
 		"audio_tokens":             audioTokens,
 		"usage_available":          usage != nil,
+		"estimated_tokens":         estimatedTokens,
 		"is_shared_call":           isShared,
 	}
 	// 首字延迟写入 other["frt"]（毫秒），与内部日志字段一致，供日志 Timing 展示首字耗时喵。

@@ -19,6 +19,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	relaykitypes "github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -294,7 +295,7 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 	if isStreamingCustomRequest(c) {
 		// 流转伪流：全量缓存到 [DONE] 后一次性流式回放，抵抗上游网络波动断流喵。
 		if input.FakeStreamEnabled {
-			usage, fakeStreamError := fakeStreamCommitResponse(c, responseReader, response.Header, response.StatusCode, input)
+			usage, fakeStreamError := fakeStreamCommitResponse(c, responseReader, response.Header, response.StatusCode, input, requestBody)
 			if fakeStreamError != nil {
 				return &CustomCandidateExecutionResult{Err: customCandidatePrecommitFailure(fakeStreamError), TtftMs: ttftMs}
 			}
@@ -320,8 +321,11 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 		copyCustomResponseHeaders(c.Writer.Header(), response.Header)
 		c.Status(response.StatusCode)
 		usage := &dto.Usage{}
+		// 累积响应文本用于 token 估计（上游无 usage 时的兜底计费素材）喵。
+		var responseTextBuilder strings.Builder
 		// 探测缓冲里可能已包含带 usage 的事件，先提取再回放喵。
 		extractUsageFromSSEBytes(precommitBuffer, usage)
+		appendResponseContentFromSSEBytes(&responseTextBuilder, precommitBuffer)
 		// 首次有内容的写响应才打点，供请求级首字统计喵。
 		if len(precommitBuffer) > 0 {
 			markVirtualModelFirstWrite(c)
@@ -334,6 +338,7 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 			lineBytes, readError := readLimitedSSELine(responseReader)
 			if len(lineBytes) > 0 {
 				extractUsageFromSSELine(lineBytes, usage)
+				appendResponseContentFromLine(&responseTextBuilder, lineBytes)
 				// 幂等打点：探测缓冲为空时首个有内容行才是真正首字节喵。
 				markVirtualModelFirstWrite(c)
 				if _, writeError := c.Writer.Write(lineBytes); writeError != nil {
@@ -348,9 +353,9 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 			}
 		}
 		usage = normalizeUpstreamModelUsage(usage)
-		// 只有真正解析到 token 计数才返回 usage，避免空 usage 对象混入日志喵。
+		// 只有真正解析到 token 计数才返回 usage，否则按请求/响应文本估计参与计费喵。
 		if !usageHasTokens(usage) {
-			return &CustomCandidateExecutionResult{TtftMs: ttftMs}
+			usage = service.EstimateUsageFromTexts(input.RealModelName, requestBody, responseTextBuilder.String())
 		}
 		return &CustomCandidateExecutionResult{Usage: usage, TtftMs: ttftMs}
 	}
@@ -375,6 +380,10 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 		return &CustomCandidateExecutionResult{Err: customCandidatePrecommitFailure(errors.New("custom upstream returned an empty success response")), TtftMs: ttftMs}
 	}
 	usage := normalizeUpstreamModelUsage(extractUsageFromOpenAIBody(responseBody))
+	// 上游未提供 token 时按响应文本估计 completion，配合请求体估计 prompt 参与计费喵。
+	if !usageHasTokens(usage) {
+		usage = service.EstimateUsageFromTexts(input.RealModelName, requestBody, responseContentFromBody(responseBody))
+	}
 	copyCustomResponseHeaders(c.Writer.Header(), response.Header)
 	c.Status(response.StatusCode)
 	// 非流式首次写响应即首字，供请求级首字统计喵。

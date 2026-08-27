@@ -733,8 +733,9 @@ func recordVirtualModelCustomSuccess(c *gin.Context, useTimeSeconds int, usage *
 	}
 	// 纯直填 custom 候选以解析出的 usage 填 token；候选尝试序列由日志 Other 承载喵。
 	other := map[string]interface{}{
-		"virtual_model": executionState.virtualModelName,
-		"final_success": true,
+		"virtual_model":    executionState.virtualModelName,
+		"final_success":    true,
+		"estimated_tokens": usage != nil && usage.BillingUsage != nil && usage.BillingUsage.Estimated,
 	}
 	// 请求级首字耗时写入日志 Timing 展示，纯直填 custom 候选此前未记录首字喵。
 	if requestFirstByteMs > 0 {
