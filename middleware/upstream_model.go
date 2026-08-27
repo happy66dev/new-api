@@ -135,6 +135,8 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 		customFailure := &virtualmodelservice.CustomCandidateExecutionFailure{}
 		// 喵~防御：非结构化异常不能参与规则匹配或重试；若响应已提交则只中止，避免重复错误响应喵。
 		if !errors.As(executionResult.Err, &customFailure) {
+			// 诊断日志：记录非结构化执行错误的底层原因（连接/TLS/DNS/端口等），供用户上游连接问题定位喵。
+			common.SysError(fmt.Sprintf("user upstream model execution error: model=%s cause=%v", upstreamModel.UserUpstreamModelName(), executionResult.Err))
 			// 实体状态检测：上游异常记录失败样本喵。
 			recordUpstreamModelProbeState(upstreamModel, isShared, true, false, upstreamModelFailureErrorClass(executionResult.Err), startTime, upstreamProbeExtras{})
 			if c.Writer != nil && c.Writer.Written() {
@@ -150,6 +152,8 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 		}
 		// 非虚拟上下文：把受限错误响应原样回传客户端，保持上游错误可读喵。
 		if !inVirtualModelContext {
+			// 诊断日志：记录结构化失败的具体原因（错误分类、HTTP 状态与底层错误），供用户上游连接问题定位喵。
+			common.SysError(fmt.Sprintf("user upstream model request failed: model=%s error_class=%s http_status=%d cause=%v", upstreamModel.UserUpstreamModelName(), customFailure.Failure.ErrorClass, customFailure.Failure.HTTPStatus, customFailure.Cause))
 			// 实体状态检测：上游 4xx/5xx 透传失败计入失败喵。
 			recordUpstreamModelProbeState(upstreamModel, isShared, true, false, upstreamModelFailureErrorClass(executionResult.Err), startTime, upstreamProbeExtras{})
 			// 失败日志：记录本次上游错误供日志页排查，与成功结算同口径喵。
