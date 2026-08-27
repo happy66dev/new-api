@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -264,8 +265,8 @@ func TestSettleUserUpstreamModelChargeWritesLog(t *testing.T) {
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/alpha"}`))
 	ctx.Set("id", 7)
-	// 自用结算，TTFT 123 毫秒应写入日志 other["frt"] 喵。
-	settleUserUpstreamModelCharge(ctx, 7, upstreamModel, usage, "default", false, 5, false, 123)
+	// 自用结算（未预扣，直接扣费路径），TTFT 123 毫秒应写入日志 other["frt"] 喵。
+	settleUserUpstreamModelCharge(ctx, 7, upstreamModel, usage, "default", false, 5, false, 123, 0)
 
 	// 日志行应记录输入/输出令牌，类型为自定上游喵。
 	var logRow model.Log
@@ -279,4 +280,38 @@ func TestSettleUserUpstreamModelChargeWritesLog(t *testing.T) {
 	require.NoError(t, common.Unmarshal([]byte(logRow.Other), &other))
 	require.Equal(t, float64(200), other["cached_tokens"])
 	require.Equal(t, float64(123), other["frt"])
+}
+
+// TestEstimateUserUpstreamModelCostCents 验证请求前预估费用：输入按 body 字节/4 估算、输出按 max_tokens 上限喵。
+func TestEstimateUserUpstreamModelCostCents(t *testing.T) {
+	// 模型输入价 10 元/M、输出价 20 元/M，用于精确计算预期费用喵。
+	upstreamModel := &model.UserUpstreamModel{ModelRatio: "10", CompletionRatio: "20"}
+	// 300 次 hello world 共 3600 字符，body 长度远超最小兜底，输入估算取真实值喵。
+	longContent := strings.Repeat("hello world ", 300)
+	// 带 max_tokens=2000 的请求体：输出按 2000 token 上限预估喵。
+	body := []byte(`{"messages":[{"role":"user","content":"` + longContent + `"}],"max_tokens":2000}`)
+	expectedPromptTokens := len(body) / 4
+	// 输入与输出分别乘各自单价后 /1e6 转元、×100 转分，与结算函数口径一致，四舍五入取整喵。
+	expectedCents := int64(math.Round(float64(expectedPromptTokens*10+2000*20) / 1e4))
+	require.Equal(t, expectedCents, estimateUserUpstreamModelCostCents(upstreamModel, body))
+
+	// 同一请求体去掉 max_tokens：输出部分不参与预估，费用显著更小喵。
+	bodyNoMax := []byte(`{"messages":[{"role":"user","content":"` + longContent + `"}]}`)
+	expectedPromptTokensNoMax := len(bodyNoMax) / 4
+	expectedCentsNoMax := int64(math.Round(float64(expectedPromptTokensNoMax*10) / 1e4))
+	require.Equal(t, expectedCentsNoMax, estimateUserUpstreamModelCostCents(upstreamModel, bodyNoMax))
+	// 输出上限使预扣金额更高，保证预扣覆盖潜在超额喵。
+	require.Greater(t, estimateUserUpstreamModelCostCents(upstreamModel, body), estimateUserUpstreamModelCostCents(upstreamModel, bodyNoMax))
+
+	// 空 body 与 nil 兜底：输入按最小 500 token 估算，费用非零喵。
+	emptyModel := &model.UserUpstreamModel{ModelRatio: "10"}
+	require.Greater(t, estimateUserUpstreamModelCostCents(emptyModel, nil), int64(0))
+	require.Greater(t, estimateUserUpstreamModelCostCents(emptyModel, []byte{}), int64(0))
+
+	// 空模型按零费用预估，避免空指针喵。
+	require.Equal(t, int64(0), estimateUserUpstreamModelCostCents(nil, body))
+
+	// 模型未定价（输入价为 0）时预估费用为零，不产生预扣喵。
+	zeroModel := &model.UserUpstreamModel{ModelRatio: "0"}
+	require.Equal(t, int64(0), estimateUserUpstreamModelCostCents(zeroModel, body))
 }

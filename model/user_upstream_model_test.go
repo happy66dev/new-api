@@ -536,3 +536,125 @@ func TestGetSharedModelNamesByOwner(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, invalidNames)
 }
+
+// TestPreConsumeUserUpstreamModelCharge 验证请求前预扣的原子性：三账户足够才扣减，任一不足整体拒绝喵。
+func TestPreConsumeUserUpstreamModelCharge(t *testing.T) {
+	truncateTables(t)
+	require.NoError(t, DB.AutoMigrate(&UserUpstreamModel{}))
+	require.NoError(t, DB.Exec("DELETE FROM user_upstream_models").Error)
+
+	// 创建余额 1000 分、可用额度 800 分、共享额度 600 分的模型喵。
+	created := &UserUpstreamModel{
+		OwnerUserID:     7,
+		NormalizedName:  "pre-consume",
+		Enabled:         true,
+		BalanceCents:    1000,
+		AvailableCents:  800,
+		ShareLimitCents: 600,
+		Version:         1,
+		CreatedTime:     100,
+		UpdatedTime:     100,
+	}
+	require.NoError(t, DB.Create(created).Error)
+
+	// 正常自用预扣：余额与可用额度同时减少，共享额度不受影响喵。
+	require.NoError(t, PreConsumeUserUpstreamModelCharge(created.ID, 7, 300, false))
+	fetched, err := GetUserUpstreamModelByOwnerID(created.ID, 7)
+	require.NoError(t, err)
+	assert.Equal(t, int64(700), fetched.BalanceCents)
+	assert.Equal(t, int64(500), fetched.AvailableCents)
+	assert.Equal(t, int64(600), fetched.ShareLimitCents)
+
+	// 可用额度不足以覆盖预扣时整体拒绝且不扣任何账户，避免部分锁定喵。
+	err = PreConsumeUserUpstreamModelCharge(created.ID, 7, 600, false)
+	require.ErrorIs(t, err, ErrUserUpstreamModelInsufficientQuota)
+	fetched, _ = GetUserUpstreamModelByOwnerID(created.ID, 7)
+	assert.Equal(t, int64(700), fetched.BalanceCents)
+	assert.Equal(t, int64(500), fetched.AvailableCents)
+	assert.Equal(t, int64(600), fetched.ShareLimitCents)
+
+	// 共享调用预扣三个账户：余额+可用+共享同时扣减喵。
+	require.NoError(t, PreConsumeUserUpstreamModelCharge(created.ID, 7, 100, true))
+	fetched, _ = GetUserUpstreamModelByOwnerID(created.ID, 7)
+	assert.Equal(t, int64(600), fetched.BalanceCents)
+	assert.Equal(t, int64(400), fetched.AvailableCents)
+	assert.Equal(t, int64(500), fetched.ShareLimitCents)
+
+	// 共享调用时共享额度不足以覆盖预扣也整体拒绝喵。
+	err = PreConsumeUserUpstreamModelCharge(created.ID, 7, 600, true)
+	require.ErrorIs(t, err, ErrUserUpstreamModelInsufficientQuota)
+	fetched, _ = GetUserUpstreamModelByOwnerID(created.ID, 7)
+	assert.Equal(t, int64(600), fetched.BalanceCents)
+	assert.Equal(t, int64(400), fetched.AvailableCents)
+	assert.Equal(t, int64(500), fetched.ShareLimitCents)
+
+	// 零费用预扣视为成功且不写库喵。
+	require.NoError(t, PreConsumeUserUpstreamModelCharge(created.ID, 7, 0, false))
+	fetched, _ = GetUserUpstreamModelByOwnerID(created.ID, 7)
+	assert.Equal(t, int64(600), fetched.BalanceCents)
+
+	// 负数预扣直接拒绝，不产生任何写入喵。
+	err = PreConsumeUserUpstreamModelCharge(created.ID, 7, -10, false)
+	require.Error(t, err)
+
+	// 无效属主或 ID 返回记录不存在，避免跨用户预扣喵。
+	require.Error(t, PreConsumeUserUpstreamModelCharge(created.ID, 8, 10, false))
+	require.Error(t, PreConsumeUserUpstreamModelCharge(0, 7, 10, false))
+}
+
+// TestAdjustUserUpstreamModelCharge 验证请求后差额结算：正数补扣、负数退还、零不写库喵。
+func TestAdjustUserUpstreamModelCharge(t *testing.T) {
+	truncateTables(t)
+	require.NoError(t, DB.AutoMigrate(&UserUpstreamModel{}))
+	require.NoError(t, DB.Exec("DELETE FROM user_upstream_models").Error)
+
+	// 创建余额 1000 分、可用额度 800 分、共享额度 600 分的模型喵。
+	created := &UserUpstreamModel{
+		OwnerUserID:     7,
+		NormalizedName:  "adjust",
+		Enabled:         true,
+		BalanceCents:    1000,
+		AvailableCents:  800,
+		ShareLimitCents: 600,
+		Version:         1,
+		CreatedTime:     100,
+		UpdatedTime:     100,
+	}
+	require.NoError(t, DB.Create(created).Error)
+
+	// 预扣 300 后实际费用 400：补扣差额 100 分，三账户再各减 100 喵。
+	require.NoError(t, PreConsumeUserUpstreamModelCharge(created.ID, 7, 300, true))
+	require.NoError(t, AdjustUserUpstreamModelCharge(created.ID, 7, 100, true))
+	fetched, err := GetUserUpstreamModelByOwnerID(created.ID, 7)
+	require.NoError(t, err)
+	assert.Equal(t, int64(600), fetched.BalanceCents)
+	assert.Equal(t, int64(400), fetched.AvailableCents)
+	assert.Equal(t, int64(200), fetched.ShareLimitCents)
+
+	// 预扣 300 后实际费用 200：退还差额 100 分，三账户各加回 100 喵。
+	require.NoError(t, AdjustUserUpstreamModelCharge(created.ID, 7, -100, true))
+	fetched, _ = GetUserUpstreamModelByOwnerID(created.ID, 7)
+	assert.Equal(t, int64(700), fetched.BalanceCents)
+	assert.Equal(t, int64(500), fetched.AvailableCents)
+	assert.Equal(t, int64(300), fetched.ShareLimitCents)
+
+	// 补扣差额超过剩余余额时钳制到 0，绝不产生负账户喵。
+	require.NoError(t, AdjustUserUpstreamModelCharge(created.ID, 7, 900, true))
+	fetched, _ = GetUserUpstreamModelByOwnerID(created.ID, 7)
+	assert.Equal(t, int64(0), fetched.BalanceCents)
+	assert.Equal(t, int64(0), fetched.AvailableCents)
+	assert.Equal(t, int64(0), fetched.ShareLimitCents)
+
+	// 零差额不写库，各账户保持不变喵。
+	require.NoError(t, AdjustUserUpstreamModelCharge(created.ID, 7, 0, false))
+	fetched, _ = GetUserUpstreamModelByOwnerID(created.ID, 7)
+	assert.Equal(t, int64(0), fetched.BalanceCents)
+	assert.Equal(t, int64(0), fetched.AvailableCents)
+
+	// 非共享模式的差额结算不影响共享额度喵。
+	require.NoError(t, PreConsumeUserUpstreamModelCharge(created.ID, 7, 0, false))
+
+	// 无效属主或 ID 返回记录不存在，避免跨用户结算喵。
+	require.Error(t, AdjustUserUpstreamModelCharge(created.ID, 8, 10, false))
+	require.Error(t, AdjustUserUpstreamModelCharge(0, 7, 10, false))
+}

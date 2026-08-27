@@ -586,3 +586,83 @@ func clampUpstreamModelCents(current int64, costCents int64) int64 {
 	}
 	return current - costCents
 }
+
+// ErrUserUpstreamModelInsufficientQuota 预扣时三账户任一不足，请求应被 403 拒绝喵。
+var ErrUserUpstreamModelInsufficientQuota = errors.New("user upstream model quota insufficient")
+
+// PreConsumeUserUpstreamModelCharge 请求前按预估费用原子预扣三个递减账户喵。
+// 任一账户不足时返回 ErrUserUpstreamModelInsufficientQuota 且不扣减任何账户，保证整体性喵。
+func PreConsumeUserUpstreamModelCharge(upstreamModelID int64, ownerUserID int, cents int64, isShared bool) error {
+	// 喵~防御：费用必须非负，负数拒绝避免反向增加余额喵。
+	if cents < 0 {
+		return errors.New("upstream model pre-consume must not be negative")
+	}
+	// 喵~防御：无效参数直接返回记录不存在，避免空值进入事务喵。
+	if upstreamModelID <= 0 || ownerUserID <= 0 {
+		return gorm.ErrRecordNotFound
+	}
+	// 预估费用为零时不产生任何数据库写入，直接视为预扣成功喵。
+	if cents == 0 {
+		return nil
+	}
+	// 事务加行锁读取最新余额，保证并发请求对同一模型的预扣互不超扣喵。
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var upstreamModel UserUpstreamModel
+		// lockForUpdate 在 MySQL/PostgreSQL 加 FOR UPDATE 行锁，SQLite 跳过锁语法喵。
+		if err := lockForUpdate(tx).Where("id = ? AND owner_user_id = ?", upstreamModelID, ownerUserID).First(&upstreamModel).Error; err != nil {
+			return err
+		}
+		// 三账户任一不足即整体拒绝，避免预扣留下部分锁定导致账户状态不一致喵。
+		if upstreamModel.BalanceCents < cents || upstreamModel.AvailableCents < cents || (isShared && upstreamModel.ShareLimitCents < cents) {
+			return ErrUserUpstreamModelInsufficientQuota
+		}
+		upstreamModel.BalanceCents -= cents
+		upstreamModel.AvailableCents -= cents
+		if isShared {
+			upstreamModel.ShareLimitCents -= cents
+		}
+		upstreamModel.UpdatedTime = time.Now().Unix()
+		// 只更新金额相关字段，避免覆盖控制面并发修改的其他配置喵。
+		return tx.Model(&upstreamModel).Select("balance_cents", "available_cents", "share_limit_cents", "updated_time").Updates(upstreamModel).Error
+	})
+}
+
+// AdjustUserUpstreamModelCharge 请求后按差额结算预扣账户喵。
+// deltaCents 为实际费用减预扣费用：正数补扣差额（钳制非负）、负数退还差额、零不写库喵。
+func AdjustUserUpstreamModelCharge(upstreamModelID int64, ownerUserID int, deltaCents int64, isShared bool) error {
+	// 喵~防御：无效参数直接返回记录不存在，避免空值进入事务喵。
+	if upstreamModelID <= 0 || ownerUserID <= 0 {
+		return gorm.ErrRecordNotFound
+	}
+	// 差额为零时不产生任何数据库写入，避免空事务喵。
+	if deltaCents == 0 {
+		return nil
+	}
+	// 事务加行锁读取最新余额，保证并发请求下的差额结算不覆盖彼此喵。
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var upstreamModel UserUpstreamModel
+		// lockForUpdate 在 MySQL/PostgreSQL 加 FOR UPDATE 行锁，SQLite 跳过锁语法喵。
+		if err := lockForUpdate(tx).Where("id = ? AND owner_user_id = ?", upstreamModelID, ownerUserID).First(&upstreamModel).Error; err != nil {
+			return err
+		}
+		if deltaCents > 0 {
+			// 补扣差额：与既有结算一致钳制到 0，预扣已保证正常情况下余额足够喵。
+			upstreamModel.BalanceCents = clampUpstreamModelCents(upstreamModel.BalanceCents, deltaCents)
+			upstreamModel.AvailableCents = clampUpstreamModelCents(upstreamModel.AvailableCents, deltaCents)
+			if isShared {
+				upstreamModel.ShareLimitCents = clampUpstreamModelCents(upstreamModel.ShareLimitCents, deltaCents)
+			}
+		} else {
+			// 退还差额：加回预扣时锁定的部分，用于结算多退与失败退款喵。
+			refundCents := -deltaCents
+			upstreamModel.BalanceCents += refundCents
+			upstreamModel.AvailableCents += refundCents
+			if isShared {
+				upstreamModel.ShareLimitCents += refundCents
+			}
+		}
+		upstreamModel.UpdatedTime = time.Now().Unix()
+		// 只更新金额相关字段，避免覆盖控制面并发修改的其他配置喵。
+		return tx.Model(&upstreamModel).Select("balance_cents", "available_cents", "share_limit_cents", "updated_time").Updates(upstreamModel).Error
+	})
+}

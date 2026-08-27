@@ -78,9 +78,28 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 			return false
 		}
 	}
+	// 请求前预扣：按请求体估算费用并原子预扣三账户，避免单次调用超出用户设置限额喵。
+	preConsumedCents, preConsumeError := preConsumeUserUpstreamModelCharge(c, upstreamModel, isShared)
+	// 喵~防御：预扣失败（三账户任一不足）直接 403 拒绝，与普通模型预扣语义一致喵。
+	if preConsumeError != nil {
+		// 配置态：预扣不足不计入成功率，只更新最近调用时间喵。
+		recordUpstreamModelProbeState(upstreamModel, isShared, false, false, "", startTime, upstreamProbeExtras{})
+		abortUpstreamModelQuotaExhausted(c)
+		return false
+	}
 	// 活跃请求注册：进入上游模型活跃计数，函数返回（含错误路径）时统一退出喵。
 	EnterUpstreamModelInflight(upstreamModel.ID, upstreamModel.UserUpstreamModelName(), isShared)
 	defer ExitUpstreamModelInflight(upstreamModel.ID, isShared)
+	// settled 标记本次请求是否已完成差额结算；未结算时由 defer 在函数退出前退还预扣喵。
+	settled := false
+	defer func() {
+		// 喵~防御：请求结束仍未结算（透传失败）时退还预扣金额，避免额度被永久锁定喵。
+		if preConsumedCents > 0 && !settled {
+			if refundError := model.AdjustUserUpstreamModelCharge(upstreamModel.ID, upstreamModel.OwnerUserID, -preConsumedCents, isShared); refundError != nil {
+				common.SysError("user upstream model pre-consume refund failed: " + refundError.Error())
+			}
+		}
+	}()
 	baseURL, decryptBaseURLError := virtualmodelservice.DecryptCredential(upstreamModel.EncryptedBaseURL, upstreamModel.CredentialVersion)
 	apiKey, decryptAPIKeyError := virtualmodelservice.DecryptCredential(upstreamModel.EncryptedAPIKey, upstreamModel.CredentialVersion)
 	// 喵~防御：凭据密文篡改、主密钥缺失或解密失败均只返回受控不可用错误，不泄露秘密或密文状态喵。
@@ -125,7 +144,9 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 	}
 	// 成功透传计入成功，随后按独立 RMB 计费系统扣费与写日志；共享调用免费只累计共享消耗喵。
 	recordUpstreamModelProbeState(upstreamModel, isShared, true, true, "", startTime, buildUpstreamProbeExtras(executionResult))
-	settleUserUpstreamModelCharge(c, upstreamModel.OwnerUserID, upstreamModel, executionResult.Usage, modelRequest.Group, isUpstreamModelRequestStreaming(c), int(time.Since(startTime).Seconds()), isShared, executionResult.TtftMs)
+	settleUserUpstreamModelCharge(c, upstreamModel.OwnerUserID, upstreamModel, executionResult.Usage, modelRequest.Group, isUpstreamModelRequestStreaming(c), int(time.Since(startTime).Seconds()), isShared, executionResult.TtftMs, preConsumedCents)
+	// 已按差额结算完毕，defer 不再退还预扣喵。
+	settled = true
 	c.Abort()
 	return false
 }
@@ -255,9 +276,10 @@ func upstreamModelFailureErrorClass(executionError error) string {
 	return "upstream_unavailable"
 }
 
-// settleUserUpstreamModelCharge 计算费用、扣减余额与累计消耗，并写入自定上游日志喵。
+// settleUserUpstreamModelCharge 计算费用、结算预扣差额并写入自定上游日志喵。
+// preConsumedCents 为请求前预扣金额：大于零时按差额补扣或退还，等于零时保持直接扣费兼容喵。
 // isShared 为 true 时表示共享调用：免费、只累计共享消耗、日志归入 user-shared 分组喵。
-func settleUserUpstreamModelCharge(c *gin.Context, ownerUserID int, upstreamModel *model.UserUpstreamModel, usage *dto.Usage, group string, isStream bool, useTimeSeconds int, isShared bool, ttftMs int64) {
+func settleUserUpstreamModelCharge(c *gin.Context, ownerUserID int, upstreamModel *model.UserUpstreamModel, usage *dto.Usage, group string, isStream bool, useTimeSeconds int, isShared bool, ttftMs int64, preConsumedCents int64) {
 	// 喵~防御：空上下文或空模型对象直接返回，避免空指针喵。
 	if c == nil || upstreamModel == nil {
 		return
@@ -269,9 +291,16 @@ func settleUserUpstreamModelCharge(c *gin.Context, ownerUserID int, upstreamMode
 		common.SysError("user upstream model cost calculation failed: " + costError.Error())
 		costCents = 0
 	}
-	// 扣减：自用扣余额并累计自用消耗，共享调用免费只累计共享消耗喵。
-	if deductError := model.DeductUserUpstreamModelCharge(upstreamModel.ID, ownerUserID, costCents, isShared); deductError != nil {
-		common.SysError("user upstream model charge deduction failed: " + deductError.Error())
+	// 扣减：有预扣时按实际费用结算差额（多退少补），无预扣时直接按实际费用扣减（兼容未启用预扣的调用点）喵。
+	if preConsumedCents > 0 {
+		deltaCents := costCents - preConsumedCents
+		if adjustError := model.AdjustUserUpstreamModelCharge(upstreamModel.ID, ownerUserID, deltaCents, isShared); adjustError != nil {
+			common.SysError("user upstream model charge settlement failed: " + adjustError.Error())
+		}
+	} else {
+		if deductError := model.DeductUserUpstreamModelCharge(upstreamModel.ID, ownerUserID, costCents, isShared); deductError != nil {
+			common.SysError("user upstream model charge deduction failed: " + deductError.Error())
+		}
 	}
 	// 分组：共享调用固定归入 user-shared，自用沿用请求分组并兜底默认值喵。
 	effectiveGroup := strings.TrimSpace(group)
@@ -289,6 +318,7 @@ func settleUserUpstreamModelCharge(c *gin.Context, ownerUserID int, upstreamMode
 	// Other 记录独立 RMB 计费明细，供日志详情与筛选展示喵。
 	other := map[string]interface{}{
 		"custom_cost_rmb":          fmt.Sprintf("%.4f", float64(costCents)/100.0),
+		"pre_consumed_cents":       preConsumedCents,
 		"model_ratio":              upstreamModel.ModelRatio,
 		"completion_ratio":         upstreamModel.CompletionRatio,
 		"cache_ratio":              upstreamModel.CacheRatio,
@@ -362,4 +392,70 @@ func isUpstreamModelRequestStreaming(c *gin.Context) bool {
 		return false
 	}
 	return gjson.GetBytes(requestBody, "stream").Type == gjson.True
+}
+
+// upstreamModelPreConsumeMinPromptTokens 预估输入 token 的兜底下限，与普通模型最小预扣额度对齐喵。
+const upstreamModelPreConsumeMinPromptTokens = 500
+
+// estimateUserUpstreamModelCostCents 请求前按请求体估算一次调用的费用（分），供预扣使用喵。
+// 输入 token 按请求体字节数/4 保守估算并钳制到最小兜底值；输出 token 取请求的 max_tokens 系列上限喵。
+func estimateUserUpstreamModelCostCents(upstreamModel *model.UserUpstreamModel, requestBody []byte) int64 {
+	// 喵~防御：空模型对象按零费用预估，避免空指针喵。
+	if upstreamModel == nil {
+		return 0
+	}
+	// 输入 token 估算：body 字节数/4（英文约 4 字符 1 token 的保守口径），并钳制到最小兜底值喵。
+	estimatedPromptTokens := len(requestBody) / 4
+	if estimatedPromptTokens < upstreamModelPreConsumeMinPromptTokens {
+		estimatedPromptTokens = upstreamModelPreConsumeMinPromptTokens
+	}
+	// 输出 token 上限：max_completion_tokens / max_tokens / max_output_tokens 任一存在即取最大值，缺失按零（不预扣输出）喵。
+	estimatedCompletionTokens := 0
+	if len(requestBody) > 0 && gjson.ValidBytes(requestBody) {
+		estimatedCompletionTokens = max(
+			int(gjson.GetBytes(requestBody, "max_completion_tokens").Int()),
+			int(gjson.GetBytes(requestBody, "max_tokens").Int()),
+			int(gjson.GetBytes(requestBody, "max_output_tokens").Int()),
+		)
+	}
+	// 构造预估 usage 复用统一算费函数，缓存/图片等分类预估时按零处理，保证预扣口径与结算一致喵。
+	estimatedCents, costError := upstreammodelservice.CalculateUpstreamModelCostCents(upstreamModel, &dto.Usage{
+		PromptTokens:     estimatedPromptTokens,
+		CompletionTokens: estimatedCompletionTokens,
+	})
+	// 喵~防御：预估计算异常按零费用兜底，绝不因预估失败阻断请求喵。
+	if costError != nil {
+		common.SysError("user upstream model cost estimation failed: " + costError.Error())
+		return 0
+	}
+	return estimatedCents
+}
+
+// preConsumeUserUpstreamModelCharge 按请求体预估费用并原子预扣三账户，返回预扣金额（分）喵。
+// 模型未定价或预估费用为零时预扣金额为零且视为成功；账户不足时返回 ErrUserUpstreamModelInsufficientQuota 喵。
+func preConsumeUserUpstreamModelCharge(c *gin.Context, upstreamModel *model.UserUpstreamModel, isShared bool) (int64, error) {
+	// 喵~防御：空上下文或空模型对象按零预扣处理，避免空指针喵。
+	if c == nil || c.Request == nil || upstreamModel == nil {
+		return 0, nil
+	}
+	bodyStorage, storageError := common.GetBodyStorage(c)
+	// 喵~防御：无法读取请求体时按零费用预扣，不因预扣读取失败阻断请求喵。
+	if storageError != nil {
+		return 0, nil
+	}
+	requestBody, bytesError := bodyStorage.Bytes()
+	// 喵~防御：请求体读取异常时按零费用预扣喵。
+	if bytesError != nil {
+		return 0, nil
+	}
+	estimatedCents := estimateUserUpstreamModelCostCents(upstreamModel, requestBody)
+	// 预估费用为零（未定价等）视为预扣成功，零金额不产生数据库写入喵。
+	if estimatedCents <= 0 {
+		return 0, nil
+	}
+	// 原子预扣三账户，任一不足即返回错误由调用方 403 拒绝喵。
+	if preConsumeError := model.PreConsumeUserUpstreamModelCharge(upstreamModel.ID, upstreamModel.OwnerUserID, estimatedCents, isShared); preConsumeError != nil {
+		return 0, preConsumeError
+	}
+	return estimatedCents, nil
 }

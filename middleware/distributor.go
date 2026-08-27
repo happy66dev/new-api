@@ -919,6 +919,27 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 	if maximumRetries > 20 {
 		maximumRetries = 20
 	}
+	// 请求前预扣：引用上游模型时按请求体估算费用并原子预扣三账户，避免单次调用超出用户设置限额喵。
+	preConsumedCents := int64(0)
+	var preConsumeError error
+	settled := false
+	if hasUpstreamReference && referencedUpstreamModel != nil {
+		preConsumedCents, preConsumeError = preConsumeUserUpstreamModelCharge(c, referencedUpstreamModel, false)
+		// 喵~防御：预扣失败（余额/可用任一不足）直接 403 拒绝，与自用上游模型预扣语义一致喵。
+		if preConsumeError != nil {
+			abortUpstreamModelQuotaExhausted(c)
+			return false
+		}
+		// 请求未完成差额结算前持有的预扣，由成功结算或失败退出退款二选一释放喵。
+		defer func() {
+			// 喵~防御：候选失败退出（切换/终结/透传）时退还预扣金额，避免虚拟模型候选链反复预扣锁定额度喵。
+			if preConsumedCents > 0 && !settled {
+				if refundError := model.AdjustUserUpstreamModelCharge(referencedUpstreamModel.ID, referencedUpstreamModel.OwnerUserID, -preConsumedCents, false); refundError != nil {
+					common.SysError("virtual model custom pre-consume refund failed: " + refundError.Error())
+				}
+			}
+		}()
+	}
 	for retryIndex := 0; retryIndex <= maximumRetries; retryIndex++ {
 		// 喵~防御：候选重试前检查全局 deadline 与取消状态，防止单个 custom 候选耗尽请求预算后继续外发喵。
 		if executionState, foundState := getVirtualModelExecutionState(c); foundState && ((!executionState.requestDeadline.IsZero() && !time.Now().Before(executionState.requestDeadline)) || c.Request == nil || c.Request.Context().Err() != nil) {
@@ -996,7 +1017,9 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 				if executionState, foundState := getVirtualModelExecutionState(c); foundState && executionState.modelRequest != nil {
 					requestGroup = executionState.modelRequest.Group
 				}
-				settleUserUpstreamModelCharge(c, referencedUpstreamModel.OwnerUserID, referencedUpstreamModel, executionUsage, requestGroup, isUpstreamModelRequestStreaming(c), int(time.Since(startTime).Seconds()), false, executionResult.TtftMs)
+				settleUserUpstreamModelCharge(c, referencedUpstreamModel.OwnerUserID, referencedUpstreamModel, executionUsage, requestGroup, isUpstreamModelRequestStreaming(c), int(time.Since(startTime).Seconds()), false, executionResult.TtftMs, preConsumedCents)
+				// 已按差额结算完毕，defer 不再退还预扣喵。
+				settled = true
 				// 实体状态检测：引用上游模型成功，同时记录上游模型自用维度成功喵。
 				recordUpstreamModelProbeState(referencedUpstreamModel, false, true, true, "", startTime, buildUpstreamProbeExtras(executionResult))
 			} else {
