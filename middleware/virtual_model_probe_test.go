@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/require"
@@ -65,6 +66,57 @@ func TestRecordVirtualModelOverallProbe(t *testing.T) {
 	require.NoError(t, stateErr)
 	require.Equal(t, int64(1), state.RequestCount)
 	require.True(t, state.LastSuccess)
+}
+
+// TestRecordVirtualModelProbeSuccessCarriesUsage 验证成功探测携带 usage/TTFT 喵。
+func TestRecordVirtualModelProbeSuccessCarriesUsage(t *testing.T) {
+	newProbeTestDB(t)
+	executionState := newProbeTestState()
+	executionState.executionSnapshot.Candidates = []model.VirtualModelCandidateSnapshot{
+		{CandidateID: 71, VirtualModelID: 9, RealModelName: "gpt-probe"},
+	}
+	executionState.currentCandidateIndex = 0
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	common.SetContextKey(ctx, constant.ContextKeyVirtualModelExecutionState, executionState)
+
+	// 传入带 token 与缓存命中的 usage，以及首字耗时喵。
+	usage := &dto.Usage{PromptTokens: 100, CompletionTokens: 20, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 30}}
+	recordVirtualModelProbeSuccess(ctx, executionState, 71, usage, 88)
+
+	// 成功样本应携带输入/输出/缓存 token 与 TTFT 喵。
+	require.Equal(t, int64(100), executionState.successExtras.InputTokens)
+	require.Equal(t, int64(20), executionState.successExtras.OutputTokens)
+	require.Equal(t, int64(30), executionState.successExtras.CachedTokens)
+	require.Equal(t, int64(88), executionState.successExtras.TtftMs)
+	require.True(t, executionState.successExtras.HasTtft)
+
+	// 候选与整体状态行应记录成功喵。
+	candidateState, candidateErr := model.GetEntityProbeState(model.EntityProbeScopeVirtualCandidate, 71)
+	require.NoError(t, candidateErr)
+	require.True(t, candidateState.LastSuccess)
+	overallState, overallErr := model.GetEntityProbeState(model.EntityProbeScopeVirtual, 9)
+	require.NoError(t, overallErr)
+	require.True(t, overallState.LastSuccess)
+}
+
+// TestApplyVirtualModelSuccessProbe 验证从 context 读取 usage 与 TTFT 填充成功样本喵。
+func TestApplyVirtualModelSuccessProbe(t *testing.T) {
+	newProbeTestDB(t)
+	executionState := newProbeTestState()
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	common.SetContextKey(ctx, constant.ContextKeyVirtualModelExecutionState, executionState)
+
+	// 无 usage 时 TTFT 仍可填充喵。
+	ApplyVirtualModelSuccessProbe(ctx, 77)
+	require.Equal(t, int64(77), executionState.successExtras.TtftMs)
+	require.True(t, executionState.successExtras.HasTtft)
+
+	// 带 usage 的 context 覆盖 token 喵。
+	common.SetContextKey(ctx, constant.ContextKeyVirtualModelSuccessUsage, &dto.Usage{PromptTokens: 50, CompletionTokens: 5, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 2}})
+	ApplyVirtualModelSuccessProbe(ctx, 0)
+	require.Equal(t, int64(50), executionState.successExtras.InputTokens)
+	require.Equal(t, int64(5), executionState.successExtras.OutputTokens)
+	require.Equal(t, int64(2), executionState.successExtras.CachedTokens)
 }
 
 // TestRecordVirtualModelCandidateProbe 验证候选节点状态记录喵。

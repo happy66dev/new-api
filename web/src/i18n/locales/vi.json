@@ -3306,6 +3306,7 @@
     "No header overrides configured.": "Không có ghi đè tiêu đề nào được cấu hình.",
     "No historical system tasks.": "Không có tác vụ hệ thống trong lịch sử.",
     "No history data available": "Không có dữ liệu lịch sử",
+    "Availability (Request success rate over the last 24 hours)": "Кhả năng sẵn sàng (tỷ lệ thành công trong 24 giờ)",
     "No incidents in the last 24 hours": "Không có sự cố trong 24 giờ qua",
     "No incidents in the last 30 days": "Không có sự cố trong 30 ngày qua",
     "No instances have reported yet.": "Chưa có phiên bản nào báo cáo.",

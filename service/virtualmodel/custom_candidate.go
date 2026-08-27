@@ -18,6 +18,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	relaykitypes "github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -178,24 +179,35 @@ func readProbeLineWithTimeout(reader *bufio.Reader, stallTimeout time.Duration) 
 	}
 }
 
+// CustomCandidateExecutionResult 描述自定义候选透传结果与解析出的 usage/TTFT 喵。
+type CustomCandidateExecutionResult struct {
+	// Usage 上游返回的 usage（可能为 nil 表示未提供计费信息）喵。
+	Usage *dto.Usage
+	// TtftMs 从发起请求到收到响应头的毫秒数，零表示未测到喵。
+	TtftMs int64
+	// Err 透传失败（响应提交前），成功时为空喵。
+	Err error
+}
+
 // ExecuteCustomCandidate 尝试当前自定义候选并仅在成功响应写入时向客户端提交内容喵。
-func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput) error {
+// 返回结构携带解析出的 usage 与 TTFT，供虚拟模型日志与状态探测使用喵。
+func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput) *CustomCandidateExecutionResult {
 	// 喵~防御：Gin 上下文、请求和候选必要字段缺失时拒绝执行，避免产生未认证外发请求喵。
 	// CandidateID 为 0 时表示用户上游模型独立直接调用（无候选链身份），同样允许执行喵。
 	if c == nil || c.Request == nil || strings.TrimSpace(input.BaseURL) == "" || strings.TrimSpace(input.APIKey) == "" || strings.TrimSpace(input.RealModelName) == "" {
-		return customCandidatePrecommitFailure(errors.New("custom candidate execution input is invalid"))
+		return &CustomCandidateExecutionResult{Err: customCandidatePrecommitFailure(errors.New("custom candidate execution input is invalid"))}
 	}
 	parsedBaseURL, validateURLError := ValidateCustomBaseURL(input.BaseURL)
 	if validateURLError != nil {
-		return customCandidatePrecommitFailure(validateURLError)
+		return &CustomCandidateExecutionResult{Err: customCandidatePrecommitFailure(validateURLError)}
 	}
 	requestBody, bodyError := rewrittenCustomRequestBody(c, input.RealModelName)
 	if bodyError != nil {
-		return customCandidatePrecommitFailure(bodyError)
+		return &CustomCandidateExecutionResult{Err: customCandidatePrecommitFailure(bodyError)}
 	}
 	upstreamURL, targetURLError := buildCustomUpstreamURL(parsedBaseURL, c.Request.URL)
 	if targetURLError != nil {
-		return customCandidatePrecommitFailure(targetURLError)
+		return &CustomCandidateExecutionResult{Err: customCandidatePrecommitFailure(targetURLError)}
 	}
 	requestContext := c.Request.Context()
 	candidateTimeout := time.Duration(input.TimeoutSeconds) * time.Second
@@ -207,29 +219,36 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 	defer cancelRequest()
 	upstreamRequest, requestError := http.NewRequestWithContext(requestContext, c.Request.Method, upstreamURL.String(), strings.NewReader(string(requestBody)))
 	if requestError != nil {
-		return customCandidatePrecommitFailure(fmt.Errorf("create custom upstream request: %w", requestError))
+		return &CustomCandidateExecutionResult{Err: customCandidatePrecommitFailure(fmt.Errorf("create custom upstream request: %w", requestError))}
 	}
 	copyCustomUpstreamHeaders(upstreamRequest.Header, c.Request.Header)
 	if authError := applyCustomCandidateAuth(upstreamRequest.Header, input.AuthStyle, input.APIKey); authError != nil {
-		return customCandidatePrecommitFailure(authError)
+		return &CustomCandidateExecutionResult{Err: customCandidatePrecommitFailure(authError)}
 	}
 	upstreamRequest.ContentLength = int64(len(requestBody))
 	upstreamRequest.Header.Set("Content-Length", strconv.FormatInt(upstreamRequest.ContentLength, 10))
+	// 发起上游请求前打点，用于测量首字节（TTFT）喵。
+	execStart := time.Now()
 	response, responseError := strictCustomHTTPClient(candidateTimeout).Do(upstreamRequest)
+	// 响应头到达即首字节，流式与非流式都成立喵。
+	ttftMs := int64(0)
+	if responseError == nil {
+		ttftMs = time.Since(execStart).Milliseconds()
+	}
 	if responseError != nil {
-		return &CustomCandidateExecutionFailure{Failure: NormalizeCandidateFailure(0, nil, nil, responseError), Cause: responseError}
+		return &CustomCandidateExecutionResult{Err: &CustomCandidateExecutionFailure{Failure: NormalizeCandidateFailure(0, nil, nil, responseError), Cause: responseError}, TtftMs: ttftMs}
 	}
 	defer response.Body.Close()
 	// 喵~防御：仅 2xx 状态可提交为成功；重定向和其他协议状态必须进入候选规则处理喵。
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		responseBody, readError := io.ReadAll(io.LimitReader(response.Body, 64*1024+1))
 		if readError != nil {
-			return &CustomCandidateExecutionFailure{Failure: NormalizeCandidateFailure(response.StatusCode, response.Header, nil, readError), Cause: readError}
+			return &CustomCandidateExecutionResult{Err: &CustomCandidateExecutionFailure{Failure: NormalizeCandidateFailure(response.StatusCode, response.Header, nil, readError), Cause: readError}, TtftMs: ttftMs}
 		}
 		if len(responseBody) > 64*1024 {
 			responseBody = responseBody[:64*1024]
 		}
-		return &CustomCandidateExecutionFailure{Failure: NormalizeCandidateFailure(response.StatusCode, response.Header, responseBody, nil), ResponseHeaders: response.Header.Clone(), ResponseBody: responseBody, Cause: errors.New("custom upstream returned an error status")}
+		return &CustomCandidateExecutionResult{Err: &CustomCandidateExecutionFailure{Failure: NormalizeCandidateFailure(response.StatusCode, response.Header, responseBody, nil), ResponseHeaders: response.Header.Clone(), ResponseBody: responseBody, Cause: errors.New("custom upstream returned an error status")}, TtftMs: ttftMs}
 	}
 	// 喵~防御：2xx 响应在确认存在有效业务内容前不得提交，避免空流或 SSE 错误阻断候选故障转移喵。
 	responseReader := bufio.NewReader(response.Body)
@@ -240,31 +259,64 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 			ProbeTotalTimeoutSeconds: input.ProbeTotalTimeoutSeconds,
 		})
 		if precommitError != nil {
-			return customCandidatePrecommitFailure(precommitError)
+			return &CustomCandidateExecutionResult{Err: customCandidatePrecommitFailure(precommitError), TtftMs: ttftMs}
 		}
 		copyCustomResponseHeaders(c.Writer.Header(), response.Header)
 		c.Status(response.StatusCode)
-		// 喵~防御：预提交缓冲先回放，再继续读取同一个上游 iterator，避免重发请求或重复事件喵。
-		if _, copyError := io.Copy(c.Writer, io.MultiReader(bytes.NewReader(precommitBuffer), responseReader)); copyError != nil {
-			return fmt.Errorf("copy committed custom upstream response: %w", copyError)
+		usage := &dto.Usage{}
+		// 探测缓冲里可能已包含带 usage 的事件，先提取再回放喵。
+		extractUsageFromSSEBytes(precommitBuffer, usage)
+		if _, writeError := c.Writer.Write(precommitBuffer); writeError != nil {
+			return &CustomCandidateExecutionResult{Err: fmt.Errorf("write committed custom upstream response: %w", writeError), TtftMs: ttftMs}
 		}
-		return nil
-	}
-	// 喵~防御：非流式成功响应同样至少读取一个字节后才提交，避免把空 2xx 误当作成功喵。
-	firstByte, firstByteError := responseReader.ReadByte()
-	if firstByteError != nil {
-		if errors.Is(firstByteError, io.EOF) {
-			return customCandidatePrecommitFailure(errors.New("custom upstream returned an empty success response"))
+		// 逐行转发剩余 SSE 事件，同时从 data 载荷提取 usage 喵。
+		for {
+			lineBytes, readError := readLimitedSSELine(responseReader)
+			if len(lineBytes) > 0 {
+				extractUsageFromSSELine(lineBytes, usage)
+				if _, writeError := c.Writer.Write(lineBytes); writeError != nil {
+					return &CustomCandidateExecutionResult{Err: fmt.Errorf("write committed custom upstream response: %w", writeError), TtftMs: ttftMs}
+				}
+			}
+			if readError != nil {
+				if errors.Is(readError, io.EOF) {
+					break
+				}
+				return &CustomCandidateExecutionResult{Err: fmt.Errorf("read committed custom upstream stream: %w", readError), TtftMs: ttftMs}
+			}
 		}
-		return customCandidatePrecommitFailure(firstByteError)
+		usage = normalizeUpstreamModelUsage(usage)
+		// 只有真正解析到 token 计数才返回 usage，避免空 usage 对象混入日志喵。
+		if !usageHasTokens(usage) {
+			return &CustomCandidateExecutionResult{TtftMs: ttftMs}
+		}
+		return &CustomCandidateExecutionResult{Usage: usage, TtftMs: ttftMs}
 	}
+	// 非流式：先尝试缓冲读取并解析顶层 usage，超过上限时退回流式原样转发喵。
+	responseBody, readBodyError := io.ReadAll(io.LimitReader(responseReader, userUpstreamNonStreamingBodyLimit+1))
+	if readBodyError != nil {
+		return &CustomCandidateExecutionResult{Err: customCandidatePrecommitFailure(readBodyError), TtftMs: ttftMs}
+	}
+	if len(responseBody) > userUpstreamNonStreamingBodyLimit {
+		// 超限大响应：不解析 usage，把已读内容与剩余流合并原样转发喵。
+		copyCustomResponseHeaders(c.Writer.Header(), response.Header)
+		c.Status(response.StatusCode)
+		if _, copyError := io.Copy(c.Writer, io.MultiReader(bytes.NewReader(responseBody), responseReader)); copyError != nil {
+			return &CustomCandidateExecutionResult{Err: fmt.Errorf("copy committed custom upstream response: %w", copyError), TtftMs: ttftMs}
+		}
+		return &CustomCandidateExecutionResult{TtftMs: ttftMs}
+	}
+	// 喵~防御：空正文成功响应视为异常，不提交空业务结果喵。
+	if len(responseBody) == 0 {
+		return &CustomCandidateExecutionResult{Err: customCandidatePrecommitFailure(errors.New("custom upstream returned an empty success response")), TtftMs: ttftMs}
+	}
+	usage := normalizeUpstreamModelUsage(extractUsageFromOpenAIBody(responseBody))
 	copyCustomResponseHeaders(c.Writer.Header(), response.Header)
 	c.Status(response.StatusCode)
-	if _, copyError := io.Copy(c.Writer, io.MultiReader(bytes.NewReader([]byte{firstByte}), responseReader)); copyError != nil {
-		// 喵~防御：一旦成功响应开始写入，禁止将错误反馈为可切换候选，避免重复或混合协议响应喵。
-		return fmt.Errorf("copy committed custom upstream response: %w", copyError)
+	if _, writeError := c.Writer.Write(responseBody); writeError != nil {
+		return &CustomCandidateExecutionResult{Err: fmt.Errorf("write committed custom upstream response: %w", writeError), TtftMs: ttftMs}
 	}
-	return nil
+	return &CustomCandidateExecutionResult{Usage: usage, TtftMs: ttftMs}
 }
 
 // rewrittenCustomRequestBody 读取可复用 JSON 请求并仅修改顶层 model 字段喵。

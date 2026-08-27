@@ -3306,6 +3306,7 @@
     "No header overrides configured.": "No header overrides configured.",
     "No historical system tasks.": "No historical system tasks.",
     "No history data available": "No history data available",
+    "Availability (Request success rate over the last 24 hours)": "Availability (Request success rate over the last 24 hours)",
     "No incidents in the last 24 hours": "No incidents in the last 24 hours",
     "No incidents in the last 30 days": "No incidents in the last 30 days",
     "No instances have reported yet.": "No instances have reported yet.",

@@ -365,6 +365,8 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		InjectTieredBillingInfo(other, relayInfo, tieredResult)
 	}
 	attachQuotaSaturation(ctx, relayInfo, other)
+	// 虚拟模型内部候选成功：把结算 usage 写入 context，供状态探测填充 token 喵。
+	recordVirtualModelSuccessUsage(ctx, usage)
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,
 		PromptTokens:     usage.PromptTokens,
@@ -409,6 +411,15 @@ func PreConsumeTokenQuota(relayInfo *relaycommon.RelayInfo, quota int) error {
 type postConsumeQuotaResult struct {
 	FundingApplied bool
 	TokenApplied   bool
+}
+
+// recordVirtualModelSuccessUsage 在虚拟模型内部候选成功结算时把 usage 写入 context，供状态探测填充 token 喵。
+func recordVirtualModelSuccessUsage(ctx *gin.Context, usage *dto.Usage) {
+	// 喵~防御：非虚拟模型上下文或空 usage 直接跳过，避免污染普通请求喵。
+	if ctx == nil || usage == nil || common.GetContextKeyInt(ctx, constant.ContextKeyVirtualLogType) <= 0 {
+		return
+	}
+	common.SetContextKey(ctx, constant.ContextKeyVirtualModelSuccessUsage, usage)
 }
 
 func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQuota int, sendEmail bool) error {

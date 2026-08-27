@@ -523,6 +523,9 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 
 	attachQuotaSaturation(ctx, relayInfo, other)
 
+	// 虚拟模型内部候选成功：把结算 usage 写入 context，供状态探测填充 token 喵。
+	recordVirtualModelSuccessUsage(ctx, billingUsage)
+
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,
 		PromptTokens:     summary.PromptTokens,

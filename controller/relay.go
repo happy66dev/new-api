@@ -276,6 +276,12 @@ candidateRelayLoop:
 				relayInfo.LastError = nil
 				// 内部候选成功后清除其请求启动时观察到的自动冻结状态，失败只记录日志不影响成功响应喵。
 				middleware.ClearCurrentVirtualModelCandidateAutomaticFreeze(c)
+				// 内部候选成功：结算 usage 已在 service 写入 context，这里连同 TTFT 一并填充探测样本喵。
+				internalTtftMs := int64(0)
+				if !relayInfo.FirstResponseTime.IsZero() {
+					internalTtftMs = relayInfo.FirstResponseTime.Sub(relayInfo.StartTime).Milliseconds()
+				}
+				middleware.ApplyVirtualModelSuccessProbe(c, internalTtftMs)
 				// 实体状态检测：内部候选原生成功，记录候选成功与虚拟模型整体成功喵。
 				middleware.RecordActiveVirtualModelCandidateProbe(c, true, "")
 				middleware.RecordVirtualModelOverallProbe(c, true, "")

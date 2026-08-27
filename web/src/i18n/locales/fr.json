@@ -3306,6 +3306,7 @@
     "No header overrides configured.": "Aucune surcharge d'en-têtes configurée.",
     "No historical system tasks.": "Aucune tâche système dans l’historique.",
     "No history data available": "Aucune donnée historique disponible",
+    "Availability (Request success rate over the last 24 hours)": "Disponibilite (taux de succes des requetes sur 24h)",
     "No incidents in the last 24 hours": "Aucun incident au cours des dernières 24 heures",
     "No incidents in the last 30 days": "Aucun incident sur les 30 derniers jours",
     "No instances have reported yet.": "Aucune instance ne s’est encore signalée.",

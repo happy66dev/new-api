@@ -238,6 +238,8 @@ type virtualModelExecutionState struct {
 	currentCandidateStartedAt time.Time
 	// overallProbeRecorded 防止整体状态样本重复记录喵。
 	overallProbeRecorded bool
+	// successExtras 最近一次成功调用的吞吐/TTFT 样本，供整体与候选探测记录填充 token 喵。
+	successExtras perfmetrics.EntityProbeExtras
 	// inflightRequestID 活跃请求注册表里的请求唯一标识，首个候选激活时登记喵。
 	inflightRequestID string
 }
@@ -665,7 +667,8 @@ func currentVirtualModelCandidateSeq(c *gin.Context) int {
 }
 
 // recordVirtualModelCustomSuccess 纯直填 custom 候选成功时写虚拟模型日志喵。
-func recordVirtualModelCustomSuccess(c *gin.Context, useTimeSeconds int) {
+// usage 为候选透传解析出的上游计费信息（可能为 nil），token 计真实值喵。
+func recordVirtualModelCustomSuccess(c *gin.Context, useTimeSeconds int, usage *dto.Usage) {
 	// 喵~防御：缺少上下文时跳过日志，避免空指针喵。
 	if c == nil {
 		return
@@ -679,12 +682,21 @@ func recordVirtualModelCustomSuccess(c *gin.Context, useTimeSeconds int) {
 	if executionState.modelRequest != nil {
 		group = executionState.modelRequest.Group
 	}
-	// 纯直填 custom 候选无 usage 解析，token 计 0；候选尝试序列由日志 Other 承载喵。
+	// 喵~防御：空 usage 按零 token 处理，避免空指针喵。
+	promptTokens := 0
+	completionTokens := 0
+	if usage != nil {
+		promptTokens = usage.PromptTokens
+		completionTokens = usage.CompletionTokens
+	}
+	// 纯直填 custom 候选以解析出的 usage 填 token；候选尝试序列由日志 Other 承载喵。
 	model.RecordVirtualModelLog(c, c.GetInt("id"), model.RecordVirtualModelLogParams{
-		ModelName:      executionState.virtualModelName,
-		UseTimeSeconds: useTimeSeconds,
-		IsStream:       isUpstreamModelRequestStreaming(c),
-		Group:          group,
+		ModelName:        executionState.virtualModelName,
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		UseTimeSeconds:   useTimeSeconds,
+		IsStream:         isUpstreamModelRequestStreaming(c),
+		Group:            group,
 		Other: map[string]interface{}{
 			"virtual_model": executionState.virtualModelName,
 			"final_success": true,
@@ -712,10 +724,58 @@ func recordVirtualModelCandidateProbe(c *gin.Context, executionState *virtualMod
 	}
 	// 候选节点的聚合键为 virtual/<name>/candidate/<id>，全部归入自用固定分组喵。
 	probeModelName := fmt.Sprintf("%s/candidate/%d", executionState.virtualModelName, candidateID)
-	perfmetrics.RecordEntityProbe(probeModelName, latencyMs, success, perfmetrics.EntityProbeExtras{})
+	// 成功样本携带最近一次成功调用的 token/TTFT，失败样本留空喵。
+	extras := perfmetrics.EntityProbeExtras{}
+	if success {
+		extras = executionState.successExtras
+	}
+	perfmetrics.RecordEntityProbe(probeModelName, latencyMs, success, extras)
 	now := time.Now().Unix()
 	// 候选节点状态行的 EntityID 为候选 id、VirtualID 为所属虚拟模型 id，供按模型聚合查询喵。
 	_ = model.RecordEntityProbeCounted(model.EntityProbeScopeVirtualCandidate, int64(candidateID), int64(executionState.virtualModelID), executionState.ownerUserID, now, success, latencyMs, errorClass)
+}
+
+// recordVirtualModelProbeSuccess 记录一次虚拟模型成功调用的候选与整体探测样本，并携带 usage/TTFT 喵。
+// 上游 usage 可空（未提供计费信息），TTFT 为响应头到达毫秒数，零表示未测到喵。
+func recordVirtualModelProbeSuccess(c *gin.Context, executionState *virtualModelExecutionState, candidateID int, usage *dto.Usage, ttftMs int64) {
+	// 喵~防御：缺少执行状态或模型名时跳过，避免空指针喵。
+	if c == nil || executionState == nil || executionState.virtualModelName == "" {
+		return
+	}
+	extras := perfmetrics.EntityProbeExtras{TtftMs: ttftMs, HasTtft: ttftMs > 0}
+	if usage != nil {
+		extras.InputTokens = int64(usage.PromptTokens)
+		extras.OutputTokens = int64(usage.CompletionTokens)
+		extras.CachedTokens = int64(usage.PromptTokensDetails.CachedTokens)
+	}
+	executionState.successExtras = extras
+	latencyMs := time.Since(executionState.currentCandidateStartedAt).Milliseconds()
+	recordVirtualModelCandidateProbe(c, executionState, candidateID, true, "", latencyMs)
+	RecordVirtualModelOverallProbe(c, true, "")
+}
+
+// ApplyVirtualModelSuccessProbe 从 context 读取内部候选成功结算的 usage，并携带 TTFT 填充整体探测样本喵。
+// 供 controller/relay.go 在内部候选原生成功结算后调用，普通请求无副作用喵。
+func ApplyVirtualModelSuccessProbe(c *gin.Context, ttftMs int64) {
+	executionState, foundState := getVirtualModelExecutionState(c)
+	// 喵~防御：无执行状态时跳过，普通请求不产生任何写入喵。
+	if !foundState || executionState == nil {
+		return
+	}
+	extras := executionState.successExtras
+	if usageValue, foundUsage := common.GetContextKey(c, constant.ContextKeyVirtualModelSuccessUsage); foundUsage {
+		// 喵~防御：context 里类型不符时跳过，避免类型断言 panic 喵。
+		if usage, valid := usageValue.(*dto.Usage); valid && usage != nil {
+			extras.InputTokens = int64(usage.PromptTokens)
+			extras.OutputTokens = int64(usage.CompletionTokens)
+			extras.CachedTokens = int64(usage.PromptTokensDetails.CachedTokens)
+		}
+	}
+	if ttftMs > 0 {
+		extras.TtftMs = ttftMs
+		extras.HasTtft = true
+	}
+	executionState.successExtras = extras
 }
 
 // RecordVirtualModelOverallProbe 记录虚拟模型整体的被动统计样本喵。
@@ -732,7 +792,12 @@ func RecordVirtualModelOverallProbe(c *gin.Context, success bool, errorClass str
 	}
 	executionState.overallProbeRecorded = true
 	latencyMs := time.Since(executionState.startTime).Milliseconds()
-	perfmetrics.RecordEntityProbe(executionState.virtualModelName, latencyMs, success, perfmetrics.EntityProbeExtras{})
+	// 成功样本携带最近一次成功调用的 token/TTFT，失败样本留空喵。
+	extras := perfmetrics.EntityProbeExtras{}
+	if success {
+		extras = executionState.successExtras
+	}
+	perfmetrics.RecordEntityProbe(executionState.virtualModelName, latencyMs, success, extras)
 	now := time.Now().Unix()
 	_ = model.RecordEntityProbeCounted(model.EntityProbeScopeVirtual, int64(executionState.virtualModelID), 0, executionState.ownerUserID, now, success, latencyMs, errorClass)
 }
@@ -848,7 +913,8 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 			executionError = executionResult.Err
 			executionUsage = executionResult.Usage
 		} else {
-			executionError = virtualmodelservice.ExecuteCustomCandidate(c, virtualmodelservice.CustomCandidateExecutionInput{
+			// 纯直填 custom 候选：透传并解析 usage/TTFT 返回，供结算与状态探测使用喵。
+			customExecutionResult := virtualmodelservice.ExecuteCustomCandidate(c, virtualmodelservice.CustomCandidateExecutionInput{
 				CandidateID:    candidate.CandidateID,
 				BaseURL:        baseURL,
 				APIKey:         apiKey,
@@ -860,6 +926,9 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 				MinContentChars:          probeParameters.MinContentChars,
 				ProbeTotalTimeoutSeconds: probeParameters.ProbeTotalTimeoutSeconds,
 			})
+			executionError = customExecutionResult.Err
+			executionUsage = customExecutionResult.Usage
+			executionResult = &virtualmodelservice.UserUpstreamModelExecutionResult{Usage: customExecutionResult.Usage, TtftMs: customExecutionResult.TtftMs}
 		}
 		// 成功响应已由透传器直接写出，此时仅清除请求开始前已观察到的历史冻结并中止后续 controller relay 喵。
 		if executionError == nil {
@@ -873,13 +942,12 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 				// 实体状态检测：引用上游模型成功，同时记录上游模型自用维度成功喵。
 				recordUpstreamModelProbeState(referencedUpstreamModel, false, true, true, "", startTime, buildUpstreamProbeExtras(executionResult))
 			} else {
-				// 纯直填 custom 候选成功：写虚拟模型日志（无 usage 解析，token 计 0）喵。
-				recordVirtualModelCustomSuccess(c, int(time.Since(startTime).Seconds()))
+				// 纯直填 custom 候选成功：写虚拟模型日志（携带解析出的 usage，token 计真实值）喵。
+				recordVirtualModelCustomSuccess(c, int(time.Since(startTime).Seconds()), executionUsage)
 			}
-			// 实体状态检测：自定义候选成功，记录候选成功与虚拟模型整体成功喵。
+			// 实体状态检测：自定义候选成功，记录候选成功与虚拟模型整体成功（携带 usage/TTFT）喵。
 			executionState, _ := getVirtualModelExecutionState(c)
-			recordVirtualModelCandidateProbe(c, executionState, candidate.CandidateID, true, "", time.Since(startTime).Milliseconds())
-			RecordVirtualModelOverallProbe(c, true, "")
+			recordVirtualModelProbeSuccess(c, executionState, candidate.CandidateID, executionUsage, executionResult.TtftMs)
 			// 记录该 custom 候选成功尝试摘要，供最终日志展示候选链结果喵。
 			appendVirtualModelCandidateAttempt(c, model.VirtualModelCandidateAttemptRecord{
 				Seq:         currentVirtualModelCandidateSeq(c),

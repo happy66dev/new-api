@@ -3306,6 +3306,7 @@
     "No header overrides configured.": "未設定標頭覆蓋。",
     "No historical system tasks.": "暫無歷史系統任務。",
     "No history data available": "暫無歷史數據",
+    "Availability (Request success rate over the last 24 hours)": "最近 24 小時請求成功率",
     "No incidents in the last 24 hours": "最近 24 小時無異常",
     "No incidents in the last 30 days": "最近 30 天無事件",
     "No instances have reported yet.": "暫無實例上報。",

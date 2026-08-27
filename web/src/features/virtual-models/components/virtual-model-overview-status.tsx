@@ -215,6 +215,22 @@ export function VirtualModelOverviewStatus(
           <AvailabilityBars rates={props.status?.availability_24h ?? []} />
           )}
 
+          {/* runtime 变体：历史在线状态图表下方的可用率折线图（逐小时成功率）喵。 */}
+          {variant === 'runtime' && (
+          <div className='min-w-0'>
+            <div className='text-muted-foreground mb-1 text-xs'>
+              {t('Availability (Request success rate over the last 24 hours)')}
+            </div>
+            <LineChart
+              values={bucketData(series, (bucket) => bucket.success_rate)}
+              color='#10b981'
+              formatValue={(value) => `${value.toFixed(2)}%`}
+              labelKey={t('Availability (Request success rate over the last 24 hours)')}
+              emptyText={t('No history data available')}
+            />
+          </div>
+          )}
+
           {/* runtime 变体：逐小时图表 TTFT / 缓存命中率 / token 消耗 / 请求量喵。 */}
           {variant === 'runtime' && (
           <div className='grid grid-cols-1 gap-3 lg:grid-cols-2'>

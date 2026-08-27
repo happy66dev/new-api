@@ -3306,6 +3306,7 @@
     "No header overrides configured.": "ヘッダーのオーバーライドが設定されていません。",
     "No historical system tasks.": "システムタスク履歴はありません。",
     "No history data available": "履歴データがありません",
+    "Availability (Request success rate over the last 24 hours)": "可用率（ 24 時間のリクエスト成功率）",
     "No incidents in the last 24 hours": "過去 24 時間にインシデントはありません",
     "No incidents in the last 30 days": "過去 30 日間でインシデントはありません",
     "No instances have reported yet.": "まだ報告されたインスタンスはありません。",
