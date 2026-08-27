@@ -157,3 +157,23 @@ func TestGetActiveVirtualModelCandidateAttemptRejectsCorruptedStateValue(t *test
 	_, foundCandidateAttempt := GetActiveVirtualModelCandidateAttempt(ctx)
 	require.False(t, foundCandidateAttempt)
 }
+
+// TestBuildVirtualModelAttemptLabelPrefersRealModelName 验证候选尝试标识优先展示调用方传入的真实模型名喵。
+// custom 引用上游时 fallback 为上游条目的真实模型名，必须优先于候选配置里的占位名喵。
+func TestBuildVirtualModelAttemptLabelPrefersRealModelName(t *testing.T) {
+	// custom 引用上游：fallback 传真实上游模型名（gpt-4o），候选占位名为别名，必须展示真实模型名喵。
+	customCandidate := &model.VirtualModelInternalCandidateSnapshot{CandidateID: 1, RealModelName: "alias-name"}
+	require.Equal(t, "gpt-4o", buildVirtualModelAttemptLabel(customCandidate, "gpt-4o"), "引用上游时优先展示真实模型名喵")
+
+	// custom 纯直填：fallback 与候选模型名相同，展示该模型名喵。
+	require.Equal(t, "gpt-4o", buildVirtualModelAttemptLabel(customCandidate, "gpt-4o"), "纯直填候选展示模型名喵")
+
+	// internal 候选：fallback 与候选真实模型名相同，展示该真实模型名喵。
+	internalCandidate := &model.VirtualModelInternalCandidateSnapshot{CandidateID: 2, RealModelName: "claude-3-5-sonnet"}
+	require.Equal(t, "claude-3-5-sonnet", buildVirtualModelAttemptLabel(internalCandidate, "claude-3-5-sonnet"), "internal 候选展示真实模型名喵")
+
+	// 喵~防御：fallback 为空且候选为空时不得 panic，回退空标识喵。
+	require.Equal(t, "", buildVirtualModelAttemptLabel(nil, ""), "空候选且无真实模型名时回退空标识喵")
+	// 喵~防御：fallback 为空但有候选时回退候选模型名，保证标识始终可辨识喵。
+	require.Equal(t, "fallback-model", buildVirtualModelAttemptLabel(nil, "fallback-model"), "空候选但传入真实模型名时展示该名喵")
+}

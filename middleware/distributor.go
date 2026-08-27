@@ -683,11 +683,16 @@ func appendVirtualModelCandidateAttempt(c *gin.Context, attempt model.VirtualMod
 	*attempts = append(*attempts, attempt)
 }
 
-// buildVirtualModelAttemptLabel 构造候选尝试的可辨识标识（internal: 真实模型名；custom: 模型名）喵。
+// buildVirtualModelAttemptLabel 构造候选尝试的可辨识标识喵。
+// custom 引用上游时优先显示调用方传入的真实上游模型名（fallback），internal 与纯直填候选显示候选模型名喵。
 func buildVirtualModelAttemptLabel(candidate *model.VirtualModelInternalCandidateSnapshot, fallbackModelName string) string {
-	// 喵~防御：空候选回退到模型名，避免空标识喵。
-	if candidate == nil {
+	// 喵~防御：调用方明确传入的真实模型名优先（custom 引用上游时为上游条目的真实模型名），避免显示候选占位名喵。
+	if strings.TrimSpace(fallbackModelName) != "" {
 		return fallbackModelName
+	}
+	// 喵~防御：候选为空且无真实模型名时回退空标识，避免空指针喵。
+	if candidate == nil {
+		return ""
 	}
 	return candidate.RealModelName
 }
