@@ -34,10 +34,8 @@ function makeDraft(overrides: Partial<FailureRuleDraft> = {}): FailureRuleDraft 
     bodyRegexMode: 'none',
     bodyRegexPreset: '',
     bodyRegexSimple: '',
-    // 默认按 HTTP 状态码匹配，错误分类二选一语义下的兜底类型喵。
+    // 默认按 HTTP 状态码匹配，超时为独立可选条件喵。
     conditionType: 'http',
-    customErrorClass: '',
-    errorClass: '',
     freezeSeconds: '0',
     freezeField: '',
     freezeUnit: 'seconds',
@@ -65,10 +63,8 @@ describe('toFailureRuleDraft', () => {
       bodyRegexMode: 'custom',
       bodyRegexPreset: '',
       bodyRegexSimple: '',
-      // 稳定错误分类 rate_limited 还原为固定条件类型喵。
-      conditionType: 'rate_limited',
-      customErrorClass: '',
-      errorClass: 'rate_limited',
+      // 非 timeout 的错误分类（限流等）回退 HTTP 状态码条件，保留原状态码喵。
+      conditionType: 'http',
       freezeSeconds: '30',
       freezeField: '',
       freezeUnit: 'seconds',
@@ -100,10 +96,8 @@ describe('toFailureRuleDraft', () => {
       bodyRegexMode: 'none',
       bodyRegexPreset: '',
       bodyRegexSimple: '',
-      // 无错误分类时默认按 HTTP 状态码条件编辑喵。
+      // 无超时分类时默认按 HTTP 状态码条件编辑喵。
       conditionType: 'http',
-      customErrorClass: '',
-      errorClass: '',
       freezeSeconds: '0',
       freezeField: '',
       freezeUnit: 'seconds',
@@ -138,8 +132,6 @@ describe('createFailureRuleDraft', () => {
       bodyRegexSimple: '',
       // 默认规则按 HTTP 状态码条件匹配喵。
       conditionType: 'http',
-      customErrorClass: '',
-      errorClass: '',
       freezeSeconds: '0',
       freezeField: '',
       freezeUnit: 'seconds',
@@ -152,24 +144,21 @@ describe('createFailureRuleDraft', () => {
 // describe toFailureRuleDraft：错误分类到条件类型的推断喵。
 describe('toFailureRuleDraft condition inference', () => {
   it('maps a stable timeout class to the timeout condition', () => {
-    // 服务端 timeout 分类应还原为固定 timeout 条件喵。
+    // 服务端 timeout 分类应还原为固定超时条件喵。
     const draft = toFailureRuleDraft({ http_status: 0, error_class: 'timeout', body_regex: '', action: 'next', freeze_seconds: 0 })
     expect(draft.conditionType).toBe('timeout')
-    expect(draft.customErrorClass).toBe('')
   })
 
-  it('maps a network error class to the network condition', () => {
-    // 服务端 network_error 分类应还原为 network 条件喵。
+  it('falls back to the http condition for a network error class', () => {
+    // 网络错误等非超时分类回退 HTTP 状态码条件，因为状态码已能表达大部分失败喵。
     const draft = toFailureRuleDraft({ http_status: 0, error_class: 'network_error', body_regex: '', action: 'next', freeze_seconds: 0 })
-    expect(draft.conditionType).toBe('network')
-    expect(draft.customErrorClass).toBe('')
+    expect(draft.conditionType).toBe('http')
   })
 
-  it('treats an unknown error class as a custom error condition', () => {
-    // 白名单外的分类按自定义错误类还原，保留原始文本喵。
+  it('falls back to the http condition for an unknown error class', () => {
+    // 白名单外的分类同样回退 HTTP 状态码条件，避免产生无法编辑的规则喵。
     const draft = toFailureRuleDraft({ http_status: 0, error_class: 'upstream_custom_gateway', body_regex: '', action: 'next', freeze_seconds: 0 })
-    expect(draft.conditionType).toBe('custom_error')
-    expect(draft.customErrorClass).toBe('upstream_custom_gateway')
+    expect(draft.conditionType).toBe('http')
   })
 })
 
@@ -268,48 +257,18 @@ describe('validateFailureRuleDraft', () => {
     })
   })
 
-  it('converts a custom error class draft trimming text and clearing http status', () => {
-    // 自定义错误分类条件应去空白写入 error_class，且 http_status 归零保持互斥喵。
-    const payload = validateFailureRuleDraft(
-      makeDraft({
-        conditionType: 'custom_error',
-        customErrorClass: ' upstream_server_error ',
-        bodyRegexMode: 'custom',
-        bodyRegex: ' overloaded ',
-        action: 'retry',
-        freezeSeconds: '5',
-        id: 3,
-      }),
-      0,
-      identityTranslator
-    )
-    expect(payload).toEqual({
-      id: 3,
-      http_status: 0,
-      http_status_max: 0,
-      error_class: 'upstream_server_error',
-      body_regex: 'overloaded',
-      action: 'retry',
-      freeze_seconds: 5,
-      freeze_field: '',
-      freeze_unit: 'seconds',
-    })
-  })
-
-  it('maps fixed conditions to their stable error classes', () => {
-    // 固定条件（超时/网络/限流）应写入后端稳定分类，状态码保持不限制喵。
+  it('maps the timeout condition to its stable error class', () => {
+    // 超时条件应写入后端 timeout 分类，HTTP 状态码保持不限制喵。
     const timeoutPayload = validateFailureRuleDraft(makeDraft({ conditionType: 'timeout' }), 0, identityTranslator)
     expect(timeoutPayload.error_class).toBe('timeout')
     expect(timeoutPayload.http_status).toBe(0)
-    const networkPayload = validateFailureRuleDraft(makeDraft({ conditionType: 'network' }), 0, identityTranslator)
-    expect(networkPayload.error_class).toBe('network_error')
-    const rateLimitedPayload = validateFailureRuleDraft(makeDraft({ conditionType: 'rate_limited' }), 0, identityTranslator)
-    expect(rateLimitedPayload.error_class).toBe('rate_limited')
   })
 
-  it('rejects a custom error condition without an error class', () => {
-    // 喵~防御：自定义错误条件缺少分类文本会生成无效规则，必须拒绝喵。
-    expect(() => validateFailureRuleDraft(makeDraft({ conditionType: 'custom_error', customErrorClass: '' }), 0, identityTranslator)).toThrow()
+  it('clears the error class for the http condition', () => {
+    // HTTP 状态码条件必须清空错误分类，保证二选一语义喵。
+    const httpPayload = validateFailureRuleDraft(makeDraft({ httpStatus: '503' }), 0, identityTranslator)
+    expect(httpPayload.error_class).toBe('')
+    expect(httpPayload.http_status).toBe(503)
   })
 
   it('resolves simple-text body matching into an escaped regex', () => {

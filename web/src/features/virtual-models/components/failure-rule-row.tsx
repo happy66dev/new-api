@@ -67,13 +67,10 @@ export function FailureRuleEditorRow({
       <div className='grid gap-3 sm:grid-cols-2 lg:grid-cols-3'>
         <label className='grid gap-1 text-sm font-medium'>
           {t('Failure condition')}
-          {/* 失败条件二选一：HTTP 状态码或错误分类，互斥选择喵。 */}
+          {/* 失败条件二选一：HTTP 状态码或超时，互斥选择喵。大部分失败用状态码即可，超时无状态码需独立覆盖喵。 */}
           <select className='border-input bg-background h-9 rounded-md border px-3 text-sm' value={rule.conditionType} disabled={isSaving} onChange={(event) => onChange({ conditionType: event.target.value as ConditionType })}>
             <option value='http'>{t('HTTP status code')}</option>
             <option value='timeout'>{t('Timeout')}</option>
-            <option value='network'>{t('Network error')}</option>
-            <option value='rate_limited'>{t('Rate limited')}</option>
-            <option value='custom_error'>{t('Custom error class')}</option>
           </select>
         </label>
         {/* HTTP 条件：展示状态码输入与常用预设喵。 */}
@@ -121,17 +118,13 @@ export function FailureRuleEditorRow({
             </span>
           </label>
         )}
-        {/* 非 HTTP 条件：展示所选错误分类的说明或自定义输入喵。 */}
-        {rule.conditionType !== 'http' && (
+        {/* 超时条件：无状态码可配置，展示固定说明喵。 */}
+        {rule.conditionType === 'timeout' && (
           <label className='grid gap-1 text-sm font-medium'>
-            {rule.conditionType === 'custom_error' ? t('Error class') : t('Error class (fixed)')}
-            {rule.conditionType === 'custom_error' ? (
-              <Input value={rule.customErrorClass} disabled={isSaving} placeholder='e.g. upstream_unavailable' onChange={(event) => onChange({ customErrorClass: event.target.value })} />
-            ) : (
-              <div className='flex h-9 items-center rounded-md border px-3 text-sm text-muted-foreground'>
-                {rule.conditionType === 'timeout' ? t('Matches timeout failures') : rule.conditionType === 'network' ? t('Matches network error failures') : t('Matches rate limited failures')}
-              </div>
-            )}
+            {t('Error class (fixed)')}
+            <div className='flex h-9 items-center rounded-md border px-3 text-sm text-muted-foreground'>
+              {t('Matches timeout failures')}
+            </div>
           </label>
         )}
         <label className='grid gap-1 text-sm font-medium'>
