@@ -6,7 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/require"
@@ -234,4 +236,47 @@ func TestHandleUserUpstreamModelProbeStateDecryptFailure(t *testing.T) {
 	require.Equal(t, int64(0), state.SuccessCount)
 	require.False(t, state.LastSuccess)
 	require.Equal(t, "credential_error", state.LastError)
+}
+
+// TestSettleUserUpstreamModelChargeWritesLog 验证结算链路把 usage 令牌与首字延迟写入日志喵。
+func TestSettleUserUpstreamModelChargeWritesLog(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	// 构造独立测试库，替换全局 DB 与日志库并在结束后恢复喵。
+	testDB := newUpstreamModelTestDB(t)
+	require.NoError(t, testDB.AutoMigrate(&model.Log{}))
+	oldDB := model.DB
+	oldLogDB := model.LOG_DB
+	model.DB = testDB
+	model.LOG_DB = testDB
+	defer func() {
+		model.DB = oldDB
+		model.LOG_DB = oldLogDB
+	}()
+
+	// 属主 7 的上游模型：输入 10 元/M、缓存 0.1 元/M，余额充足喵。
+	upstreamModel := &model.UserUpstreamModel{OwnerUserID: 7, NormalizedName: "alpha", Enabled: true, RealModelName: "gpt-4o", ModelRatio: "10", CacheRatio: "0.1", BalanceCents: 100000, AvailableCents: 100000}
+	require.NoError(t, testDB.Create(upstreamModel).Error)
+
+	// 结算收到的是已归一化 usage：1000 输入含 200 缓存命中、100 输出喵。
+	usage := &dto.Usage{PromptTokens: 1000, CompletionTokens: 100, TotalTokens: 1100, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 200}}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/alpha"}`))
+	ctx.Set("id", 7)
+	// 自用结算，TTFT 123 毫秒应写入日志 other["frt"] 喵。
+	settleUserUpstreamModelCharge(ctx, 7, upstreamModel, usage, "default", false, 5, false, 123)
+
+	// 日志行应记录输入/输出令牌，类型为自定上游喵。
+	var logRow model.Log
+	require.NoError(t, testDB.Where("model_name = ?", "user/alpha").Order("id desc").First(&logRow).Error)
+	require.Equal(t, model.LogTypeCustomUpstream, logRow.Type)
+	require.Equal(t, 1000, logRow.PromptTokens)
+	require.Equal(t, 100, logRow.CompletionTokens)
+
+	// other 字段应包含缓存命中数与首字延迟，供日志详情与 Timing 展示喵。
+	other := map[string]interface{}{}
+	require.NoError(t, common.Unmarshal([]byte(logRow.Other), &other))
+	require.Equal(t, float64(200), other["cached_tokens"])
+	require.Equal(t, float64(123), other["frt"])
 }

@@ -838,7 +838,7 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 				if executionState, foundState := getVirtualModelExecutionState(c); foundState && executionState.modelRequest != nil {
 					requestGroup = executionState.modelRequest.Group
 				}
-				settleUserUpstreamModelCharge(c, referencedUpstreamModel.OwnerUserID, referencedUpstreamModel, executionUsage, requestGroup, isUpstreamModelRequestStreaming(c), int(time.Since(startTime).Seconds()), false)
+				settleUserUpstreamModelCharge(c, referencedUpstreamModel.OwnerUserID, referencedUpstreamModel, executionUsage, requestGroup, isUpstreamModelRequestStreaming(c), int(time.Since(startTime).Seconds()), false, executionResult.TtftMs)
 				// 实体状态检测：引用上游模型成功，同时记录上游模型自用维度成功喵。
 				recordUpstreamModelProbeState(referencedUpstreamModel, false, true, true, "", startTime, buildUpstreamProbeExtras(executionResult))
 			} else {

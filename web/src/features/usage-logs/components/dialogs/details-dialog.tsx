@@ -410,7 +410,8 @@ function TokenBreakdown(props: { log: UsageLog; other: LogOtherData }) {
 
   const promptTokens = log.prompt_tokens || 0
   const completionTokens = log.completion_tokens || 0
-  const cacheRead = other.cache_tokens || 0
+  // 内部日志读 cache_tokens，自定上游（type=8）读 cached_tokens，两种键都兜底喵。
+  const cacheRead = other.cache_tokens || other.cached_tokens || 0
   const cacheWrite = other.cache_creation_tokens || 0
   const cacheWrite5m = other.cache_creation_tokens_5m || 0
   const cacheWrite1h = other.cache_creation_tokens_1h || 0
@@ -1064,6 +1065,26 @@ export function DetailsDialog(props: DetailsDialogProps) {
           <TokenBreakdown log={props.log} other={other} />
         )}
 
+        {/* 自定上游/虚拟模型（type=8/9）独立 RMB 计费明细喵 */}
+        {(props.log.type === 8 || props.log.type === 9) &&
+          other &&
+          other.custom_cost_rmb != null && (
+            <DetailSection label={t('Custom Billing')}>
+              <DetailRow
+                label={t('Cost')}
+                value={`¥${other.custom_cost_rmb}`}
+                mono
+              />
+              {other.is_shared_call === true && (
+                <DetailRow
+                  label={t('Billing Mode')}
+                  value={t('Shared call')}
+                  mono
+                />
+              )}
+            </DetailSection>
+          )}
+
         {/* Billing breakdown (consume type) */}
         {isConsume && other && !isViolation && (
           <BillingBreakdown
@@ -1325,5 +1346,5 @@ export function DetailsDialog(props: DetailsDialogProps) {
 }
 
 function isDisplayableType(type: number): boolean {
-  return [0, 2, 5, 6].includes(type)
+  return [0, 2, 5, 6, 8, 9].includes(type)
 }

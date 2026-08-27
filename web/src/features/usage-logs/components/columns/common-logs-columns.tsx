@@ -127,6 +127,44 @@ function buildTypeDetailSegments(
     return [{ text: t('Async task refund') }]
   }
 
+  // 自定上游（type=8）与虚拟模型（type=9）日志：摘要展示费用/令牌或候选链，避免内容为空时显示"-"喵。
+  if (log.type === 8 || log.type === 9) {
+    const customSegments: DetailSegment[] = []
+    if (log.type === 8) {
+      // type=8：展示独立 RMB 费用与令牌数喵。
+      if (other?.custom_cost_rmb != null) {
+        customSegments.push({ text: `${t('Cost')}: ¥${other.custom_cost_rmb}` })
+      }
+      const promptTokens = log.prompt_tokens || 0
+      const completionTokens = log.completion_tokens || 0
+      if (promptTokens > 0 || completionTokens > 0) {
+        customSegments.push({
+          text: `${promptTokens.toLocaleString()} / ${completionTokens.toLocaleString()}`,
+          muted: true,
+        })
+      }
+      if (other?.is_shared_call) {
+        customSegments.push({ text: t('Shared call'), muted: true })
+      }
+    } else {
+      // type=9：候选尝试序列摘要，如「候选 1 → 候选 3」喵。
+      if (Array.isArray(other?.candidates) && other.candidates.length > 0) {
+        customSegments.push({
+          text: `${t('Candidate')} ${other.candidates
+            .map((candidate) => candidate.seq)
+            .join(' → ')}`,
+        })
+      } else if (other?.virtual_model) {
+        customSegments.push({ text: String(other.virtual_model) })
+      }
+      if (other?.final_success === false) {
+        customSegments.push({ text: t('Failed'), danger: true })
+      }
+    }
+    if (customSegments.length > 0) return customSegments
+    return []
+  }
+
   if (log.type !== 2) return []
 
   const isViolation = isViolationFeeLog(other)
@@ -663,7 +701,7 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
           return <span className='text-muted-foreground text-xs'>-</span>
         }
 
-        const cacheReadTokens = other?.cache_tokens || 0
+        const cacheReadTokens = other?.cache_tokens || other?.cached_tokens || 0
         const cacheWrite5m = other?.cache_creation_tokens_5m || 0
         const cacheWrite1h = other?.cache_creation_tokens_1h || 0
         const hasSplitCache = cacheWrite5m > 0 || cacheWrite1h > 0

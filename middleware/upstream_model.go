@@ -119,7 +119,7 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 	}
 	// 成功透传计入成功，随后按独立 RMB 计费系统扣费与写日志；共享调用免费只累计共享消耗喵。
 	recordUpstreamModelProbeState(upstreamModel, isShared, true, true, "", startTime, buildUpstreamProbeExtras(executionResult))
-	settleUserUpstreamModelCharge(c, upstreamModel.OwnerUserID, upstreamModel, executionResult.Usage, modelRequest.Group, isUpstreamModelRequestStreaming(c), int(time.Since(startTime).Seconds()), isShared)
+	settleUserUpstreamModelCharge(c, upstreamModel.OwnerUserID, upstreamModel, executionResult.Usage, modelRequest.Group, isUpstreamModelRequestStreaming(c), int(time.Since(startTime).Seconds()), isShared, executionResult.TtftMs)
 	c.Abort()
 	return false
 }
@@ -218,7 +218,7 @@ func upstreamModelFailureErrorClass(executionError error) string {
 
 // settleUserUpstreamModelCharge 计算费用、扣减余额与累计消耗，并写入自定上游日志喵。
 // isShared 为 true 时表示共享调用：免费、只累计共享消耗、日志归入 user-shared 分组喵。
-func settleUserUpstreamModelCharge(c *gin.Context, ownerUserID int, upstreamModel *model.UserUpstreamModel, usage *dto.Usage, group string, isStream bool, useTimeSeconds int, isShared bool) {
+func settleUserUpstreamModelCharge(c *gin.Context, ownerUserID int, upstreamModel *model.UserUpstreamModel, usage *dto.Usage, group string, isStream bool, useTimeSeconds int, isShared bool, ttftMs int64) {
 	// 喵~防御：空上下文或空模型对象直接返回，避免空指针喵。
 	if c == nil || upstreamModel == nil {
 		return
@@ -269,6 +269,10 @@ func settleUserUpstreamModelCharge(c *gin.Context, ownerUserID int, upstreamMode
 		"audio_tokens":             audioTokens,
 		"usage_available":          usage != nil,
 		"is_shared_call":           isShared,
+	}
+	// 首字延迟写入 other["frt"]（毫秒），与内部日志字段一致，供日志 Timing 展示首字耗时喵。
+	if ttftMs > 0 {
+		other["frt"] = ttftMs
 	}
 	model.RecordUserUpstreamModelLog(c, logUserID, model.RecordUserUpstreamModelLogParams{
 		PromptTokens:     promptTokens,

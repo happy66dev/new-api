@@ -125,7 +125,8 @@ func ExecuteUserUpstreamModel(c *gin.Context, input CustomCandidateExecutionInpu
 			}
 		}
 		// 只有真正解析到 token 计数才返回 usage，避免空 usage 对象混入日志喵。
-		if usage.PromptTokens == 0 && usage.CompletionTokens == 0 && usage.TotalTokens == 0 {
+		usage = normalizeUpstreamModelUsage(usage)
+		if !usageHasTokens(usage) {
 			return &UserUpstreamModelExecutionResult{Usage: nil, TtftMs: ttftMs}
 		}
 		return &UserUpstreamModelExecutionResult{Usage: usage, TtftMs: ttftMs}
@@ -143,7 +144,7 @@ func ExecuteUserUpstreamModel(c *gin.Context, input CustomCandidateExecutionInpu
 	if len(responseBody) == 0 {
 		return &UserUpstreamModelExecutionResult{Err: customCandidatePrecommitFailure(errors.New("user upstream returned an empty success response")), TtftMs: ttftMs}
 	}
-	usage := extractUsageFromOpenAIBody(responseBody)
+	usage := normalizeUpstreamModelUsage(extractUsageFromOpenAIBody(responseBody))
 	copyCustomResponseHeaders(c.Writer.Header(), response.Header)
 	c.Status(response.StatusCode)
 	if _, writeError := c.Writer.Write(responseBody); writeError != nil {
@@ -180,7 +181,7 @@ func extractUsageFromOpenAIBody(body []byte) *dto.Usage {
 		return nil
 	}
 	// 只有真正包含 token 计数才返回 usage 喵。
-	if payload.Usage.PromptTokens == 0 && payload.Usage.CompletionTokens == 0 && payload.Usage.TotalTokens == 0 {
+	if !usageHasTokens(&payload.Usage) {
 		return nil
 	}
 	return &payload.Usage
@@ -228,9 +229,57 @@ func extractUsageFromSSELine(lineBytes []byte, target *dto.Usage) {
 	if err := common.Unmarshal([]byte(usageRaw.Raw), &usage); err != nil {
 		return
 	}
-	if usage.PromptTokens == 0 && usage.CompletionTokens == 0 && usage.TotalTokens == 0 {
+	if !usageHasTokens(&usage) {
 		return
 	}
 	// 流式事件里的 usage 取最后一次出现的非空值，符合 OpenAI 流式末尾 usage 语义喵。
 	*target = usage
+}
+
+// usageHasTokens 判断 usage 是否携带任何 token 计数（含 input/output 风格字段）喵。
+func usageHasTokens(usage *dto.Usage) bool {
+	// 喵~防御：空 usage 视为无 token 喵。
+	if usage == nil {
+		return false
+	}
+	return usage.PromptTokens != 0 || usage.CompletionTokens != 0 || usage.TotalTokens != 0 ||
+		usage.InputTokens != 0 || usage.OutputTokens != 0
+}
+
+// normalizeUpstreamModelUsage 把各厂商 usage 字段统一到 new-api 标准口径喵。
+// 缓存命中 token 可能出现在 prompt_tokens_details.cached_tokens、prompt_cache_hit_tokens
+// 或 input_tokens_details.cached_tokens 之一，统一回填到 prompt_tokens_details.cached_tokens，
+// 使计费（缓存价）与缓存命中率统计都拿到正确的缓存量喵。
+func normalizeUpstreamModelUsage(usage *dto.Usage) *dto.Usage {
+	// 喵~防御：空 usage 直接返回，避免空指针喵。
+	if usage == nil {
+		return nil
+	}
+	// Anthropic/Responses 风格的 input_tokens/output_tokens 回填到 prompt/completion 标准字段喵。
+	if usage.PromptTokens == 0 && usage.InputTokens > 0 {
+		usage.PromptTokens = usage.InputTokens
+	}
+	if usage.CompletionTokens == 0 && usage.OutputTokens > 0 {
+		usage.CompletionTokens = usage.OutputTokens
+	}
+	// 缓存命中回填：标准字段优先，其次 DeepSeek 的 prompt_cache_hit_tokens，再 Anthropic 的 input_tokens_details.cached_tokens 喵。
+	// 回填后计费按 prompt_tokens - cached_tokens 计算基础输入价，等价于把缓存命中从输入扣除喵。
+	if usage.PromptTokensDetails.CachedTokens == 0 {
+		if usage.PromptCacheHitTokens > 0 {
+			usage.PromptTokensDetails.CachedTokens = usage.PromptCacheHitTokens
+		} else if usage.InputTokensDetails != nil && usage.InputTokensDetails.CachedTokens > 0 {
+			usage.PromptTokensDetails.CachedTokens = usage.InputTokensDetails.CachedTokens
+		}
+	}
+	// 防御钳制：异常负值统一归零，防止上游异常把计费与命中率拉偏喵。
+	if usage.PromptTokens < 0 {
+		usage.PromptTokens = 0
+	}
+	if usage.CompletionTokens < 0 {
+		usage.CompletionTokens = 0
+	}
+	if usage.PromptTokensDetails.CachedTokens < 0 {
+		usage.PromptTokensDetails.CachedTokens = 0
+	}
+	return usage
 }

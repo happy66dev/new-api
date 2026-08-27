@@ -224,6 +224,10 @@ export interface LogOtherData {
     end_error?: string
     errors?: string[]
   }
+  // 自定上游日志（type=8）专用字段：独立 RMB 费用（元，字符串）、共享调用标记与缓存命中数喵。
+  custom_cost_rmb?: string
+  is_shared_call?: boolean
+  cached_tokens?: number
   // 虚拟模型日志（type=9）专用字段：虚拟模型名、最终成功与否与全部候选尝试序列喵。
   virtual_model?: string
   final_success?: boolean

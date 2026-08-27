@@ -84,3 +84,81 @@ func TestReadLimitedSSELine(t *testing.T) {
 	require.Equal(t, io.EOF, err)
 	assert.Len(t, line, 0)
 }
+
+// TestNormalizeUpstreamModelUsage 表驱动验证各厂商 usage 字段统一到标准口径喵。
+func TestNormalizeUpstreamModelUsage(t *testing.T) {
+	cases := []struct {
+		name  string
+		input *dto.Usage
+		want  *dto.Usage
+	}{
+		{
+			name:  "OpenAI 标准字段原样保留",
+			input: &dto.Usage{PromptTokens: 100, CompletionTokens: 50, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 20}},
+			want:  &dto.Usage{PromptTokens: 100, CompletionTokens: 50, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 20}},
+		},
+		{
+			// DeepSeek 只报 prompt_cache_hit_tokens，缓存量应回填到标准字段喵。
+			name:  "DeepSeek 缓存命中回填",
+			input: &dto.Usage{PromptTokens: 100, CompletionTokens: 50, PromptCacheHitTokens: 30},
+			want:  &dto.Usage{PromptTokens: 100, CompletionTokens: 50, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 30}, PromptCacheHitTokens: 30},
+		},
+		{
+			// Anthropic 风格报 input_tokens/output_tokens 与 input_tokens_details.cached_tokens 喵。
+			name:  "Anthropic input/output 兜底回填",
+			input: &dto.Usage{InputTokens: 200, OutputTokens: 80, InputTokensDetails: &dto.InputTokenDetails{CachedTokens: 40}},
+			want:  &dto.Usage{PromptTokens: 200, CompletionTokens: 80, InputTokens: 200, OutputTokens: 80, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 40}, InputTokensDetails: &dto.InputTokenDetails{CachedTokens: 40}},
+		},
+		{
+			// 标准字段已存在时不被 prompt_cache_hit_tokens 覆盖喵。
+			name:  "标准字段优先",
+			input: &dto.Usage{PromptTokens: 100, PromptCacheHitTokens: 30, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 25}},
+			want:  &dto.Usage{PromptTokens: 100, PromptCacheHitTokens: 30, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 25}},
+		},
+		{
+			// 异常负值统一钳制归零，防止上游把计费与命中率拉偏喵。
+			name:  "负值钳制归零",
+			input: &dto.Usage{PromptTokens: -5, CompletionTokens: -3, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: -2}},
+			want:  &dto.Usage{PromptTokens: 0, CompletionTokens: 0, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 0}},
+		},
+		{
+			// 空 usage 返回 nil，避免空指针喵。
+			name:  "空 usage 返回 nil",
+			input: nil,
+			want:  nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := normalizeUpstreamModelUsage(tc.input)
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// TestUsageHasTokens 验证 token 计数存在性判断覆盖 input/output 风格字段喵。
+func TestUsageHasTokens(t *testing.T) {
+	// 空 usage 视为无 token 喵。
+	require.False(t, usageHasTokens(nil))
+	// 标准字段非零视为有 token 喵。
+	require.True(t, usageHasTokens(&dto.Usage{PromptTokens: 1}))
+	require.True(t, usageHasTokens(&dto.Usage{CompletionTokens: 1}))
+	require.True(t, usageHasTokens(&dto.Usage{TotalTokens: 1}))
+	// Anthropic 风格字段非零也视为有 token，避免 usage 被误判为空喵。
+	require.True(t, usageHasTokens(&dto.Usage{InputTokens: 1}))
+	require.True(t, usageHasTokens(&dto.Usage{OutputTokens: 1}))
+	// 全零视为无 token 喵。
+	require.False(t, usageHasTokens(&dto.Usage{}))
+}
+
+// TestExtractUsageFromSSELineDeepSeekCache 验证 DeepSeek 流式缓存字段可被解析并经归一化回填喵。
+func TestExtractUsageFromSSELineDeepSeekCache(t *testing.T) {
+	// DeepSeek 流式末尾事件报 prompt_cache_hit_tokens 而非标准 cached_tokens 喵。
+	usage := &dto.Usage{}
+	extractUsageFromSSELine([]byte(`data: {"usage":{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"prompt_cache_hit_tokens":30}}`), usage)
+	require.Equal(t, 100, usage.PromptTokens)
+	require.Equal(t, 30, usage.PromptCacheHitTokens)
+	// 归一化后缓存命中回填到标准字段，供计费按缓存价收取喵。
+	normalized := normalizeUpstreamModelUsage(usage)
+	require.Equal(t, 30, normalized.PromptTokensDetails.CachedTokens)
+}
