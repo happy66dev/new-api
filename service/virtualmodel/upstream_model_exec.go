@@ -203,6 +203,15 @@ func ExecuteUserUpstreamModel(c *gin.Context, input CustomCandidateExecutionInpu
 			ProbeTotalTimeoutSeconds: input.ProbeTotalTimeoutSeconds,
 		})
 		if precommitError != nil {
+			// 上游流式阶段报告 SSE 错误事件：把已缓冲的错误事件字节作为可透传响应体返回，供直调透传或失败规则 passthrough 使用喵。
+			if streamError, isStreamError := precommitError.(*UpstreamStreamError); isStreamError && len(streamError.SSEBytes) > 0 {
+				return &UserUpstreamModelExecutionResult{Err: &CustomCandidateExecutionFailure{
+					Failure:         NormalizeCandidateFailure(response.StatusCode, response.Header, streamError.SSEBytes, nil),
+					ResponseHeaders: response.Header.Clone(),
+					ResponseBody:    streamError.SSEBytes,
+					Cause:           streamError.Cause,
+				}, TtftMs: ttftMs}
+			}
 			return &UserUpstreamModelExecutionResult{Err: customCandidatePrecommitFailure(precommitError), TtftMs: ttftMs}
 		}
 		copyCustomResponseHeaders(c.Writer.Header(), response.Header)

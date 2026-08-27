@@ -140,10 +140,16 @@ func TestCustomPassthroughResponse(t *testing.T) {
 	if responseRecorder.Code != http.StatusTooManyRequests || responseRecorder.Body.String() != "busy" || responseRecorder.Header().Get("X-Upstream-Request-Id") != "upstream-1" || responseRecorder.Header().Get("Connection") != "" || responseRecorder.Header().Get("Set-Cookie") != "" || responseRecorder.Header().Get("Access-Control-Allow-Origin") != "" {
 		t.Fatalf("unexpected passthrough response: status=%d headers=%#v body=%q", responseRecorder.Code, responseRecorder.Header(), responseRecorder.Body.String())
 	}
-	// 非法成功状态不可被当作上游错误写回，防止规则逻辑伪造成功响应喵。
+	// 2xx 内嵌 SSE error 事件（上游 HTTP 200 但流内报告错误）允许原样透传错误正文，供客户端解析上游真实错误喵。
+	sseErrorRecorder := httptest.NewRecorder()
+	CopyCustomPassthroughResponse(sseErrorRecorder, responseHeaders, http.StatusOK, []byte("data: {\"error\":{\"message\":\"upstream broke\"}}\n\n"))
+	if sseErrorRecorder.Code != http.StatusOK || sseErrorRecorder.Body.String() != "data: {\"error\":{\"message\":\"upstream broke\"}}\n\n" {
+		t.Fatalf("sse error passthrough should replay body: status=%d body=%q", sseErrorRecorder.Code, sseErrorRecorder.Body.String())
+	}
+	// 非法协议状态（1xx）不可被当作上游响应写回，防止规则逻辑伪造协议状态喵。
 	invalidStatusRecorder := httptest.NewRecorder()
-	CopyCustomPassthroughResponse(invalidStatusRecorder, responseHeaders, http.StatusOK, []byte("unsafe"))
-	if invalidStatusRecorder.Code != http.StatusOK || invalidStatusRecorder.Body.Len() != 0 {
+	CopyCustomPassthroughResponse(invalidStatusRecorder, responseHeaders, http.StatusContinue, []byte("unsafe"))
+	if invalidStatusRecorder.Code == http.StatusContinue || invalidStatusRecorder.Body.Len() != 0 {
 		t.Fatalf("invalid passthrough should not write a body: status=%d body=%q", invalidStatusRecorder.Code, invalidStatusRecorder.Body.String())
 	}
 }

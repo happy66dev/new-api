@@ -154,8 +154,8 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 			recordUpstreamModelProbeState(upstreamModel, isShared, true, false, upstreamModelFailureErrorClass(executionResult.Err), startTime, upstreamProbeExtras{})
 			// 失败日志：记录本次上游错误供日志页排查，与成功结算同口径喵。
 			recordUserUpstreamModelFailureLog(c, upstreamModel, isShared, modelRequest.Group, customFailure, startTime)
-			// 上游返回了 HTTP 错误时按状态码透传（正文可能为空），仅网络类失败才回退通用错误喵。
-			if customFailure.Failure.HTTPStatus >= http.StatusBadRequest {
+			// 上游返回了 HTTP 错误时按状态码透传；2xx 内嵌的 SSE error 事件也携带错误正文原样透传，仅网络类失败才回退通用错误喵。
+			if len(customFailure.ResponseBody) > 0 || customFailure.Failure.HTTPStatus >= http.StatusBadRequest {
 				virtualmodelservice.CopyCustomPassthroughResponse(c.Writer, customFailure.ResponseHeaders, customFailure.Failure.HTTPStatus, customFailure.ResponseBody)
 				c.Abort()
 				return false
@@ -301,7 +301,8 @@ func handleVirtualModelUpstreamFailure(c *gin.Context, upstreamModel *model.User
 		}
 		recordUserUpstreamModelFailureLog(c, upstreamModel, isShared, requestGroup, customFailure, startTime)
 		// 喵~防御：仅回传已受限缓冲的上游错误正文和过滤后的响应头，禁止写入 hop-by-hop 字段喵。
-		if customFailure.Failure.HTTPStatus >= http.StatusBadRequest {
+		// 2xx 内嵌的 SSE error 事件也携带错误正文原样透传，仅网络类失败才回退通用错误喵。
+		if len(customFailure.ResponseBody) > 0 || customFailure.Failure.HTTPStatus >= http.StatusBadRequest {
 			virtualmodelservice.CopyCustomPassthroughResponse(c.Writer, customFailure.ResponseHeaders, customFailure.Failure.HTTPStatus, customFailure.ResponseBody)
 		} else {
 			abortWithOpenAiMessage(c, http.StatusBadGateway, "user upstream model is unavailable", types.ErrorCode("upstream_model_unavailable"))
@@ -329,8 +330,8 @@ func handleVirtualModelUpstreamFailure(c *gin.Context, upstreamModel *model.User
 		requestGroup = executionState.modelRequest.Group
 	}
 	recordUserUpstreamModelFailureLog(c, upstreamModel, isShared, requestGroup, customFailure, startTime)
-	// 上游返回了 HTTP 错误时按状态码透传（正文可能为空），仅网络类失败才回退通用错误喵。
-	if customFailure.Failure.HTTPStatus >= http.StatusBadRequest {
+	// 上游返回了 HTTP 错误时按状态码透传；2xx 内嵌的 SSE error 事件也携带错误正文原样透传，仅网络类失败才回退通用错误喵。
+	if len(customFailure.ResponseBody) > 0 || customFailure.Failure.HTTPStatus >= http.StatusBadRequest {
 		virtualmodelservice.CopyCustomPassthroughResponse(c.Writer, customFailure.ResponseHeaders, customFailure.Failure.HTTPStatus, customFailure.ResponseBody)
 	} else {
 		abortWithOpenAiMessage(c, http.StatusBadGateway, "user upstream model is unavailable", types.ErrorCode("upstream_model_unavailable"))

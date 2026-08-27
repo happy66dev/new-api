@@ -63,6 +63,31 @@ func (executionFailure *CustomCandidateExecutionFailure) Error() string {
 	return "custom candidate execution failed: " + executionFailure.Failure.ErrorClass
 }
 
+// UpstreamStreamError 描述上游在流式阶段报告的错误事件喵。
+// SSEBytes 为探测阶段已缓冲的上游 SSE 错误事件字节，供直调透传或失败规则 passthrough 时原样回放喵。
+type UpstreamStreamError struct {
+	SSEBytes []byte // 已缓冲的上游 SSE 错误事件字节（data: {"error":...}），空表示没有可回放内容喵。
+	Cause    error  // 原始错误原因，仅供服务器日志包装，禁止直接回显给客户端喵。
+}
+
+// Error 实现 error 接口并返回受控分类文案喵。
+func (streamError *UpstreamStreamError) Error() string {
+	// 喵~防御：空错误对象或缺失底层错误时返回统一文案喵。
+	if streamError == nil || streamError.Cause == nil {
+		return "custom upstream stream reported an error"
+	}
+	return streamError.Cause.Error()
+}
+
+// Unwrap 暴露底层错误供 errors.Is/errors.As 穿透分类喵。
+func (streamError *UpstreamStreamError) Unwrap() error {
+	// 喵~防御：空错误对象返回 nil，避免空指针喵。
+	if streamError == nil {
+		return nil
+	}
+	return streamError.Cause
+}
+
 // customCandidatePrecommitBufferLimit 限制响应提交前的探测缓冲，避免异常上游耗尽服务内存喵。
 const customCandidatePrecommitBufferLimit = 2 * 1024 * 1024
 
@@ -134,9 +159,9 @@ func probeCustomStreamingResponse(responseReader *bufio.Reader, params ProbePara
 				if dataPayload == "" || strings.EqualFold(dataPayload, "[DONE]") {
 					continue
 				}
-				// 喵~防御：上游明确 error 事件在提交前转为候选失败，允许后备候选接管喵。
+				// 喵~防御：上游明确 error 事件在提交前转为携带错误事件字节的候选失败，供直调透传或失败规则 passthrough 原样回放喵。
 				if strings.Contains(strings.ToLower(dataPayload), "\"error\"") || strings.Contains(strings.ToLower(dataPayload), "\"type\":\"error\"") {
-					return nil, errors.New("custom upstream stream reported an error before business content")
+					return nil, &UpstreamStreamError{SSEBytes: bufferedBytes, Cause: errors.New("custom upstream stream reported an error before business content")}
 				}
 				// 喵~防御：仅显式心跳不构成业务内容，继续等待有效 data 事件喵。
 				if strings.EqualFold(dataPayload, "ping") || strings.EqualFold(dataPayload, "pong") {
@@ -277,6 +302,15 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 			ProbeTotalTimeoutSeconds: input.ProbeTotalTimeoutSeconds,
 		})
 		if precommitError != nil {
+			// 上游流式阶段报告 SSE 错误事件：把已缓冲的错误事件字节作为可透传响应体返回，供直调透传或失败规则 passthrough 使用喵。
+			if streamError, isStreamError := precommitError.(*UpstreamStreamError); isStreamError && len(streamError.SSEBytes) > 0 {
+				return &CustomCandidateExecutionResult{Err: &CustomCandidateExecutionFailure{
+					Failure:         NormalizeCandidateFailure(response.StatusCode, response.Header, streamError.SSEBytes, nil),
+					ResponseHeaders: response.Header.Clone(),
+					ResponseBody:    streamError.SSEBytes,
+					Cause:           streamError.Cause,
+				}, TtftMs: ttftMs}
+			}
 			return &CustomCandidateExecutionResult{Err: customCandidatePrecommitFailure(precommitError), TtftMs: ttftMs}
 		}
 		copyCustomResponseHeaders(c.Writer.Header(), response.Header)
@@ -572,14 +606,15 @@ func applyCustomCandidateAuth(headers http.Header, authStyle model.VirtualModelA
 }
 
 // CopyCustomPassthroughResponse 过滤错误响应头后将受限上游失败安全回传给客户端喵。
+// statusCode 允许 2xx-5xx：上游流式阶段在 2xx 响应内报告 SSE error 事件时，同样原样透传错误正文喵。
 func CopyCustomPassthroughResponse(writer http.ResponseWriter, responseHeaders http.Header, statusCode int, responseBody []byte) {
-	// 喵~防御：缺少 writer 或非法失败状态时不写响应，避免空指针或伪造成功状态喵。
-	if writer == nil || statusCode < http.StatusBadRequest || statusCode > 599 {
+	// 喵~防御：缺少 writer 或非法状态（1xx/6xx 或以下）时不写响应，避免空指针或伪造协议状态喵。
+	if writer == nil || statusCode < http.StatusOK || statusCode > 599 {
 		return
 	}
 	copyCustomResponseHeaders(writer.Header(), responseHeaders)
 	writer.WriteHeader(statusCode)
-	// 喵~防御：正文来自 64 KiB 受限缓冲；写入失败无法安全恢复，因此仅结束当前响应喵。
+	// 喵~防御：正文来自受限缓冲（SSE 探测缓冲或 64 KiB 错误正文）；写入失败无法安全恢复，因此仅结束当前响应喵。
 	_, _ = writer.Write(responseBody)
 }
 

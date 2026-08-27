@@ -353,6 +353,85 @@ func TestHandleUserUpstreamModelRequestPassthroughUpstreamError(t *testing.T) {
 	require.Equal(t, false, failureOther["final_success"])
 }
 
+// TestHandleUserUpstreamModelRequestSseErrorPassthrough 验证直调 user/xxx 流式时上游 2xx 内嵌 SSE error 事件原样透传喵。
+// 上游 HTTP 200 但在 SSE 流内报告 error 事件时，错误正文必须透传给客户端，而不是被替换为 502 unavailable 喵。
+func TestHandleUserUpstreamModelRequestSseErrorPassthrough(t *testing.T) {
+	// 开发模式允许本地 http mock 上游，测试结束后自动恢复环境变量喵。
+	t.Setenv("VIRTUAL_MODEL_INSECURE_UPSTREAM", "1")
+	// 配置随机测试主密钥，使凭据加解密全链路可跑通喵。
+	t.Setenv(virtualmodelservice.CredentialMasterKeyEnvironmentName, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	gin.SetMode(gin.TestMode)
+	testDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, testDB.AutoMigrate(&model.UserUpstreamModel{}, &model.EntityProbeState{}, &model.Log{}))
+	oldDB := model.DB
+	oldLogDB := model.LOG_DB
+	model.DB = testDB
+	model.LOG_DB = testDB
+	defer func() {
+		model.DB = oldDB
+		model.LOG_DB = oldLogDB
+	}()
+
+	// mock 上游返回 200 + SSE error 事件（流内业务错误），这是 OpenAI 兼容上游常见的错误形态喵。
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"error\":{\"message\":\"upstream sse broken\",\"type\":\"invalid_request_error\"}}\n\n"))
+	}))
+	defer upstream.Close()
+
+	baseURLCipher, version, encryptError := virtualmodelservice.EncryptCredential(upstream.URL)
+	require.NoError(t, encryptError)
+	apiKeyCipher, _, apiKeyError := virtualmodelservice.EncryptCredential("sk-test")
+	require.NoError(t, apiKeyError)
+	require.NoError(t, testDB.Create(&model.UserUpstreamModel{
+		OwnerUserID:          7,
+		NormalizedName:       "demo",
+		DisplayName:          "Demo",
+		Enabled:              true,
+		EncryptedBaseURL:     baseURLCipher,
+		EncryptedAPIKey:      apiKeyCipher,
+		CredentialVersion:    version,
+		RealModelName:        "gpt-4o",
+		BalanceCents:         1000,
+		AvailableCents:       800,
+		AuthStyle:            "bearer",
+		ModelRatio:           "1",
+		CompletionRatio:      "1",
+		CacheRatio:           "1",
+		CacheCreationRatio:   "1",
+		CacheCreation5mRatio: "1",
+		CacheCreation1hRatio: "1",
+		ImageRatio:           "1",
+		AudioRatio:           "1",
+		AudioCompletionRatio: "1",
+		Version:              1,
+	}).Error)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/demo","stream":true,"messages":[]}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Set("id", 7)
+
+	handled := handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "user/demo"})
+	require.False(t, handled)
+	// 上游 SSE error 事件必须原样透传（HTTP 200 + 错误正文），而不是被替换为 502 unavailable 喵。
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "upstream sse broken")
+	require.NotContains(t, recorder.Body.String(), "user upstream model is unavailable")
+
+	// 失败也必须写 type=8 日志，内容含上游 SSE 错误事件摘要喵。
+	var failureLog model.Log
+	require.NoError(t, testDB.Where("type = ? AND model_name = ?", model.LogTypeCustomUpstream, "user/demo").First(&failureLog).Error)
+	require.Contains(t, failureLog.Content, "upstream sse broken")
+	var failureOther map[string]interface{}
+	require.NoError(t, common.UnmarshalJsonStr(failureLog.Other, &failureOther))
+	require.Equal(t, "upstream_error", failureOther["error_class"])
+	require.Equal(t, float64(http.StatusOK), failureOther["http_status"])
+	require.Equal(t, false, failureOther["final_success"])
+}
+
 // TestHandleUserUpstreamModelRequestVirtualFailureLog 验证虚拟模型 user/xxx 候选失败（passthrough）写 type=9 日志喵。
 func TestHandleUserUpstreamModelRequestVirtualFailureLog(t *testing.T) {
 	// 开发模式允许本地 http mock 上游，测试结束后自动恢复环境变量喵。
