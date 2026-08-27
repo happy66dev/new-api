@@ -1999,6 +1999,7 @@
     "Error parsing response data": "Lỗi khi phân tích dữ liệu phản hồi",
     "Error Type (optional)": "Loại lỗi (tùy chọn)",
     "Estimated cost": "Chi phí ước tính",
+    "Estimated tokens (upstream returned no usage)": "Token ước tính (nguồn cấp không trả về số đếm)",
     "Estimated quota cost": "Ước tính chi phí hạn mức",
     "Evaluate fields from the provider user info response. Conditions and nested groups use and/or logic.": "Đánh giá các trường trong phản hồi thông tin người dùng của nhà cung cấp. Điều kiện và nhóm lồng nhau sử dụng logic and/or.",
     "Every group name in the pricing table can be used in two places: on a user (the user group, assigned by admins) and on a token (the token group, chosen when creating the token). Same name pool, two different jobs.": "Mỗi tên nhóm trong bảng định giá có thể dùng ở hai nơi: trên người dùng (nhóm người dùng, do quản trị viên gán) và trên token (nhóm token, chọn khi tạo token). Cùng một bộ tên, hai vai trò khác nhau.",

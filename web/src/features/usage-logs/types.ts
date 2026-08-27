@@ -228,6 +228,8 @@ export interface LogOtherData {
   custom_cost_rmb?: string
   is_shared_call?: boolean
   cached_tokens?: number
+  // 上游未返回 token 计数时由后端按文本估计，标记供前端 Tokens 右侧展示「?」喵。
+  estimated_tokens?: boolean
   // 虚拟模型日志（type=9）专用字段：虚拟模型名、最终成功与否与全部候选尝试序列喵。
   virtual_model?: string
   final_success?: boolean

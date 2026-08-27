@@ -1999,6 +1999,7 @@
     "Error parsing response data": "解析响应数据失败",
     "Error Type (optional)": "错误类型（可选）",
     "Estimated cost": "预计成本",
+    "Estimated tokens (upstream returned no usage)": "估算 token 数（上游未返回计数）",
     "Estimated quota cost": "估算配额费用",
     "Evaluate fields from the provider user info response. Conditions and nested groups use and/or logic.": "根据提供商返回的用户信息字段执行策略判断。条件和嵌套分组支持 and/or 逻辑。",
     "Every group name in the pricing table can be used in two places: on a user (the user group, assigned by admins) and on a token (the token group, chosen when creating the token). Same name pool, two different jobs.": "定价表中的每个分组名可用在两个地方：用户身上（用户分组，由管理员分配）和令牌身上（令牌分组，创建令牌时选择）。同一批名字，两种不同职责。",

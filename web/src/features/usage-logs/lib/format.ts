@@ -154,6 +154,16 @@ export function hasToolSurcharge(other: LogOtherData | null): boolean {
 }
 
 /**
+ * Check whether the log's token counts were estimated from text
+ * (the upstream returned no usage). Frontend shows a "?" next to Tokens.
+ */
+export function isEstimatedLog(
+  other: LogOtherData | null | undefined
+): boolean {
+  return other?.estimated_tokens === true
+}
+
+/**
  * Parse the 'other' field from JSON string to object
  */
 export function parseLogOther(other: string): LogOtherData | null {

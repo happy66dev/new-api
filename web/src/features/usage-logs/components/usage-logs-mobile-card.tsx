@@ -40,7 +40,7 @@ import { cn } from '@/lib/utils'
 
 import { LOG_TYPE_ENUM } from '../constants'
 import type { UsageLog } from '../data/schema'
-import { parseLogOther } from '../lib/format'
+import { parseLogOther, isEstimatedLog } from '../lib/format'
 import {
   getLogTypeConfig,
   isDisplayableLogType,
@@ -204,6 +204,7 @@ function MobileTokensField({ log }: { log: UsageLog }) {
   }
 
   const other = parseLogOther(log.other)
+  const estimated = isEstimatedLog(other)
   // 自定上游/虚拟模型日志的缓存命中数写在 other.cached_tokens，须一并读取喵。
   const cacheReadTokens = other?.cache_tokens || other?.cached_tokens || 0
   const cacheWrite5m = other?.cache_creation_tokens_5m || 0
@@ -219,6 +220,15 @@ function MobileTokensField({ log }: { log: UsageLog }) {
       <div className='flex flex-col gap-0.5'>
         <span className='font-mono text-xs font-medium tabular-nums'>
           {promptTokens.toLocaleString()} / {completionTokens.toLocaleString()}
+          {/* 估计 token：上游未返回计数，数字右侧标「?」提示喵 */}
+          {estimated && (
+            <span
+              title={t('Estimated tokens (upstream returned no usage)')}
+              className='text-muted-foreground/70 ml-0.5 cursor-help'
+            >
+              ?
+            </span>
+          )}
         </span>
         {showCache ? (
           <div className='text-muted-foreground flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] leading-none'>

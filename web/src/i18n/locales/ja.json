@@ -1999,6 +1999,7 @@
     "Error parsing response data": "レスポンスデータの解析に失敗しました",
     "Error Type (optional)": "エラータイプ（任意）",
     "Estimated cost": "推定コスト",
+    "Estimated tokens (upstream returned no usage)": "推定トークン数（上流がカウントを返しませんでした）",
     "Estimated quota cost": "想定クォートコスト",
     "Evaluate fields from the provider user info response. Conditions and nested groups use and/or logic.": "プロバイダーのユーザー情報レスポンスのフィールドを評価します。条件とネストしたグループでは and/or ロジックを使用します。",
     "Every group name in the pricing table can be used in two places: on a user (the user group, assigned by admins) and on a token (the token group, chosen when creating the token). Same name pool, two different jobs.": "料金表の各グループ名は2つの場所で使えます。ユーザー側（ユーザーグループ、管理者が割り当て）とトークン側（トークングループ、トークン作成時に選択）です。同じ名前プールで、役割は2つです。",

@@ -46,6 +46,7 @@ import {
   formatModelName,
   getTieredBillingSummary,
   hasAnyCacheTokens,
+  isEstimatedLog,
   parseLogOther,
   isViolationFeeLog,
   renderAuditContent,
@@ -694,6 +695,7 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
         if (!isDisplayableLogType(log.type)) return null
 
         const other = parseLogOther(log.other)
+        const estimated = isEstimatedLog(other)
 
         const promptTokens = log.prompt_tokens || 0
         const completionTokens = log.completion_tokens || 0
@@ -714,6 +716,15 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
             <span className='font-mono text-xs font-medium tabular-nums'>
               {promptTokens.toLocaleString()} /{' '}
               {completionTokens.toLocaleString()}
+              {/* 估计 token：上游未返回计数，数字右侧标「?」提示喵 */}
+              {estimated && (
+                <span
+                  title={t('Estimated tokens (upstream returned no usage)')}
+                  className='text-muted-foreground/70 ml-0.5 cursor-help'
+                >
+                  ?
+                </span>
+              )}
             </span>
             {(cacheReadTokens > 0 || cacheWriteTokens > 0) && (
               <div className='flex items-center gap-1 text-[11px]'>
