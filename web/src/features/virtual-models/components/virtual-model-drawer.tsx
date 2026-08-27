@@ -32,6 +32,7 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 import { createVirtualModel, updateVirtualModel } from '../api'
 import type { VirtualModel, VirtualModelInput } from '../api'
@@ -135,45 +136,66 @@ export function VirtualModelDrawer({
         </SheetHeader>
 
         <div className={sideDrawerFormClassName('gap-5')}>
-          <SideDrawerSection>
-            <SideDrawerSectionHeader
-              title={t('Basic Information')}
-              description={t('Set virtual model basic information')}
-              icon={<Settings2 className='size-4' />}
-              iconTone='info'
-            />
-            <label className='grid gap-1 text-sm font-medium'>
-              {t('Virtual model name')}
-              <Input
-                value={normalizedName}
-                onChange={(event) => setNormalizedName(event.target.value)}
-                placeholder='research-route'
-                disabled={Boolean(model) || isSavingBasics}
-              />
-            </label>
-            <label className='grid gap-1 text-sm font-medium'>
-              {t('Display name')}
-              <Input value={displayName} onChange={(event) => setDisplayName(event.target.value)} disabled={isSavingBasics} />
-            </label>
-            <div className='grid grid-cols-2 gap-3'>
-              <label className='grid gap-1 text-sm font-medium'>
-                {t('Total timeout seconds')}
-                <Input inputMode='numeric' value={totalTimeoutSeconds} onChange={(event) => setTotalTimeoutSeconds(event.target.value)} disabled={isSavingBasics} />
-              </label>
-              <label className='grid gap-1 text-sm font-medium'>
-                {t('Maximum loop rounds')}
-                <Input inputMode='numeric' value={maxLoopRounds} onChange={(event) => setMaxLoopRounds(event.target.value)} disabled={isSavingBasics} />
-              </label>
-            </div>
-            <label className='flex items-center justify-between gap-3 text-sm'>
-              <span>{t('Enabled')}</span>
-              <Switch checked={enabled} onCheckedChange={setEnabled} disabled={isSavingBasics} />
-            </label>
-            <label className='flex items-center justify-between gap-3 text-sm'>
-              <span>{t('Enable candidate loop')}</span>
-              <Switch checked={loopEnabled} onCheckedChange={setLoopEnabled} disabled={isSavingBasics} />
-            </label>
-          </SideDrawerSection>
+          <Tabs defaultValue='basic' className='w-full'>
+            <TabsList className='w-full justify-start'>
+              <TabsTrigger value='basic'>{t('Basic Information')}</TabsTrigger>
+              {/* 目标模式选项卡承载候选循环重试配置，参考 autoapi 的 target_mode 语义喵。 */}
+              <TabsTrigger value='target'>{t('Target Mode')}</TabsTrigger>
+            </TabsList>
+            {/* 基本信息选项卡：只保留名称信息与是否启用喵。 */}
+            <TabsContent className='mt-4' value='basic'>
+              <SideDrawerSection>
+                <SideDrawerSectionHeader
+                  title={t('Basic Information')}
+                  description={t('Set virtual model name and enable state')}
+                  icon={<Settings2 className='size-4' />}
+                  iconTone='info'
+                />
+                <label className='grid gap-1 text-sm font-medium'>
+                  {t('Virtual model name')}
+                  <Input
+                    value={normalizedName}
+                    onChange={(event) => setNormalizedName(event.target.value)}
+                    placeholder='research-route'
+                    disabled={Boolean(model) || isSavingBasics}
+                  />
+                </label>
+                <label className='grid gap-1 text-sm font-medium'>
+                  {t('Display name')}
+                  <Input value={displayName} onChange={(event) => setDisplayName(event.target.value)} disabled={isSavingBasics} />
+                </label>
+                <label className='flex items-center justify-between gap-3 text-sm'>
+                  <span>{t('Enabled')}</span>
+                  <Switch checked={enabled} onCheckedChange={setEnabled} disabled={isSavingBasics} />
+                </label>
+              </SideDrawerSection>
+            </TabsContent>
+            {/* 目标模式选项卡：候选链循环重试的等待与轮数配置喵。 */}
+            <TabsContent className='mt-4' value='target'>
+              <SideDrawerSection>
+                <SideDrawerSectionHeader
+                  title={t('Target Mode')}
+                  description={t('Configure candidate loop retry behavior')}
+                  icon={<Settings2 className='size-4' />}
+                  iconTone='info'
+                />
+                <label className='flex items-center justify-between gap-3 text-sm'>
+                  <span>{t('Enable candidate loop')}</span>
+                  <Switch checked={loopEnabled} onCheckedChange={setLoopEnabled} disabled={isSavingBasics} />
+                </label>
+                <div className='grid grid-cols-2 gap-3'>
+                  <label className='grid gap-1 text-sm font-medium'>
+                    {t('Total timeout seconds')}
+                    <Input inputMode='numeric' value={totalTimeoutSeconds} onChange={(event) => setTotalTimeoutSeconds(event.target.value)} disabled={isSavingBasics} />
+                  </label>
+                  <label className='grid gap-1 text-sm font-medium'>
+                    {t('Maximum loop rounds')}
+                    <Input inputMode='numeric' value={maxLoopRounds} onChange={(event) => setMaxLoopRounds(event.target.value)} disabled={isSavingBasics} />
+                  </label>
+                </div>
+              </SideDrawerSection>
+            </TabsContent>
+          </Tabs>
         </div>
 
         <SheetFooter className={sideDrawerFooterClassName()}>

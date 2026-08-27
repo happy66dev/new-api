@@ -32,7 +32,7 @@ import {
   type VirtualModelStatus,
 } from '../api'
 
-// VirtualModelOverviewStatusProps 是 Overview 状态卡片的输入，附带跳转与刷新回调喵。
+// VirtualModelOverviewStatusProps 是状态卡片的输入，附带跳转与刷新回调喵。
 type VirtualModelOverviewStatusProps = {
   // modelID 是虚拟模型编号，用于候选抽屉按需拉取候选状态喵。
   modelID: number
@@ -42,14 +42,17 @@ type VirtualModelOverviewStatusProps = {
   error?: boolean
   // onRefresh 重新拉取整体状态喵。
   onRefresh: () => void
+  // variant 决定渲染内容：overview=核心指标+最近调用，runtime=深度图表+候选健康喵。
+  variant?: 'overview' | 'runtime'
 }
 
-// VirtualModelOverviewStatus 在 Overview 选项卡基本信息下方展示整体运行状态喵。
-// 包含可用性/延迟/TTFT/缓存命中率指标、24h 柱状图、逐小时图表与候选节点摘要喵。
+// VirtualModelOverviewStatus 展示虚拟模型的整体运行状态喵。
+// overview 变体：核心指标与最近调用；runtime 变体：24h 柱状图、逐小时图表与候选节点摘要喵。
 export function VirtualModelOverviewStatus(
   props: VirtualModelOverviewStatusProps
 ) {
   const { t } = useTranslation()
+  const variant = props.variant ?? 'overview'
   // 有真实调用样本时才按可用性着色，否则展示占位符喵。
   const hasData = Boolean(props.status && props.status.request_count > 0)
   const availability = hasData
@@ -99,6 +102,7 @@ export function VirtualModelOverviewStatus(
       {hasData && (
         <>
           {/* 六项核心指标：可用性 / 平均延迟 / 平均 TTFT / 缓存命中率 / 请求数 / 总 token 喵。 */}
+          {variant === 'overview' && (
           <div className='grid grid-cols-3 gap-1 rounded-md border p-2 text-center sm:grid-cols-6'>
             <div>
               <div className='text-muted-foreground text-[10px]'>
@@ -156,11 +160,15 @@ export function VirtualModelOverviewStatus(
               </div>
             </div>
           </div>
+          )}
 
-          {/* 最近 24 个采样点的可用性柱状图喵。 */}
+          {/* runtime 变体：最近 24 个采样点的可用性柱状图喵。 */}
+          {variant === 'runtime' && (
           <AvailabilityBars rates={props.status?.availability_24h ?? []} />
+          )}
 
-          {/* 逐小时图表：TTFT / 缓存命中率 / token 消耗 / 请求量喵。 */}
+          {/* runtime 变体：逐小时图表 TTFT / 缓存命中率 / token 消耗 / 请求量喵。 */}
+          {variant === 'runtime' && (
           <div className='grid grid-cols-1 gap-3 lg:grid-cols-2'>
             <div className='min-w-0'>
               <div className='text-muted-foreground mb-1 text-xs'>
@@ -205,9 +213,10 @@ export function VirtualModelOverviewStatus(
               />
             </div>
           </div>
+          )}
 
-          {/* 最近一次调用：成功/失败状态点 + 时间 + 错误明细喵。 */}
-          {(props.status?.last_at ?? 0) > 0 && (
+          {/* overview 变体：最近一次调用喵。 */}
+          {variant === 'overview' && (props.status?.last_at ?? 0) > 0 && (
             <div className='flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs'>
               <span
                 className={cn(
@@ -231,8 +240,8 @@ export function VirtualModelOverviewStatus(
             </div>
           )}
 
-          {/* 候选节点摘要：点击行打开该候选的性能抽屉喵。 */}
-          {(props.status?.candidates?.length ?? 0) > 0 && (
+          {/* runtime 变体：候选节点摘要，点击行打开该候选的性能抽屉喵。 */}
+          {variant === 'runtime' && (props.status?.candidates?.length ?? 0) > 0 && (
             <div className='space-y-1'>
               <div className='text-muted-foreground text-xs'>
                 {t('Candidates')}

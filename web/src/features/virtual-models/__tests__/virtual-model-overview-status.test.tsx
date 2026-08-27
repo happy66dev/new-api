@@ -119,6 +119,7 @@ function renderOverview(props: {
   status?: VirtualModelStatus | null
   loading?: boolean
   onRefresh?: () => void
+  variant?: 'overview' | 'runtime'
 }) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -130,6 +131,7 @@ function renderOverview(props: {
         status={props.status ?? null}
         loading={props.loading ?? false}
         onRefresh={props.onRefresh ?? (() => undefined)}
+        variant={props.variant ?? 'overview'}
       />
     </QueryClientProvider>
   )
@@ -152,20 +154,27 @@ describe('VirtualModelOverviewStatus', () => {
     expect(screen.getByText('No status data yet')).toBeInTheDocument()
   })
 
-  test('renders overall metrics, last call, and candidate summary rows', () => {
-    renderOverview({ status: makeStatus() })
+  test('overview variant renders metrics and last call', () => {
+    renderOverview({ status: makeStatus(), variant: 'overview' })
     // 六项核心指标标签喵。
     expect(screen.getByText('Availability')).toBeInTheDocument()
     expect(screen.getByText('Average latency')).toBeInTheDocument()
-    // Average TTFT 同时出现在指标区与图表标题，因此用 getAllByText 喵。
-    expect(screen.getAllByText('Average TTFT').length).toBeGreaterThanOrEqual(1)
-    expect(screen.getAllByText('Cache hit rate').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText('Average TTFT')).toBeInTheDocument()
+    expect(screen.getByText('Cache hit rate')).toBeInTheDocument()
     expect(screen.getByText('Request Count')).toBeInTheDocument()
     expect(screen.getByText('Total Tokens')).toBeInTheDocument()
     // 可用性数值 95.00% 出现（指标区）喵。
     expect(screen.getAllByText('95.00%').length).toBeGreaterThanOrEqual(1)
     // 最近一次调用行喵。
     expect(screen.getByText(/Last call/)).toBeInTheDocument()
+  })
+
+  test('runtime variant renders charts and candidate summary rows', () => {
+    renderOverview({ status: makeStatus(), variant: 'runtime' })
+    // 逐小时图表标题出现（runtime 专属）喵。
+    expect(screen.getAllByText('Average TTFT').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getAllByText('Cache hit rate').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText('Request volume')).toBeInTheDocument()
     // 候选摘要行展示候选真实模型名喵。
     expect(screen.getByText('gpt-4.1')).toBeInTheDocument()
   })
@@ -185,7 +194,7 @@ describe('VirtualModelOverviewStatus', () => {
       }
       return { data: { success: true } }
     }
-    renderOverview({ status: makeStatus() })
+    renderOverview({ status: makeStatus(), variant: 'runtime' })
     fireEvent.click(screen.getByText('gpt-4.1'))
     // 抽屉打开后候选名出现在候选行与抽屉标题两处，用 findAllByText 喵。
     expect(await screen.findAllByText('gpt-4.1')).not.toHaveLength(0)

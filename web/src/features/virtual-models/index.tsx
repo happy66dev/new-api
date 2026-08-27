@@ -135,7 +135,7 @@ export function VirtualModels() {
                     </div>
                     <p className='text-sm'>{t('Candidate count')}: {selectedModel.candidates?.length ?? 0}</p>
                   </div>
-                  {/* 基本信息下方的整体状态卡片：指标 + 24h 柱状图 + 候选摘要喵。 */}
+                  {/* 基本信息下方的核心指标卡（overview 变体：指标 + 最近调用）喵。 */}
                   <div className='mt-4'>
                     <VirtualModelOverviewStatus
                       modelID={selectedModel.id}
@@ -143,6 +143,7 @@ export function VirtualModels() {
                       loading={virtualModelStatusQuery.isLoading}
                       error={virtualModelStatusQuery.isError}
                       onRefresh={() => void virtualModelStatusQuery.refetch()}
+                      variant='overview'
                     />
                   </div>
                 </TabsContent>
@@ -167,6 +168,17 @@ export function VirtualModels() {
                       </>
                     )}
                     <Button size='sm' variant='outline' onClick={() => void virtualModelStatusQuery.refetch()}>{t('Refresh')}</Button>
+                  </div>
+                  {/* 深度图表与候选健康摘要（runtime 变体）喵。 */}
+                  <div className='mt-4'>
+                    <VirtualModelOverviewStatus
+                      modelID={selectedModel.id}
+                      status={virtualModelStatus}
+                      loading={virtualModelStatusQuery.isLoading}
+                      error={virtualModelStatusQuery.isError}
+                      onRefresh={() => void virtualModelStatusQuery.refetch()}
+                      variant='runtime'
+                    />
                   </div>
                 </TabsContent>
               </Tabs>
