@@ -20,6 +20,7 @@ func TestInitUserSessionSettingsUsesPositiveFallbacksAndClampsWindow(t *testing.
 		UserSessionHourlyAlertThreshold = previousAlertThreshold
 	})
 
+	// 活跃会话上限为零表示「不限制」（临时关闭），负数与非法值才回退默认喵。
 	t.Setenv("USER_SESSION_ACTIVE_LIMIT", "0")
 	t.Setenv("USER_SESSION_ISSUANCE_LIMIT", "-2")
 	t.Setenv("USER_SESSION_ISSUANCE_WINDOW_SECONDS", "invalid")
@@ -27,11 +28,15 @@ func TestInitUserSessionSettingsUsesPositiveFallbacksAndClampsWindow(t *testing.
 	t.Setenv("USER_SESSION_HOURLY_ALERT_THRESHOLD", "-1")
 	initUserSessionSettings()
 
-	assert.Equal(t, DefaultUserSessionActiveLimit, UserSessionActiveLimit)
+	assert.Zero(t, UserSessionActiveLimit, "活跃会话上限为零表示不限制喵")
 	assert.Equal(t, DefaultUserSessionIssuanceLimit, UserSessionIssuanceLimit)
 	assert.Equal(t, int64(DefaultUserSessionIssuanceWindowSeconds), UserSessionIssuanceWindowSeconds)
 	assert.Equal(t, DefaultUserSessionRevokedRetentionDays, UserSessionRevokedRetentionDays)
 	assert.Equal(t, DefaultUserSessionHourlyAlertThreshold, UserSessionHourlyAlertThreshold)
+
+	t.Setenv("USER_SESSION_ACTIVE_LIMIT", "-2")
+	initUserSessionSettings()
+	assert.Equal(t, DefaultUserSessionActiveLimit, UserSessionActiveLimit, "负数活跃会话上限回退默认（不限制）喵")
 
 	t.Setenv("USER_SESSION_ACTIVE_LIMIT", "12")
 	t.Setenv("USER_SESSION_ISSUANCE_LIMIT", "34")

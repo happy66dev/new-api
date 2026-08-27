@@ -145,7 +145,8 @@ func InitEnv() {
 }
 
 func initUserSessionSettings() {
-	UserSessionActiveLimit = positiveUserSessionEnv("USER_SESSION_ACTIVE_LIMIT", DefaultUserSessionActiveLimit)
+	// 活跃会话上限允许零表示「不限制」（临时关闭登录会话数限制），其余会话配置保持正数校验喵。
+	UserSessionActiveLimit = nonNegativeUserSessionEnv("USER_SESSION_ACTIVE_LIMIT", DefaultUserSessionActiveLimit)
 	UserSessionIssuanceLimit = positiveUserSessionEnv("USER_SESSION_ISSUANCE_LIMIT", DefaultUserSessionIssuanceLimit)
 	UserSessionIssuanceWindowSeconds = int64(positiveUserSessionEnv("USER_SESSION_ISSUANCE_WINDOW_SECONDS", DefaultUserSessionIssuanceWindowSeconds))
 	UserSessionRevokedRetentionDays = positiveUserSessionEnv("USER_SESSION_REVOKED_RETENTION_DAYS", DefaultUserSessionRevokedRetentionDays)
@@ -176,6 +177,17 @@ func positiveUserSessionEnv(name string, fallback int) int {
 	value := GetEnvOrDefault(name, fallback)
 	if value <= 0 {
 		SysError(fmt.Sprintf("%s must be positive, using default value: %d", name, fallback))
+		return fallback
+	}
+	return value
+}
+
+// nonNegativeUserSessionEnv 解析会话限制环境变量，允许零表示「不限制」，负数视为非法回退默认喵。
+func nonNegativeUserSessionEnv(name string, fallback int) int {
+	value := GetEnvOrDefault(name, fallback)
+	// 喵~防御：仅负数回退默认，零保留表示不限制喵。
+	if value < 0 {
+		SysError(fmt.Sprintf("%s must not be negative, using default value: %d", name, fallback))
 		return fallback
 	}
 	return value

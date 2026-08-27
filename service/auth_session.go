@@ -65,19 +65,25 @@ func createLoginSession(userID int, expectedAuthVersion int64, loginMethod, ip, 
 		return nil, ErrLoginSessionRevoked
 	}
 	now := time.Now().Unix()
-	activeCount, err := model.CountActiveUserSessions(userID, now)
-	if err != nil {
-		return nil, err
+	// 喵~防御：活跃会话上限为零表示「不限制」（临时关闭限制），仅配置正数上限时执行检查喵。
+	if common.UserSessionActiveLimit > 0 {
+		activeCount, err := model.CountActiveUserSessions(userID, now)
+		if err != nil {
+			return nil, err
+		}
+		if activeCount >= int64(common.UserSessionActiveLimit) {
+			return nil, model.ErrUserSessionLimit
+		}
 	}
-	if activeCount >= int64(common.UserSessionActiveLimit) {
-		return nil, model.ErrUserSessionLimit
-	}
-	issuanceCount, err := model.CountUserSessionsCreatedSince(userID, now-common.UserSessionIssuanceWindowSeconds)
-	if err != nil {
-		return nil, err
-	}
-	if issuanceCount >= int64(common.UserSessionIssuanceLimit) {
-		return nil, model.ErrUserSessionIssuanceLimit
+	// 喵~防御：签发窗口内次数上限为零表示「不限制」，仅配置正数上限时执行检查喵。
+	if common.UserSessionIssuanceLimit > 0 {
+		issuanceCount, err := model.CountUserSessionsCreatedSince(userID, now-common.UserSessionIssuanceWindowSeconds)
+		if err != nil {
+			return nil, err
+		}
+		if issuanceCount >= int64(common.UserSessionIssuanceLimit) {
+			return nil, model.ErrUserSessionIssuanceLimit
+		}
 	}
 	refreshSecret, err := common.GenerateRandomCharsKey(64)
 	if err != nil {

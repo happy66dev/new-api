@@ -44,7 +44,9 @@ var SessionCookieSecure = false
 var SessionCookieTrustedURLs []string
 
 const (
-	DefaultUserSessionActiveLimit           = 50
+	// DefaultUserSessionActiveLimit 活跃会话上限默认值。当前置零表示「不限制」，临时关闭登录会话数限制；
+	// 需要恢复时设环境变量 USER_SESSION_ACTIVE_LIMIT 或改回正数默认喵。
+	DefaultUserSessionActiveLimit           = 0
 	DefaultUserSessionIssuanceLimit         = 100
 	DefaultUserSessionIssuanceWindowSeconds = 24 * 60 * 60
 	DefaultUserSessionRevokedRetentionDays  = 7
