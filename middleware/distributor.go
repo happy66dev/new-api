@@ -932,6 +932,17 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 		}
 		// 成功响应已由透传器直接写出，此时仅清除请求开始前已观察到的历史冻结并中止后续 controller relay 喵。
 		if executionError == nil {
+			// 先记录该 custom 候选成功尝试摘要，确保后续日志写入时候选序列已包含本次成功（否则首个候选直接成功时详情会为空）喵。
+			appendVirtualModelCandidateAttempt(c, model.VirtualModelCandidateAttemptRecord{
+				Seq:         currentVirtualModelCandidateSeq(c),
+				CandidateID: candidate.CandidateID,
+				Source:      "custom",
+				Label:       buildVirtualModelAttemptLabel(candidate, candidateRealModelName),
+				Success:     true,
+				StatusCode:  http.StatusOK,
+				ElapsedMs:   time.Since(startTime).Milliseconds(),
+				RetryCount:  retryIndex,
+			})
 			// 引用上游模型成功时结算独立 RMB 计费并写虚拟模型日志（上下文已把类型覆盖为 9）喵。
 			if hasUpstreamReference && referencedUpstreamModel != nil {
 				requestGroup := ""
@@ -948,17 +959,6 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 			// 实体状态检测：自定义候选成功，记录候选成功与虚拟模型整体成功（携带 usage/TTFT）喵。
 			executionState, _ := getVirtualModelExecutionState(c)
 			recordVirtualModelProbeSuccess(c, executionState, candidate.CandidateID, executionUsage, executionResult.TtftMs)
-			// 记录该 custom 候选成功尝试摘要，供最终日志展示候选链结果喵。
-			appendVirtualModelCandidateAttempt(c, model.VirtualModelCandidateAttemptRecord{
-				Seq:         currentVirtualModelCandidateSeq(c),
-				CandidateID: candidate.CandidateID,
-				Source:      "custom",
-				Label:       buildVirtualModelAttemptLabel(candidate, candidateRealModelName),
-				Success:     true,
-				StatusCode:  http.StatusOK,
-				ElapsedMs:   time.Since(startTime).Milliseconds(),
-				RetryCount:  retryIndex,
-			})
 			identityDigest := virtualmodelservice.CustomCandidateIdentityDigest(*candidate)
 			// 喵~防御：只清除请求开始时观察到的历史冻结，避免并发失败请求写入的新冻结被成功响应误删喵。
 			expectedUpdatedTime := int64(0)

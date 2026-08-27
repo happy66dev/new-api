@@ -310,6 +310,11 @@ func settleUserUpstreamModelCharge(c *gin.Context, ownerUserID int, upstreamMode
 	if ttftMs > 0 {
 		other["frt"] = ttftMs
 	}
+	// 虚拟模型上下文下补充模型标识与最终成功标记，保证日志详情始终有可展示内容喵。
+	if virtualModelName := common.GetContextKeyString(c, constant.ContextKeyVirtualModelName); virtualModelName != "" {
+		other["virtual_model"] = virtualModelName
+		other["final_success"] = true
+	}
 	model.RecordUserUpstreamModelLog(c, logUserID, model.RecordUserUpstreamModelLogParams{
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,

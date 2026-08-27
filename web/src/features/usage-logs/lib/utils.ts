@@ -259,7 +259,7 @@ export function buildApiParams(config: {
 export async function fetchLogsByCategory(
   config: FetchLogsConfig
 ): Promise<GetLogsResponse> {
-  const { logCategory, isAdmin, page, pageSize, searchParams, columnFilters } =
+  const { logCategory, isAdmin, viewScope, page, pageSize, searchParams, columnFilters } =
     config
 
   if (logCategory === 'common') {
@@ -270,6 +270,10 @@ export async function fetchLogsByCategory(
       columnFilters,
       isAdmin,
     })
+    // 普通用户「全部」范围：带 scope=all，后端附带别人调用自己共享模型的日志喵。
+    if (!isAdmin && viewScope === 'all') {
+      return await getUserLogs({ ...params, scope: 'all' })
+    }
     return isAdmin ? await getAllLogs(params) : await getUserLogs(params)
   }
 

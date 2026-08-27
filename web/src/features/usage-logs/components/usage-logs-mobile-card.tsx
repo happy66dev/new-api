@@ -204,7 +204,8 @@ function MobileTokensField({ log }: { log: UsageLog }) {
   }
 
   const other = parseLogOther(log.other)
-  const cacheReadTokens = other?.cache_tokens || 0
+  // 自定上游/虚拟模型日志的缓存命中数写在 other.cached_tokens，须一并读取喵。
+  const cacheReadTokens = other?.cache_tokens || other?.cached_tokens || 0
   const cacheWrite5m = other?.cache_creation_tokens_5m || 0
   const cacheWrite1h = other?.cache_creation_tokens_1h || 0
   const hasSplitCache = cacheWrite5m > 0 || cacheWrite1h > 0

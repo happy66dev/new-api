@@ -503,3 +503,36 @@ func TestMigrateUserUpstreamAvailableCents(t *testing.T) {
 	require.NoError(t, DB.Where("normalized_name = ?", "migrate-a").First(&fetchedAgain).Error)
 	assert.Equal(t, int64(800), fetchedAgain.AvailableCents)
 }
+
+// TestGetSharedModelNamesByOwner 验证返回属主已开启共享的模型对外名（user/<name>）列表喵。
+// 该列表供普通用户日志「全部」范围附带他人调用自己共享模型的日志使用喵。
+func TestGetSharedModelNamesByOwner(t *testing.T) {
+	truncateTables(t)
+	require.NoError(t, DB.AutoMigrate(&UserUpstreamModel{}))
+	require.NoError(t, DB.Exec("DELETE FROM user_upstream_models").Error)
+
+	// 属主 7 有共享与未共享模型各一个，用户 8 也有一个共享模型喵。
+	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "shared-a", Enabled: true, ShareEnabled: true}).Error)
+	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "private-b", Enabled: true, ShareEnabled: false}).Error)
+	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 8, NormalizedName: "shared-c", Enabled: true, ShareEnabled: true}).Error)
+
+	// 属主 7 只返回自己共享中的模型名，且带 user/ 前缀，未共享模型不包含喵。
+	names, err := GetSharedModelNamesByOwner(7)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"user/shared-a"}, names)
+
+	// 属主 8 返回自己的共享模型名喵。
+	names8, err := GetSharedModelNamesByOwner(8)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"user/shared-c"}, names8)
+
+	// 无共享模型的属主返回空列表而非报错喵。
+	noNames, err := GetSharedModelNamesByOwner(9)
+	require.NoError(t, err)
+	assert.Empty(t, noNames)
+
+	// 无效属主直接返回空列表，避免空条件查询喵。
+	invalidNames, err := GetSharedModelNamesByOwner(0)
+	require.NoError(t, err)
+	assert.Empty(t, invalidNames)
+}

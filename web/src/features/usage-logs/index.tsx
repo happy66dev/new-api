@@ -71,7 +71,7 @@ function UsageLogsContent() {
     affinityDialogOpen,
     setAffinityDialogOpen,
   } = useUsageLogsContext()
-  const { canManageScope, viewScope, setViewScope } = useLogsViewScope()
+  const { isAdminUser, viewScope, setViewScope } = useLogsViewScope()
   const tabNavGroups = useMemo<NavGroup[]>(
     () => [
       {
@@ -128,7 +128,8 @@ function UsageLogsContent() {
         <SectionPageLayout.Title>
           {t(pageMeta.titleKey)}
         </SectionPageLayout.Title>
-        {canManageScope && (
+        {/* 范围切换：管理员任意分类可见；普通用户仅通用日志分类（全部=自己+共享被调日志）可见喵 */}
+        {(isAdminUser || activeCategory === 'common') && (
           <SectionPageLayout.Actions>
             <Tabs value={viewScope} onValueChange={handleViewScopeChange}>
               <TabsList>

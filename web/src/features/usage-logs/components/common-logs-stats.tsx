@@ -50,7 +50,7 @@ function StatBadge(props: {
 
 export function CommonLogsStats() {
   const { t } = useTranslation()
-  const { isAdminView: isAdmin } = useLogsViewScope()
+  const { isAdminView: isAdmin, viewScope } = useLogsViewScope()
   const searchParams = route.useSearch()
   const { sensitiveVisible, autoRefreshEnabled } = useUsageLogsContext()
   const page = Number(searchParams.page ?? 1)
@@ -61,7 +61,7 @@ export function CommonLogsStats() {
   )
 
   const { data: stats, isLoading } = useQuery({
-    queryKey: ['usage-logs-stats', isAdmin, searchParams],
+    queryKey: ['usage-logs-stats', isAdmin, viewScope, searchParams],
     queryFn: async () => {
       const params = buildApiParams({
         page: 1,
@@ -71,9 +71,12 @@ export function CommonLogsStats() {
         isAdmin,
       })
 
+      // 普通用户「全部」范围：统计口径与日志列表一致，附带共享模型被调日志喵。
       const result = isAdmin
         ? await getLogStats(params)
-        : await getUserLogStats(params)
+        : viewScope === 'all'
+          ? await getUserLogStats({ ...params, scope: 'all' })
+          : await getUserLogStats(params)
 
       return result.success
         ? result.data || DEFAULT_LOG_STATS

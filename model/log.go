@@ -723,9 +723,12 @@ func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName
 
 const logSearchCountLimit = 10000
 
-func GetUserLogs(userId int, logType int, startTimestamp int64, endTimestamp int64, modelName string, tokenName string, startIdx int, num int, group string, requestId string, upstreamRequestId string) (logs []*Log, total int64, err error) {
+func GetUserLogs(userId int, sharedModelNames []string, logType int, startTimestamp int64, endTimestamp int64, modelName string, tokenName string, startIdx int, num int, group string, requestId string, upstreamRequestId string) (logs []*Log, total int64, err error) {
 	var tx *gorm.DB
-	if logType == LogTypeUnknown {
+	// 喵~防御：共享模型名集合非空时按「全部」范围查询：自己的调用 + 别人调用我的共享模型（user-shared 分组、type=8）喵。
+	if len(sharedModelNames) > 0 {
+		tx = LOG_DB.Where("(logs.user_id = ?) OR (logs.model_name IN ? AND logs."+logGroupCol+" = ? AND logs.type = ?)", userId, sharedModelNames, constant.GroupUserShared, LogTypeCustomUpstream)
+	} else if logType == LogTypeUnknown {
 		tx = LOG_DB.Where("logs.user_id = ?", userId)
 	} else {
 		tx = LOG_DB.Where("logs.user_id = ? and logs.type = ?", userId, logType)
@@ -826,51 +829,62 @@ func GetUserTokenRPM(userID int, tokenIDs []int) (map[int]int, error) {
 	return GetTokenRPM(ownedTokenIDs)
 }
 
-func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string) (stat Stat, err error) {
-	tx := LOG_DB.Table("logs").Select("COALESCE(sum(quota), 0) quota")
-
-	// 为rpm和tpm创建单独的查询
+func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string, sharedModelNames ...string) (stat Stat, err error) {
+	// quota 求和与 rpm/tpm 统计分开查询，因为 rpm/tpm 只统计最近 60 秒的调用量喵。
+	quotaQuery := LOG_DB.Table("logs").Select("COALESCE(sum(quota), 0) quota")
 	rpmTpmQuery := LOG_DB.Table("logs").Select("count(*) rpm, COALESCE(sum(prompt_tokens), 0) + COALESCE(sum(completion_tokens), 0) tpm")
 
-	if tx, err = applyExplicitLogTextFilter(tx, "username", username); err != nil {
-		return stat, err
-	}
-	if rpmTpmQuery, err = applyExplicitLogTextFilter(rpmTpmQuery, "username", username); err != nil {
-		return stat, err
+	// 普通用户「全部」范围：自己的消费日志 + 别人调用自己共享模型的消费日志（user-shared 分组、type=8）取并集喵。
+	if len(sharedModelNames) > 0 {
+		// 喵~防御：type 条件内嵌进 OR 表达式，避免外层的 type=消费 误杀共享被调日志喵。
+		scopeCondition := "(username = ? AND type = ?) OR (model_name IN ? AND " + logGroupCol + " = ? AND type = ?)"
+		quotaQuery = quotaQuery.Where(scopeCondition, username, LogTypeConsume, sharedModelNames, constant.GroupUserShared, LogTypeCustomUpstream)
+		rpmTpmQuery = rpmTpmQuery.Where(scopeCondition, username, LogTypeConsume, sharedModelNames, constant.GroupUserShared, LogTypeCustomUpstream)
+	} else {
+		// 其余范围（管理员全量 / 仅自己）：按用户名过滤喵。
+		if quotaQuery, err = applyExplicitLogTextFilter(quotaQuery, "username", username); err != nil {
+			return stat, err
+		}
+		if rpmTpmQuery, err = applyExplicitLogTextFilter(rpmTpmQuery, "username", username); err != nil {
+			return stat, err
+		}
 	}
 	if tokenName != "" {
-		tx = tx.Where("token_name = ?", tokenName)
+		quotaQuery = quotaQuery.Where("token_name = ?", tokenName)
 		rpmTpmQuery = rpmTpmQuery.Where("token_name = ?", tokenName)
 	}
 	if startTimestamp != 0 {
-		tx = tx.Where("created_at >= ?", startTimestamp)
+		quotaQuery = quotaQuery.Where("created_at >= ?", startTimestamp)
 	}
 	if endTimestamp != 0 {
-		tx = tx.Where("created_at <= ?", endTimestamp)
+		quotaQuery = quotaQuery.Where("created_at <= ?", endTimestamp)
 	}
-	if tx, err = applyExplicitLogTextFilter(tx, "model_name", modelName); err != nil {
+	if quotaQuery, err = applyExplicitLogTextFilter(quotaQuery, "model_name", modelName); err != nil {
 		return stat, err
 	}
 	if rpmTpmQuery, err = applyExplicitLogTextFilter(rpmTpmQuery, "model_name", modelName); err != nil {
 		return stat, err
 	}
 	if channel != 0 {
-		tx = tx.Where("channel_id = ?", channel)
+		quotaQuery = quotaQuery.Where("channel_id = ?", channel)
 		rpmTpmQuery = rpmTpmQuery.Where("channel_id = ?", channel)
 	}
 	if group != "" {
-		tx = tx.Where(logGroupCol+" = ?", group)
+		quotaQuery = quotaQuery.Where(logGroupCol+" = ?", group)
 		rpmTpmQuery = rpmTpmQuery.Where(logGroupCol+" = ?", group)
 	}
 
-	tx = tx.Where("type = ?", LogTypeConsume)
-	rpmTpmQuery = rpmTpmQuery.Where("type = ?", LogTypeConsume)
+	// 「全部」范围的 type 已内嵌进 OR 条件；其余范围统一限定消费日志喵。
+	if len(sharedModelNames) == 0 {
+		quotaQuery = quotaQuery.Where("type = ?", LogTypeConsume)
+		rpmTpmQuery = rpmTpmQuery.Where("type = ?", LogTypeConsume)
+	}
 
 	// 只统计最近60秒的rpm和tpm
 	rpmTpmQuery = rpmTpmQuery.Where("created_at >= ?", time.Now().Add(-60*time.Second).Unix())
 
 	// 执行查询
-	if err := tx.Scan(&stat).Error; err != nil {
+	if err := quotaQuery.Scan(&stat).Error; err != nil {
 		common.SysError("failed to query log stat: " + err.Error())
 		return stat, errors.New("查询统计数据失败")
 	}

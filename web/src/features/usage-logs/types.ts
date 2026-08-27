@@ -343,6 +343,8 @@ export interface GetLogsParams {
   group?: string
   request_id?: string
   upstream_request_id?: string
+  /** 普通用户「全部」范围标记（scope=all）时，后端附带别人调用自己共享模型的日志喵 */
+  scope?: string
 }
 
 export interface GetLogsResponse {
@@ -367,6 +369,8 @@ export interface GetLogStatsParams {
   group?: string
   request_id?: string
   upstream_request_id?: string
+  /** 普通用户「全部」范围标记（scope=all），统计口径与日志列表一致喵 */
+  scope?: string
 }
 
 export interface GetLogStatsResponse {
@@ -411,6 +415,8 @@ export interface GetTaskLogsParams {
 export interface FetchLogsConfig {
   logCategory: LogCategory
   isAdmin: boolean
+  /** 当前范围选择，普通用户「全部」时拼接 scope=all 喵 */
+  viewScope: 'all' | 'self'
   page: number
   pageSize: number
   searchParams: Record<string, unknown>

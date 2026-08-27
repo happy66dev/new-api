@@ -486,6 +486,29 @@ func fillSharedModelUsernames(rows []SharedModelUserUsage) {
 	}
 }
 
+// GetSharedModelNamesByOwner 返回某用户已开启共享的上游模型对外调用名（user/<name>）列表喵。
+// 供普通用户日志「全部」范围查询他人调用自己共享模型的日志使用喵。
+func GetSharedModelNamesByOwner(ownerUserID int) ([]string, error) {
+	// 喵~防御：无效属主直接返回空列表喵。
+	if ownerUserID <= 0 {
+		return []string{}, nil
+	}
+	var normalizedNames []string
+	// 只取共享开启的模型，额度是否耗尽不影响日志可见性（历史日志仍应可查）喵。
+	if err := DB.Model(&UserUpstreamModel{}).Where("owner_user_id = ? AND share_enabled = ?", ownerUserID, true).Pluck("normalized_name", &normalizedNames).Error; err != nil {
+		return []string{}, err
+	}
+	modelNames := make([]string, 0, len(normalizedNames))
+	for _, normalizedName := range normalizedNames {
+		// 喵~防御：跳过空名，避免生成空匹配条件喵。
+		if strings.TrimSpace(normalizedName) == "" {
+			continue
+		}
+		modelNames = append(modelNames, "user/"+normalizedName)
+	}
+	return modelNames, nil
+}
+
 // DeleteSharedModelUserUsage 清空某个共享上游模型的按用户使用记录喵。
 // 属主校验由控制器负责，这里按模型编号与属主归属查询；清空日志、共享维度统计与内存热桶喵。
 func DeleteSharedModelUserUsage(upstreamModelID int64, ownerUserID int) error {
