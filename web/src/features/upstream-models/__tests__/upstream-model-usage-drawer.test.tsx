@@ -88,13 +88,13 @@ afterEach(() => {
 
 describe('UpstreamModelUsageDrawer', () => {
   test('renders per-user usage rows including the user id column', async () => {
-    // 模拟共享模型使用情况接口返回两名用户的聚合数据喵。
+    // 模拟共享模型使用情况接口返回两名用户的聚合数据（费用分 + 总 token）喵。
     apiClient.get = vi.fn().mockResolvedValue({
       data: {
         success: true,
         data: [
-          { user_id: 8, username: 'user8', request_count: 2, prompt_tokens: 150, completion_tokens: 30, last_at: 2000 },
-          { user_id: 9, username: 'user9', request_count: 1, prompt_tokens: 30, completion_tokens: 5, last_at: 1500 },
+          { user_id: 8, username: 'user8', request_count: 2, total_tokens: 180, cost_cents: 250, last_at: 2000 },
+          { user_id: 9, username: 'user9', request_count: 1, total_tokens: 35, cost_cents: 100, last_at: 1500 },
         ],
       },
     })
@@ -104,11 +104,13 @@ describe('UpstreamModelUsageDrawer', () => {
     // 明确展示用户 id 列，属主能识别谁在调用共享模型喵。
     expect(screen.getByText('8')).toBeInTheDocument()
     expect(screen.getByText('9')).toBeInTheDocument()
-    // 请求数、token 聚合与最近调用列同步展示喵。
+    // 请求数、总 token、费用金额与最近调用列同步展示喵。
     expect(screen.getByText('2')).toBeInTheDocument()
-    expect(screen.getByText('150')).toBeInTheDocument()
-    // 30 同时是 user8 的完成 token 与 user9 的输入 token，需用 getAllByText 喵。
-    expect(screen.getAllByText('30').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText('180')).toBeInTheDocument()
+    expect(screen.getByText('35')).toBeInTheDocument()
+    // 费用金额按分转元展示（¥2.50 与 ¥1.00）喵。
+    expect(screen.getByText('¥2.50')).toBeInTheDocument()
+    expect(screen.getByText('¥1.00')).toBeInTheDocument()
   })
 
   test('shows an empty placeholder when there is no shared usage yet', async () => {
@@ -128,7 +130,7 @@ describe('UpstreamModelUsageDrawer', () => {
   test('clears shared usage after a confirmation dialog', async () => {
     // 模拟使用情况返回一行数据，让清空按钮可用喵。
     apiClient.get = vi.fn().mockResolvedValue({
-      data: { success: true, data: [{ user_id: 8, username: 'user8', request_count: 2, prompt_tokens: 150, completion_tokens: 30, last_at: 2000 }] },
+      data: { success: true, data: [{ user_id: 8, username: 'user8', request_count: 2, total_tokens: 180, cost_cents: 250, last_at: 2000 }] },
     })
     // 模拟清空接口成功喵。
     const deleteMock = vi.fn().mockResolvedValue({ data: { success: true, data: { id: 5 } } })

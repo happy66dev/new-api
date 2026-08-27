@@ -609,8 +609,8 @@ export function UpstreamModelUsageDrawer({
                     <th className='px-3 py-2'>ID</th>
                     <th className='px-3 py-2'>{t('Username')}</th>
                     <th className='px-3 py-2'>{t('Requests')}</th>
-                    <th className='px-3 py-2'>{t('Prompt tokens')}</th>
-                    <th className='px-3 py-2'>{t('Completion tokens')}</th>
+                    <th className='px-3 py-2'>{t('Cost')}</th>
+                    <th className='px-3 py-2'>{t('Total tokens')}</th>
                     <th className='px-3 py-2'>{t('Last call')}</th>
                   </tr>
                 </thead>
@@ -621,8 +621,10 @@ export function UpstreamModelUsageDrawer({
                       <td className='px-3 py-2'>{row.user_id}</td>
                       <td className='px-3 py-2'>{row.username || '-'}</td>
                       <td className='px-3 py-2'>{row.request_count}</td>
-                      <td className='px-3 py-2'>{row.prompt_tokens.toLocaleString()}</td>
-                      <td className='px-3 py-2'>{row.completion_tokens.toLocaleString()}</td>
+                      {/* 费用金额（分）转元展示，只统计该用户使用产生的费用喵。 */}
+                      <td className='px-3 py-2'>¥{centsToYuan(row.cost_cents)}</td>
+                      {/* 总 token = 输入+输出合计，不再细分喵。 */}
+                      <td className='px-3 py-2'>{row.total_tokens.toLocaleString()}</td>
                       <td className='px-3 py-2'>{formatTimestampToDate(row.last_at)}</td>
                     </tr>
                   ))}

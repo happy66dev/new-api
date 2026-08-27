@@ -343,16 +343,17 @@ func TestGetSharedModelUserUsage(t *testing.T) {
 	require.NoError(t, DB.Create(&User{Id: 9, Username: "user9", AffCode: "u9"}).Error)
 
 	// 两条共享调用日志（用户 8 两次），一条共享调用（用户 9）喵。
-	require.NoError(t, LOG_DB.Create(&Log{UserId: 8, Username: "user8", Type: LogTypeCustomUpstream, ModelName: "user/usage-model", Group: constant.GroupUserShared, PromptTokens: 100, CompletionTokens: 20, CreatedAt: 1000}).Error)
-	require.NoError(t, LOG_DB.Create(&Log{UserId: 8, Username: "user8", Type: LogTypeCustomUpstream, ModelName: "user/usage-model", Group: constant.GroupUserShared, PromptTokens: 50, CompletionTokens: 10, CreatedAt: 2000}).Error)
-	require.NoError(t, LOG_DB.Create(&Log{UserId: 9, Username: "user9", Type: LogTypeCustomUpstream, ModelName: "user/usage-model", Group: constant.GroupUserShared, PromptTokens: 30, CompletionTokens: 5, CreatedAt: 1500}).Error)
+	// Other 携带 custom_cost_rmb（元字符串），供费用按用户聚合解析喵。
+	require.NoError(t, LOG_DB.Create(&Log{UserId: 8, Username: "user8", Type: LogTypeCustomUpstream, ModelName: "user/usage-model", Group: constant.GroupUserShared, PromptTokens: 100, CompletionTokens: 20, CreatedAt: 1000, Other: `{"custom_cost_rmb": "1.50"}`}).Error)
+	require.NoError(t, LOG_DB.Create(&Log{UserId: 8, Username: "user8", Type: LogTypeCustomUpstream, ModelName: "user/usage-model", Group: constant.GroupUserShared, PromptTokens: 50, CompletionTokens: 10, CreatedAt: 2000, Other: `{"custom_cost_rmb": "0.50"}`}).Error)
+	require.NoError(t, LOG_DB.Create(&Log{UserId: 9, Username: "user9", Type: LogTypeCustomUpstream, ModelName: "user/usage-model", Group: constant.GroupUserShared, PromptTokens: 30, CompletionTokens: 5, CreatedAt: 1500, Other: `{"custom_cost_rmb": "0.10"}`}).Error)
 	// 非 user-shared 分组的日志不计入使用情况喵。
-	require.NoError(t, LOG_DB.Create(&Log{UserId: 9, Username: "user9", Type: LogTypeCustomUpstream, ModelName: "user/usage-model", Group: "default", PromptTokens: 999, CompletionTokens: 99, CreatedAt: 1600}).Error)
+	require.NoError(t, LOG_DB.Create(&Log{UserId: 9, Username: "user9", Type: LogTypeCustomUpstream, ModelName: "user/usage-model", Group: "default", PromptTokens: 999, CompletionTokens: 99, CreatedAt: 1600, Other: `{"custom_cost_rmb": "9.99"}`}).Error)
 
 	usage, err := GetSharedModelUserUsage(created.ID, 7)
 	require.NoError(t, err)
 	require.Len(t, usage, 2)
-	// 用户 8 聚合两次：请求 2、输入 150、输出 30，最近调用 2000，用户名回填 user8 喵。
+	// 用户 8 聚合两次：请求 2、总 token 180（120+60）、费用 200 分、最近调用 2000，用户名回填 user8 喵。
 	var row8 *SharedModelUserUsage
 	for i := range usage {
 		if usage[i].UserID == 8 {
@@ -362,9 +363,19 @@ func TestGetSharedModelUserUsage(t *testing.T) {
 	require.NotNil(t, row8)
 	assert.Equal(t, "user8", row8.Username)
 	assert.Equal(t, int64(2), row8.RequestCount)
-	assert.Equal(t, int64(150), row8.PromptTokens)
-	assert.Equal(t, int64(30), row8.CompletionTokens)
+	assert.Equal(t, int64(180), row8.TotalTokens)
+	assert.Equal(t, int64(200), row8.CostCents)
 	assert.Equal(t, int64(2000), row8.LastAt)
+	// 用户 9 只聚合 user-shared 分组那条：总 token 35、费用 10 分，default 分组不纳入喵。
+	var row9 *SharedModelUserUsage
+	for i := range usage {
+		if usage[i].UserID == 9 {
+			row9 = &usage[i]
+		}
+	}
+	require.NotNil(t, row9)
+	assert.Equal(t, int64(35), row9.TotalTokens)
+	assert.Equal(t, int64(10), row9.CostCents)
 
 	// 非属主查询被拒，避免越权查看他人模型使用情况喵。
 	_, err = GetSharedModelUserUsage(created.ID, 8)

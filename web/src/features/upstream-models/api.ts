@@ -217,12 +217,13 @@ export async function syncUserUpstreamModelAvailable(
 }
 
 // UpstreamModelUserUsage 是共享模型按用户聚合的使用情况单行喵。
+// 只含请求数、总 token（输入+输出合计）与费用金额（分），不再细分输入/输出喵。
 export type UpstreamModelUserUsage = {
   user_id: number
   username: string
   request_count: number
-  prompt_tokens: number
-  completion_tokens: number
+  total_tokens: number
+  cost_cents: number
   last_at: number
 }
 

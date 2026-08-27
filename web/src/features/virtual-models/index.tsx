@@ -162,19 +162,7 @@ export function VirtualModels() {
                   <VirtualModelBindingsEditor model={selectedModel} onSaved={refreshSelectedModel} />
                 </TabsContent>
                 <TabsContent className='mt-4' value='status'>
-                  <div className='space-y-3 rounded-md border p-4 text-sm'>
-                    {virtualModelStatusQuery.isLoading && <p className='text-muted-foreground'>{t('Loading')}</p>}
-                    {virtualModelStatusQuery.isError && <p className='text-destructive'>{t('Unable to load virtual model status')}</p>}
-                    {virtualModelStatus && (
-                      <>
-                        <p>{t('Enabled')}: {virtualModelStatus.enabled ? t('Yes') : t('No')}</p>
-                        <p>{t('Candidate count')}: {virtualModelStatus.candidate_count}</p>
-                        <p>{t('Enabled candidates')}: {virtualModelStatus.enabled_candidates}</p>
-                      </>
-                    )}
-                    <Button size='sm' variant='outline' onClick={() => void virtualModelStatusQuery.refetch()}>{t('Refresh')}</Button>
-                  </div>
-                  {/* 深度图表与候选健康摘要（runtime 变体）喵。 */}
+                  {/* 深度图表与候选健康摘要（runtime 变体）；旧的内联「是否启用/候选数」卡片已删除，刷新由组件自带按钮承担喵。 */}
                   <div className='mt-4'>
                     <VirtualModelOverviewStatus
                       modelID={selectedModel.id}

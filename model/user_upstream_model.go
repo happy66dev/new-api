@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -366,12 +367,14 @@ func GetEnabledSharedUserUpstreamModelByName(normalizedName string, viewerID int
 
 // SharedModelUserUsage 描述某个共享上游模型按用户聚合的使用量喵。
 type SharedModelUserUsage struct {
-	UserID           int    `json:"user_id"`
-	Username         string `json:"username"`
-	RequestCount     int64  `json:"request_count"`
-	PromptTokens     int64  `json:"prompt_tokens"`
-	CompletionTokens int64  `json:"completion_tokens"`
-	LastAt           int64  `json:"last_at"`
+	UserID       int    `json:"user_id"`
+	Username     string `json:"username"`
+	RequestCount int64  `json:"request_count"`
+	// TotalTokens 该用户累计消耗的总 token 数（输入+输出合计，不细分）喵。
+	TotalTokens int64 `json:"total_tokens"`
+	// CostCents 该用户使用产生的费用金额，单位：分（RMB），前端转元展示喵。
+	CostCents int64 `json:"cost_cents"`
+	LastAt    int64 `json:"last_at"`
 }
 
 // sharedModelUserUsageLimit 限制共享模型使用情况返回的最大用户数，防止大表拖慢接口喵。
@@ -391,9 +394,9 @@ func GetSharedModelUserUsage(upstreamModelID int64, ownerUserID int) ([]SharedMo
 	}
 	modelName := upstreamModel.UserUpstreamModelName()
 	rows := make([]SharedModelUserUsage, 0, sharedModelUserUsageLimit)
-	// 共享调用日志固定归入 user-shared 分组且 type=8，按 user_id 聚合喵。
+	// 主查询：共享调用日志固定归入 user-shared 分组且 type=8，按 user_id 聚合请求数与总 token（输入+输出合计）喵。
 	queryError := LOG_DB.Table("logs").
-		Select("user_id, count(*) as request_count, sum(prompt_tokens) as prompt_tokens, sum(completion_tokens) as completion_tokens, max(created_at) as last_at").
+		Select("user_id, count(*) as request_count, sum(prompt_tokens + completion_tokens) as total_tokens, max(created_at) as last_at").
 		Where("model_name = ? AND "+commonGroupCol+" = ? AND type = ? AND user_id > 0", modelName, constant.GroupUserShared, LogTypeCustomUpstream).
 		Group("user_id").
 		Order("last_at DESC").
@@ -402,9 +405,61 @@ func GetSharedModelUserUsage(upstreamModelID int64, ownerUserID int) ([]SharedMo
 	if queryError != nil {
 		return nil, queryError
 	}
+	// 费用金额在日志 Other JSON 的 custom_cost_rmb 里，需二次查询按用户解析求和喵。
+	// 喵~防御：费用聚合失败只记日志不阻塞使用情况返回喵。
+	if costError := fillSharedModelUserCosts(modelName, rows); costError != nil {
+		common.SysError("fill shared model user costs failed: " + costError.Error())
+	}
 	// 从主库批量补齐用户名，避免跨库 JOIN（日志库可能是独立实例）喵。
 	fillSharedModelUsernames(rows)
 	return rows, nil
+}
+
+// fillSharedModelUserCosts 从共享调用日志的 Other 解析 custom_cost_rmb（元字符串）并按用户求和转分为喵。
+func fillSharedModelUserCosts(modelName string, rows []SharedModelUserUsage) error {
+	// 喵~防御：空结果直接返回喵。
+	if len(rows) == 0 {
+		return nil
+	}
+	userIDs := make([]int, 0, len(rows))
+	for _, row := range rows {
+		userIDs = append(userIDs, row.UserID)
+	}
+	type costRow struct {
+		UserID int
+		Other  string
+	}
+	costRows := make([]costRow, 0)
+	// 按主查询返回的用户子集读取日志 Other，避免扫描该模型全部日志喵。
+	queryError := LOG_DB.Table("logs").
+		Select("user_id, other").
+		Where("model_name = ? AND "+commonGroupCol+" = ? AND type = ? AND user_id IN ?", modelName, constant.GroupUserShared, LogTypeCustomUpstream, userIDs).
+		Find(&costRows).Error
+	if queryError != nil {
+		return queryError
+	}
+	costCentsByUser := make(map[int]int64, len(userIDs))
+	for _, costRow := range costRows {
+		// 喵~防御：单个日志解析失败只跳过该条，不阻塞整体聚合喵。
+		otherMap, parseError := common.StrToMap(costRow.Other)
+		if parseError != nil {
+			continue
+		}
+		costRmbText, textOk := otherMap["custom_cost_rmb"].(string)
+		if !textOk {
+			continue
+		}
+		costRmb, floatError := strconv.ParseFloat(costRmbText, 64)
+		// 喵~防御：非法或负值费用按零兜底，绝不把坏数据累进账户喵。
+		if floatError != nil || costRmb < 0 {
+			continue
+		}
+		costCentsByUser[costRow.UserID] += int64(math.Round(costRmb * 100))
+	}
+	for i := range rows {
+		rows[i].CostCents = costCentsByUser[rows[i].UserID]
+	}
+	return nil
 }
 
 // fillSharedModelUsernames 批量从主库用户表补齐使用情况的用户名喵。
