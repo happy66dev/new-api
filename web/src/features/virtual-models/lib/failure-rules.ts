@@ -16,14 +16,16 @@ export type BodyRegexMode = 'none' | 'preset' | 'simple' | 'custom'
 // seconds 直接按秒；minutes 按分钟乘以 60；mixed 支持 "1m30s" 复合格式；auto 自动扫描自然语言时间喵。
 export type FreezeUnit = 'seconds' | 'minutes' | 'mixed' | 'auto'
 
-// ConditionType 描述失败条件的类型，HTTP 状态码与超时二选一喵。
-// 大部分失败（限流、5xx 等）都能用 HTTP 状态码表达；超时没有状态码，需独立条件覆盖喵。
-export type ConditionType = 'http' | 'timeout'
+// ConditionType 描述失败条件的类型，HTTP 状态码、超时与卡流三选一喵。
+// 大部分失败（限流、5xx 等）都能用 HTTP 状态码表达；超时与卡流没有状态码，需独立条件覆盖喵。
+export type ConditionType = 'http' | 'timeout' | 'stalled'
 
 // CONDITION_TYPE_TO_ERROR_CLASS 把非 HTTP 条件类型映射为后端错误分类值喵。
 export const CONDITION_TYPE_TO_ERROR_CLASS: Partial<Record<ConditionType, string>> = {
   // 超时条件写入稳定 timeout 分类，供后端按错误分类匹配喵。
   timeout: 'timeout',
+  // 卡流条件写入 stalled_stream 分类，匹配上游静默超时喵。
+  stalled: 'stalled_stream',
 }
 
 // FREEZE_UNITS 提供响应体冻结单位下拉选项，labelKey 供 i18n 翻译喵。
@@ -51,6 +53,12 @@ export type FailureRuleDraft = {
   // freezeUnit 标记响应体字段冻结时间的单位，仅在 freezeField 非空时生效喵。
   freezeUnit: FreezeUnit
   httpStatus: string
+  // stallTimeoutSeconds 静默多久判定流式卡流，单位：秒；空串表示默认 60 喵。
+  stallTimeoutSeconds: string
+  // minContentChars 探测放流前需累积的内容字符门槛，空串表示默认 10 喵。
+  minContentChars: string
+  // probeTotalTimeoutSeconds 探测阶段总预算，单位：秒；空串表示默认 300 喵。
+  probeTotalTimeoutSeconds: string
   id?: number
   action: VirtualModelFailureRule['action']
 }
@@ -106,6 +114,8 @@ export function toFailureRuleDraft(rule: VirtualModelFailureRule): FailureRuleDr
   let conditionType: ConditionType = 'http'
   if ((rule.error_class ?? '') === 'timeout') {
     conditionType = 'timeout'
+  } else if ((rule.error_class ?? '') === 'stalled_stream') {
+    conditionType = 'stalled'
   }
   return {
     bodyRegex,
@@ -117,6 +127,10 @@ export function toFailureRuleDraft(rule: VirtualModelFailureRule): FailureRuleDr
     freezeField: rule.freeze_field ?? '',
     freezeUnit,
     httpStatus: httpStatusText,
+    // 流式探测参数原样回填为可编辑文本，零表示未配置使用默认喵。
+    stallTimeoutSeconds: String(rule.stall_timeout_seconds ?? 0),
+    minContentChars: String(rule.min_content_chars ?? 0),
+    probeTotalTimeoutSeconds: String(rule.probe_total_timeout_seconds ?? 0),
     id: rule.id,
     action: rule.action ?? 'next',
   }
@@ -129,12 +143,16 @@ export function createFailureRuleDraft(): FailureRuleDraft {
     bodyRegexMode: 'none',
     bodyRegexPreset: '',
     bodyRegexSimple: '',
-    // 默认按 HTTP 状态码条件匹配，超时为独立可选条件喵。
+    // 默认按 HTTP 状态码条件匹配，超时与卡流为独立可选条件喵。
     conditionType: 'http',
     freezeSeconds: '0',
     freezeField: '',
     freezeUnit: 'seconds',
     httpStatus: '0',
+    // 流式探测参数默认零，表示使用后端默认值喵。
+    stallTimeoutSeconds: '0',
+    minContentChars: '0',
+    probeTotalTimeoutSeconds: '0',
     action: 'next',
   }
 }
@@ -210,8 +228,17 @@ export function validateFailureRuleDraft(
     httpStatusMin = parsedStatus.min
     httpStatusMax = parsedStatus.max
   } else {
-    // 超时条件：固定写入 timeout 分类，HTTP 状态码不限制喵。
+    // 超时与卡流条件：固定写入对应分类，HTTP 状态码不限制喵。
     errorClass = CONDITION_TYPE_TO_ERROR_CLASS[rule.conditionType] ?? ''
+  }
+  // 流式探测参数解析：仅在 stalled 条件时可配置，其他条件写 0 使用后端默认喵。
+  let stallTimeoutSeconds = 0
+  let minContentChars = 0
+  let probeTotalTimeoutSeconds = 0
+  if (rule.conditionType === 'stalled') {
+    stallTimeoutSeconds = parseProbeNumber(rule.stallTimeoutSeconds, 600, t, index, 'Failure rule {{index}} stall timeout must be between 0 and 600 seconds')
+    minContentChars = parseProbeNumber(rule.minContentChars, 1024, t, index, 'Failure rule {{index}} min content chars must be between 0 and 1024')
+    probeTotalTimeoutSeconds = parseProbeNumber(rule.probeTotalTimeoutSeconds, 3600, t, index, 'Failure rule {{index}} probe total timeout must be between 0 and 3600 seconds')
   }
   // 将冻结秒数文本转换为数值，零表示不追加固定冻结时间喵。
   const freezeSeconds = Number(rule.freezeSeconds)
@@ -238,5 +265,28 @@ export function validateFailureRuleDraft(
     freeze_seconds: freezeSeconds,
     freeze_field: freezeField,
     freeze_unit: rule.freezeUnit,
+    // stalled 条件写入用户配置的探测参数，其他条件写 0 保持默认喵。
+    stall_timeout_seconds: stallTimeoutSeconds,
+    min_content_chars: minContentChars,
+    probe_total_timeout_seconds: probeTotalTimeoutSeconds,
   }
+}
+
+// parseProbeNumber 解析流式探测参数文本为整数，空串与零按未配置处理，非整数或越界抛错喵。
+function parseProbeNumber(
+  text: string,
+  maximum: number,
+  t: (key: string, options?: Record<string, unknown>) => string,
+  index: number,
+  messageKey: string
+): number {
+  const trimmed = text.trim()
+  // 空串与零都表示未配置，交由后端使用默认值喵。
+  if (trimmed === '' || trimmed === '0') return 0
+  const value = Number(trimmed)
+  // 喵~防御：非整数、负数或超过上限的输入必须拒绝，避免写入无法生效的配置喵。
+  if (!Number.isInteger(value) || value < 0 || value > maximum) {
+    throw new Error(t(messageKey, { index: index + 1 }))
+  }
+  return value
 }

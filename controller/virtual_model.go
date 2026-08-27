@@ -68,6 +68,12 @@ type virtualModelFailureRuleInput struct {
 	FreezeField string `json:"freeze_field"`
 	// FreezeUnit 标记响应体字段冻结时间的单位，仅在 FreezeField 非空时生效喵。
 	FreezeUnit model.VirtualModelFreezeUnit `json:"freeze_unit"`
+	// StallTimeoutSeconds 静默多久判定流式卡流，单位：秒；零表示运行时默认 60 喵。
+	StallTimeoutSeconds int `json:"stall_timeout_seconds"`
+	// MinContentChars 探测放流前需累积的内容字符门槛，零表示默认 10 喵。
+	MinContentChars int `json:"min_content_chars"`
+	// ProbeTotalTimeoutSeconds 探测阶段总预算，单位：秒；零表示默认 300 喵。
+	ProbeTotalTimeoutSeconds int `json:"probe_total_timeout_seconds"`
 }
 
 // virtualModelFailureRulesReplaceInput 描述候选失败规则的版本化整体替换请求喵。
@@ -725,7 +731,7 @@ func ReplaceVirtualModelCandidateFailureRules(c *gin.Context) {
 			return deleteError
 		}
 		for ruleOrder, ruleInput := range input.Rules {
-			failureRule := &model.VirtualModelFailureRule{CandidateID: candidateID, RuleOrder: ruleOrder, HTTPStatus: ruleInput.HTTPStatus, HTTPStatusMax: ruleInput.HTTPStatusMax, ErrorClass: strings.TrimSpace(ruleInput.ErrorClass), BodyRegex: strings.TrimSpace(ruleInput.BodyRegex), Action: ruleInput.Action, FreezeSeconds: ruleInput.FreezeSeconds, FreezeField: strings.TrimSpace(ruleInput.FreezeField), FreezeUnit: ruleInput.FreezeUnit}
+			failureRule := &model.VirtualModelFailureRule{CandidateID: candidateID, RuleOrder: ruleOrder, HTTPStatus: ruleInput.HTTPStatus, HTTPStatusMax: ruleInput.HTTPStatusMax, ErrorClass: strings.TrimSpace(ruleInput.ErrorClass), BodyRegex: strings.TrimSpace(ruleInput.BodyRegex), Action: ruleInput.Action, FreezeSeconds: ruleInput.FreezeSeconds, FreezeField: strings.TrimSpace(ruleInput.FreezeField), FreezeUnit: ruleInput.FreezeUnit, StallTimeoutSeconds: ruleInput.StallTimeoutSeconds, MinContentChars: ruleInput.MinContentChars, ProbeTotalTimeoutSeconds: ruleInput.ProbeTotalTimeoutSeconds}
 			if validateError := virtualmodelservice.ValidateCandidateFailureRule(failureRule); validateError != nil {
 				return validateError
 			}
@@ -791,7 +797,7 @@ func ReplaceVirtualModelGlobalFailureRules(c *gin.Context) {
 			return deleteError
 		}
 		for ruleOrder, ruleInput := range input.Rules {
-			globalFailureRule := &model.VirtualModelGlobalFailureRule{VirtualModelID: modelID, RuleOrder: ruleOrder, HTTPStatus: ruleInput.HTTPStatus, HTTPStatusMax: ruleInput.HTTPStatusMax, ErrorClass: strings.TrimSpace(ruleInput.ErrorClass), BodyRegex: strings.TrimSpace(ruleInput.BodyRegex), Action: ruleInput.Action, FreezeSeconds: ruleInput.FreezeSeconds, FreezeField: strings.TrimSpace(ruleInput.FreezeField), FreezeUnit: ruleInput.FreezeUnit}
+			globalFailureRule := &model.VirtualModelGlobalFailureRule{VirtualModelID: modelID, RuleOrder: ruleOrder, HTTPStatus: ruleInput.HTTPStatus, HTTPStatusMax: ruleInput.HTTPStatusMax, ErrorClass: strings.TrimSpace(ruleInput.ErrorClass), BodyRegex: strings.TrimSpace(ruleInput.BodyRegex), Action: ruleInput.Action, FreezeSeconds: ruleInput.FreezeSeconds, FreezeField: strings.TrimSpace(ruleInput.FreezeField), FreezeUnit: ruleInput.FreezeUnit, StallTimeoutSeconds: ruleInput.StallTimeoutSeconds, MinContentChars: ruleInput.MinContentChars, ProbeTotalTimeoutSeconds: ruleInput.ProbeTotalTimeoutSeconds}
 			if validateError := virtualmodelservice.ValidateGlobalFailureRule(globalFailureRule); validateError != nil {
 				return validateError
 			}

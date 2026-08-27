@@ -86,7 +86,14 @@ const (
 	// quota error
 	ErrorCodeInsufficientUserQuota      ErrorCode = "insufficient_user_quota"
 	ErrorCodePreConsumeTokenQuotaFailed ErrorCode = "pre_consume_token_quota_failed"
+
+	// virtual model stream probe error
+	ErrorCodeVirtualModelProbeFailed ErrorCode = "virtual_model:stream_probe_failed"
 )
+
+// ErrStalledStream 标记流式响应在产出业务内容前静默超时（卡流），用于虚拟模型失败规则分类喵。
+// 通过 errors.Is 穿透 NewAPIError.Unwrap 识别，使卡流能独立于 HTTP 状态码进入 stalled_stream 分类喵。
+var ErrStalledStream = errors.New("stream stalled before business content")
 
 type NewAPIError struct {
 	Err                error

@@ -2,11 +2,13 @@ package virtualmodel
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/model"
+	relaykitypes "github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/stretchr/testify/require"
 )
 
@@ -473,4 +475,60 @@ func TestValidateFailureRuleErrorClass(t *testing.T) {
 	// 模型级全局规则同样遵守二选一与白名单语义喵。
 	globalRule := &model.VirtualModelGlobalFailureRule{VirtualModelID: 1, RuleOrder: 0, ErrorClass: "network_error", Action: model.VirtualModelActionRetry}
 	require.NoError(t, ValidateGlobalFailureRule(globalRule))
+}
+
+// TestNormalizeCandidateFailureStalledStream 验证卡流哨兵被独立分类为 stalled_stream 喵。
+func TestNormalizeCandidateFailureStalledStream(t *testing.T) {
+	// 包装哨兵的错误必须识别为 stalled_stream，与 timeout/network_error 区分喵。
+	stalledFailure := NormalizeCandidateFailure(0, nil, nil, fmt.Errorf("%w: upstream silent", relaykitypes.ErrStalledStream))
+	require.Equal(t, "stalled_stream", stalledFailure.ErrorClass)
+	// 直接传入哨兵同样命中，HTTP 状态码不参与卡流分类喵。
+	require.Equal(t, "stalled_stream", NormalizeCandidateFailure(http.StatusBadGateway, nil, nil, relaykitypes.ErrStalledStream).ErrorClass)
+	// 普通网络错误不得被误归为卡流喵。
+	require.Equal(t, "network_error", NormalizeCandidateFailure(0, nil, nil, http.ErrHandlerTimeout).ErrorClass)
+}
+
+// TestValidateFailureRuleProbeParameters 验证流式探测参数的范围边界喵。
+func TestValidateFailureRuleProbeParameters(t *testing.T) {
+	baseRule := &model.VirtualModelFailureRule{CandidateID: 1, RuleOrder: 0, ErrorClass: "stalled_stream", Action: model.VirtualModelActionNext}
+	// 零值表示未配置，必须允许保存喵。
+	require.NoError(t, ValidateCandidateFailureRule(baseRule))
+	// 合法范围内的探测参数允许保存喵。
+	configuredRule := *baseRule
+	configuredRule.StallTimeoutSeconds = 45
+	configuredRule.MinContentChars = 20
+	configuredRule.ProbeTotalTimeoutSeconds = 240
+	require.NoError(t, ValidateCandidateFailureRule(&configuredRule))
+	// 喵~防御：超过上界的静默秒数必须拒绝喵。
+	oversizeStallRule := *baseRule
+	oversizeStallRule.StallTimeoutSeconds = 601
+	require.Error(t, ValidateCandidateFailureRule(&oversizeStallRule))
+	// 喵~防御：负数内容门槛必须拒绝喵。
+	negativeContentRule := *baseRule
+	negativeContentRule.MinContentChars = -1
+	require.Error(t, ValidateCandidateFailureRule(&negativeContentRule))
+	// 模型级全局规则同样校验探测参数喵。
+	globalRule := &model.VirtualModelGlobalFailureRule{VirtualModelID: 1, RuleOrder: 0, ErrorClass: "stalled_stream", Action: model.VirtualModelActionRetry, StallTimeoutSeconds: 600}
+	require.NoError(t, ValidateGlobalFailureRule(globalRule))
+}
+
+// TestResolveProbeParameters 验证探测参数按候选再到全局取首个非零并回退默认喵。
+func TestResolveProbeParameters(t *testing.T) {
+	// 空规则回退内置默认值喵。
+	defaults := ResolveProbeParameters(nil, nil)
+	require.Equal(t, DefaultProbeStallTimeoutSeconds, defaults.StallTimeoutSeconds)
+	require.Equal(t, DefaultProbeMinContentChars, defaults.MinContentChars)
+	require.Equal(t, DefaultProbeTotalTimeoutSeconds, defaults.ProbeTotalTimeoutSeconds)
+	// 候选规则优先于全局规则，缺省字段从全局补齐喵。
+	candidateRules := []model.VirtualModelFailureRule{{StallTimeoutSeconds: 30}}
+	globalRules := []model.VirtualModelFailureRule{{StallTimeoutSeconds: 90, MinContentChars: 25}}
+	resolved := ResolveProbeParameters(candidateRules, globalRules)
+	require.Equal(t, 30, resolved.StallTimeoutSeconds)
+	require.Equal(t, 25, resolved.MinContentChars)
+	require.Equal(t, DefaultProbeTotalTimeoutSeconds, resolved.ProbeTotalTimeoutSeconds)
+	// 逐字段独立：第一条非零字段只影响该字段，不影响其他字段喵。
+	secondCandidateRules := []model.VirtualModelFailureRule{{MinContentChars: 8}, {StallTimeoutSeconds: 5}}
+	secondResolved := ResolveProbeParameters(secondCandidateRules, globalRules)
+	require.Equal(t, 5, secondResolved.StallTimeoutSeconds)
+	require.Equal(t, 8, secondResolved.MinContentChars)
 }

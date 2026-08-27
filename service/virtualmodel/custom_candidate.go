@@ -30,6 +30,12 @@ type CustomCandidateExecutionInput struct {
 	RealModelName  string
 	AuthStyle      model.VirtualModelAuthStyle
 	TimeoutSeconds int
+	// StallTimeoutSeconds 静默多久判定流式卡流，单位：秒；零使用默认 60 喵。
+	StallTimeoutSeconds int
+	// MinContentChars 探测放流前需累积的内容字符门槛，零使用默认 10 喵。
+	MinContentChars int
+	// ProbeTotalTimeoutSeconds 探测阶段总预算，单位：秒；零使用默认 300 喵。
+	ProbeTotalTimeoutSeconds int
 }
 
 // CustomCandidateExecutionFailure 表示自定义候选在响应提交前可安全编排的失败结果喵。

@@ -155,6 +155,12 @@ type VirtualModelFailureRule struct {
 	FreezeField string `json:"freeze_field" gorm:"type:varchar(64)"`
 	// FreezeUnit 标记响应体字段冻结时间的单位，仅在 FreezeField 非空时生效喵。
 	FreezeUnit VirtualModelFreezeUnit `json:"freeze_unit" gorm:"type:varchar(16)"`
+	// StallTimeoutSeconds 静默多久判定流式卡流，单位：秒；零表示使用运行时默认 60 喵。
+	StallTimeoutSeconds int `json:"stall_timeout_seconds"`
+	// MinContentChars 探测放流前需要累积的内容字符数门槛，零表示默认 10 喵。
+	MinContentChars int `json:"min_content_chars"`
+	// ProbeTotalTimeoutSeconds 探测阶段总预算，单位：秒；零表示默认 300 喵。
+	ProbeTotalTimeoutSeconds int `json:"probe_total_timeout_seconds"`
 	Version    int64                  `json:"version" gorm:"default:1"`
 }
 
@@ -175,6 +181,12 @@ type VirtualModelGlobalFailureRule struct {
 	FreezeField string `json:"freeze_field" gorm:"type:varchar(64)"`
 	// FreezeUnit 标记响应体字段冻结时间的单位，仅在 FreezeField 非空时生效喵。
 	FreezeUnit VirtualModelFreezeUnit `json:"freeze_unit" gorm:"type:varchar(16)"`
+	// StallTimeoutSeconds 静默多久判定流式卡流，单位：秒；零表示使用运行时默认 60 喵。
+	StallTimeoutSeconds int `json:"stall_timeout_seconds"`
+	// MinContentChars 探测放流前需要累积的内容字符数门槛，零表示默认 10 喵。
+	MinContentChars int `json:"min_content_chars"`
+	// ProbeTotalTimeoutSeconds 探测阶段总预算，单位：秒；零表示默认 300 喵。
+	ProbeTotalTimeoutSeconds int `json:"probe_total_timeout_seconds"`
 	Version    int64                  `json:"version" gorm:"default:1"`
 }
 

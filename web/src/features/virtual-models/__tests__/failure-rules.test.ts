@@ -34,12 +34,16 @@ function makeDraft(overrides: Partial<FailureRuleDraft> = {}): FailureRuleDraft 
     bodyRegexMode: 'none',
     bodyRegexPreset: '',
     bodyRegexSimple: '',
-    // 默认按 HTTP 状态码匹配，超时为独立可选条件喵。
+    // 默认按 HTTP 状态码匹配，超时与卡流为独立可选条件喵。
     conditionType: 'http',
     freezeSeconds: '0',
     freezeField: '',
     freezeUnit: 'seconds',
     httpStatus: '0',
+    // 流式探测参数默认零，表示使用后端默认值喵。
+    stallTimeoutSeconds: '0',
+    minContentChars: '0',
+    probeTotalTimeoutSeconds: '0',
     action: 'next',
     ...overrides,
   }
@@ -69,6 +73,9 @@ describe('toFailureRuleDraft', () => {
       freezeField: '',
       freezeUnit: 'seconds',
       httpStatus: '429',
+      stallTimeoutSeconds: '0',
+      minContentChars: '0',
+      probeTotalTimeoutSeconds: '0',
       id: 7,
       action: 'freeze',
     })
@@ -102,6 +109,9 @@ describe('toFailureRuleDraft', () => {
       freezeField: '',
       freezeUnit: 'seconds',
       httpStatus: '0',
+      stallTimeoutSeconds: '0',
+      minContentChars: '0',
+      probeTotalTimeoutSeconds: '0',
       id: undefined,
       action: 'next',
     })
@@ -136,6 +146,9 @@ describe('createFailureRuleDraft', () => {
       freezeField: '',
       freezeUnit: 'seconds',
       httpStatus: '0',
+      stallTimeoutSeconds: '0',
+      minContentChars: '0',
+      probeTotalTimeoutSeconds: '0',
       action: 'next',
     })
   })
@@ -254,6 +267,10 @@ describe('validateFailureRuleDraft', () => {
       freeze_seconds: 5,
       freeze_field: '',
       freeze_unit: 'seconds',
+      // HTTP 条件不写探测参数，保持默认喵。
+      stall_timeout_seconds: 0,
+      min_content_chars: 0,
+      probe_total_timeout_seconds: 0,
     })
   })
 
@@ -449,5 +466,71 @@ describe('validateFailureRuleDraft with auto unit', () => {
     // auto 模式字段名无意义，即使残留超长文本也不应拦截保存喵。
     const payload = validateFailureRuleDraft(makeDraft({ freezeUnit: 'auto', freezeField: 'x'.repeat(70), action: 'freeze' }), 0, identityTranslator)
     expect(payload.freeze_unit).toBe('auto')
+  })
+})
+
+// describe toFailureRuleDraft：卡流分类的推断喵。
+describe('toFailureRuleDraft stalled inference', () => {
+  it('maps a stalled_stream class to the stalled condition', () => {
+    // 服务端 stalled_stream 分类应还原为卡流条件，并回填探测参数喵。
+    const draft = toFailureRuleDraft({ http_status: 0, error_class: 'stalled_stream', body_regex: '', action: 'next', freeze_seconds: 0, stall_timeout_seconds: 45, min_content_chars: 20, probe_total_timeout_seconds: 240 })
+    expect(draft.conditionType).toBe('stalled')
+    expect(draft.stallTimeoutSeconds).toBe('45')
+    expect(draft.minContentChars).toBe('20')
+    expect(draft.probeTotalTimeoutSeconds).toBe('240')
+  })
+
+  it('falls back to the stalled condition for a rule without params', () => {
+    // 无探测参数的 stalled 规则同样还原为卡流条件，参数回退默认零喵。
+    const draft = toFailureRuleDraft({ http_status: 0, error_class: 'stalled_stream', body_regex: '', action: 'next', freeze_seconds: 0 })
+    expect(draft.conditionType).toBe('stalled')
+    expect(draft.stallTimeoutSeconds).toBe('0')
+  })
+})
+
+// describe validateFailureRuleDraft：卡流条件的保存喵。
+describe('validateFailureRuleDraft with stalled condition', () => {
+  it('maps the stalled condition to its stable error class and probe params', () => {
+    // 卡流条件应写入后端 stalled_stream 分类并携带探测参数喵。
+    const payload = validateFailureRuleDraft(
+      makeDraft({ conditionType: 'stalled', stallTimeoutSeconds: '45', minContentChars: '20', probeTotalTimeoutSeconds: '240' }),
+      0,
+      identityTranslator
+    )
+    expect(payload.error_class).toBe('stalled_stream')
+    expect(payload.http_status).toBe(0)
+    expect(payload.stall_timeout_seconds).toBe(45)
+    expect(payload.min_content_chars).toBe(20)
+    expect(payload.probe_total_timeout_seconds).toBe(240)
+  })
+
+  it('treats empty and zero probe params as unset', () => {
+    // 空串与零都表示未配置，保存为零喵。
+    const payload = validateFailureRuleDraft(makeDraft({ conditionType: 'stalled' }), 0, identityTranslator)
+    expect(payload.stall_timeout_seconds).toBe(0)
+    expect(payload.min_content_chars).toBe(0)
+    expect(payload.probe_total_timeout_seconds).toBe(0)
+  })
+
+  it('writes zero probe params for the http condition', () => {
+    // 非卡流条件不写探测参数，保持默认喵。
+    const payload = validateFailureRuleDraft(makeDraft({ httpStatus: '503' }), 0, identityTranslator)
+    expect(payload.stall_timeout_seconds).toBe(0)
+    expect(payload.error_class).toBe('')
+  })
+
+  it('rejects a stalled timeout above 600 seconds', () => {
+    // 喵~防御：静默秒数超过上界必须拒绝喵。
+    expect(() => validateFailureRuleDraft(makeDraft({ conditionType: 'stalled', stallTimeoutSeconds: '601' }), 0, identityTranslator)).toThrow()
+  })
+
+  it('rejects a negative min content chars', () => {
+    // 喵~防御：负数内容门槛必须拒绝喵。
+    expect(() => validateFailureRuleDraft(makeDraft({ conditionType: 'stalled', minContentChars: '-1' }), 0, identityTranslator)).toThrow()
+  })
+
+  it('rejects a non-integer probe total timeout', () => {
+    // 喵~防御：小数探测总预算必须拒绝喵。
+    expect(() => validateFailureRuleDraft(makeDraft({ conditionType: 'stalled', probeTotalTimeoutSeconds: '300.5' }), 0, identityTranslator)).toThrow()
   })
 })

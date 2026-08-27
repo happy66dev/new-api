@@ -397,8 +397,13 @@ func AdvanceVirtualModelAfterNativeFailure(c *gin.Context, nativeError *types.Ne
 	if currentCandidate.SourceType != model.VirtualModelSourceInternal {
 		return decision
 	}
+	// 仅识别到卡流哨兵时才把执行错误传入分类，避免普通失败因 NewAPIError.Err 非空被误归 network_error 喵。
+	var probeExecutionError error
+	if errors.Is(nativeError, types.ErrStalledStream) {
+		probeExecutionError = nativeError
+	}
 	// 规范化为失败规则可匹配的受限结果，候选未配置规则时自动回退模型级全局兜底规则喵。
-	nativeFailure := virtualmodelservice.NormalizeCandidateFailure(nativeError.StatusCode, nil, nil, nil)
+	nativeFailure := virtualmodelservice.NormalizeCandidateFailure(nativeError.StatusCode, nil, nil, probeExecutionError)
 	// 记录该 internal 候选的失败尝试摘要，供最终日志展示候选链故障转移过程喵。
 	appendVirtualModelCandidateAttempt(c, model.VirtualModelCandidateAttemptRecord{
 		Seq:          currentVirtualModelCandidateSeq(c),
@@ -755,6 +760,8 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 	}
 	// 记录请求起始时间供结算耗时使用喵。
 	startTime := time.Now()
+	// 从候选级与模型级全局失败规则解析流式探测参数，供候选透传的放流前探测使用喵。
+	probeParameters := virtualmodelservice.ResolveProbeParameters(executionSnapshot.FailureRulesByCandidateID[candidate.CandidateID], executionSnapshot.GlobalFailureRules)
 	// 解析候选执行来源：引用用户上游模型条目或直填凭据喵。
 	hasUpstreamReference := candidate.UpstreamModelID != nil && *candidate.UpstreamModelID > 0
 	var referencedUpstreamModel *model.UserUpstreamModel
@@ -833,6 +840,10 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 				RealModelName:  candidateRealModelName,
 				AuthStyle:      candidateAuthStyle,
 				TimeoutSeconds: candidate.TimeoutSeconds,
+				// 流式探测参数随候选执行传入，供放流前健康探测使用喵。
+				StallTimeoutSeconds:      probeParameters.StallTimeoutSeconds,
+				MinContentChars:          probeParameters.MinContentChars,
+				ProbeTotalTimeoutSeconds: probeParameters.ProbeTotalTimeoutSeconds,
 			})
 			executionError = executionResult.Err
 			executionUsage = executionResult.Usage
@@ -844,6 +855,10 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 				RealModelName:  candidateRealModelName,
 				AuthStyle:      candidateAuthStyle,
 				TimeoutSeconds: candidate.TimeoutSeconds,
+				// 流式探测参数随候选执行传入，供放流前健康探测使用喵。
+				StallTimeoutSeconds:      probeParameters.StallTimeoutSeconds,
+				MinContentChars:          probeParameters.MinContentChars,
+				ProbeTotalTimeoutSeconds: probeParameters.ProbeTotalTimeoutSeconds,
 			})
 		}
 		// 成功响应已由透传器直接写出，此时仅清除请求开始前已观察到的历史冻结并中止后续 controller relay 喵。
@@ -1004,6 +1019,11 @@ func applyInternalVirtualModelCandidate(c *gin.Context, modelRequest *ModelReque
 	common.SetContextKey(c, constant.ContextKeyTokenGroup, candidate.GroupName)
 	common.SetContextKey(c, constant.ContextKeyUsingGroup, candidate.GroupName)
 	common.SetContextKey(c, constant.ContextKeyInternalCandidateApplied, true)
+	// 从候选级与模型级全局失败规则解析流式探测参数并写入 context，供 relay 层放流前探测读取喵。
+	if executionState, foundState := getVirtualModelExecutionState(c); foundState && executionState.executionSnapshot != nil {
+		probeParameters := virtualmodelservice.ResolveProbeParameters(executionState.executionSnapshot.FailureRulesByCandidateID[candidate.CandidateID], executionState.executionSnapshot.GlobalFailureRules)
+		common.SetContextKey(c, constant.ContextKeyVirtualModelProbeParameters, probeParameters)
+	}
 	if !replaceTopLevelRequestModel(c, candidate.RealModelName) {
 		abortWithOpenAiMessage(c, http.StatusBadRequest, "invalid virtual model request", types.ErrorCode("virtual_model_invalid_request"))
 		return false

@@ -71,6 +71,7 @@ export function FailureRuleEditorRow({
           <select className='border-input bg-background h-9 rounded-md border px-3 text-sm' value={rule.conditionType} disabled={isSaving} onChange={(event) => onChange({ conditionType: event.target.value as ConditionType })}>
             <option value='http'>{t('HTTP status code')}</option>
             <option value='timeout'>{t('Timeout')}</option>
+            <option value='stalled'>{t('Stalled stream')}</option>
           </select>
         </label>
         {/* HTTP 条件：展示状态码输入与常用预设喵。 */}
@@ -126,6 +127,29 @@ export function FailureRuleEditorRow({
               {t('Matches timeout failures')}
             </div>
           </label>
+        )}
+        {/* 卡流条件：展示固定说明，并可配置流式探测参数（静默秒数、内容字符门槛、探测总预算）喵。 */}
+        {rule.conditionType === 'stalled' && (
+          <>
+            <label className='grid gap-1 text-sm font-medium'>
+              {t('Error class (fixed)')}
+              <div className='flex h-9 items-center rounded-md border px-3 text-sm text-muted-foreground'>
+                {t('Matches stalled stream failures')}
+              </div>
+            </label>
+            <label className='grid gap-1 text-sm font-medium'>
+              {t('Stall timeout seconds')}
+              <Input inputMode='numeric' value={rule.stallTimeoutSeconds} disabled={isSaving} placeholder={t('Seconds of silence before judging stalled (default 60)')} onChange={(event) => onChange({ stallTimeoutSeconds: event.target.value })} />
+            </label>
+            <label className='grid gap-1 text-sm font-medium'>
+              {t('Min content chars')}
+              <Input inputMode='numeric' value={rule.minContentChars} disabled={isSaving} placeholder={t('Content characters to buffer before relaying (default 10)')} onChange={(event) => onChange({ minContentChars: event.target.value })} />
+            </label>
+            <label className='grid gap-1 text-sm font-medium'>
+              {t('Probe total timeout seconds')}
+              <Input inputMode='numeric' value={rule.probeTotalTimeoutSeconds} disabled={isSaving} placeholder={t('Total budget for the probe phase (default 300)')} onChange={(event) => onChange({ probeTotalTimeoutSeconds: event.target.value })} />
+            </label>
+          </>
         )}
         <label className='grid gap-1 text-sm font-medium'>
           {t('Action')}

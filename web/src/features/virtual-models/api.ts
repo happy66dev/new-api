@@ -201,6 +201,12 @@ export type VirtualModelFailureRule = {
   freeze_field?: string
   // freeze_unit 标记响应体字段冻结时间的单位，仅在 freeze_field 非空时生效喵。
   freeze_unit?: 'seconds' | 'minutes' | 'mixed' | 'auto'
+  // stall_timeout_seconds 静默多久判定流式卡流，单位：秒；零或省略表示默认 60 喵。
+  stall_timeout_seconds?: number
+  // min_content_chars 探测放流前需累积的内容字符门槛，零或省略表示默认 10 喵。
+  min_content_chars?: number
+  // probe_total_timeout_seconds 探测阶段总预算，单位：秒；零或省略表示默认 300 喵。
+  probe_total_timeout_seconds?: number
 }
 
 export type VirtualModelFailureRulesReplaceInput = {

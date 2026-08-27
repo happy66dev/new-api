@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/model"
+	relaykitypes "github.com/QuantumNous/new-api/relaykit/types"
 )
 
 // CandidateFailure 描述一次尚未向客户端提交响应的候选失败结果喵。
@@ -25,6 +26,11 @@ func NormalizeCandidateFailure(statusCode int, responseHeaders http.Header, resp
 	failure := CandidateFailure{HTTPStatus: statusCode, ErrorClass: "upstream_error"}
 	// 喵~防御：网络或 TLS 失败没有可信 HTTP 状态，必须与 HTTP 响应故障区分喵。
 	if executionError != nil {
+		// 卡流哨兵优先识别：静默超时没有 HTTP 状态码可依赖，必须独立分类供 stalled_stream 规则匹配喵。
+		if errors.Is(executionError, relaykitypes.ErrStalledStream) {
+			failure.ErrorClass = "stalled_stream"
+			return failure
+		}
 		// 区分超时：context deadline 超时归为 timeout 错误分类，其余网络错误归 network_error 喵。
 		if errors.Is(executionError, context.DeadlineExceeded) {
 			failure.ErrorClass = "timeout"
@@ -365,10 +371,55 @@ func RetryBackoffSeconds(retryIndex int) int {
 // 与 NormalizeCandidateFailure 产出的分类一一对应，保证规则能命中真实失败喵。
 func validCandidateErrorClass(errorClass string) bool {
 	switch errorClass {
-	case "timeout", "network_error", "rate_limited", "upstream_server_error", "upstream_client_error", "upstream_error":
+	case "timeout", "network_error", "rate_limited", "upstream_server_error", "upstream_client_error", "upstream_error", "stalled_stream":
 		return true
 	}
 	return false
+}
+
+// 流式探测参数默认值，对齐 autoapi 的探测语义喵。
+const (
+	// DefaultProbeStallTimeoutSeconds 静默多久判定流式卡流，收到字节后计时重置喵。
+	DefaultProbeStallTimeoutSeconds = 60
+	// DefaultProbeMinContentChars 放流前需累积的内容字符数门槛喵。
+	DefaultProbeMinContentChars = 10
+	// DefaultProbeTotalTimeoutSeconds 探测阶段总预算，只管放流前的健康确认喵。
+	DefaultProbeTotalTimeoutSeconds = 300
+)
+
+// ProbeParameters 描述流式候选放流前的健康探测参数喵。
+type ProbeParameters struct {
+	StallTimeoutSeconds      int // 静默超时，单位：秒；零表示使用默认值喵。
+	MinContentChars          int // 放流前需累积的内容字符门槛，零表示使用默认值喵。
+	ProbeTotalTimeoutSeconds int // 探测阶段总预算，单位：秒；零表示使用默认值喵。
+}
+
+// ResolveProbeParameters 从候选级与模型级全局失败规则中解析流式探测参数喵。
+// 候选规则优先于全局规则，每个字段取第一条非零配置，全部未配置时回退内置默认值喵。
+func ResolveProbeParameters(candidateRules []model.VirtualModelFailureRule, globalRules []model.VirtualModelFailureRule) ProbeParameters {
+	// 逐字段按规则顺序取第一个非零值，保证用户在不同规则上分散配置也能生效喵。
+	return ProbeParameters{
+		StallTimeoutSeconds:      resolveProbeParameter(candidateRules, globalRules, func(rule model.VirtualModelFailureRule) int { return rule.StallTimeoutSeconds }, DefaultProbeStallTimeoutSeconds),
+		MinContentChars:          resolveProbeParameter(candidateRules, globalRules, func(rule model.VirtualModelFailureRule) int { return rule.MinContentChars }, DefaultProbeMinContentChars),
+		ProbeTotalTimeoutSeconds: resolveProbeParameter(candidateRules, globalRules, func(rule model.VirtualModelFailureRule) int { return rule.ProbeTotalTimeoutSeconds }, DefaultProbeTotalTimeoutSeconds),
+	}
+}
+
+// resolveProbeParameter 按候选再到全局的顺序返回第一个非零参数值，全部为零时回退默认喵。
+func resolveProbeParameter(candidateRules []model.VirtualModelFailureRule, globalRules []model.VirtualModelFailureRule, pick func(rule model.VirtualModelFailureRule) int, fallback int) int {
+	// 候选级规则优先，用户可按候选差异配置探测行为喵。
+	for _, rule := range candidateRules {
+		if value := pick(rule); value > 0 {
+			return value
+		}
+	}
+	// 候选未配置时回退模型级全局兜底规则喵。
+	for _, rule := range globalRules {
+		if value := pick(rule); value > 0 {
+			return value
+		}
+	}
+	return fallback
 }
 
 // ValidateCandidateFailureRule 校验控制面写入的候选级失败规则边界喵。
@@ -378,7 +429,7 @@ func ValidateCandidateFailureRule(rule *model.VirtualModelFailureRule) error {
 		return errors.New("virtual model failure rule is invalid")
 	}
 	// 规则字段边界由共享校验函数统一把关喵。
-	return validateFailureRuleFields(rule.RuleOrder, rule.HTTPStatus, rule.HTTPStatusMax, rule.FreezeSeconds, rule.ErrorClass, rule.BodyRegex, rule.Action, rule.FreezeField, rule.FreezeUnit)
+	return validateFailureRuleFields(rule.RuleOrder, rule.HTTPStatus, rule.HTTPStatusMax, rule.FreezeSeconds, rule.ErrorClass, rule.BodyRegex, rule.Action, rule.FreezeField, rule.FreezeUnit, rule.StallTimeoutSeconds, rule.MinContentChars, rule.ProbeTotalTimeoutSeconds)
 }
 
 // ValidateGlobalFailureRule 校验控制面写入的模型级全局兜底失败规则边界喵。
@@ -388,14 +439,18 @@ func ValidateGlobalFailureRule(rule *model.VirtualModelGlobalFailureRule) error 
 		return errors.New("virtual model failure rule is invalid")
 	}
 	// 模型级与候选级规则的字段约束一致，直接复用共享校验喵。
-	return validateFailureRuleFields(rule.RuleOrder, rule.HTTPStatus, rule.HTTPStatusMax, rule.FreezeSeconds, rule.ErrorClass, rule.BodyRegex, rule.Action, rule.FreezeField, rule.FreezeUnit)
+	return validateFailureRuleFields(rule.RuleOrder, rule.HTTPStatus, rule.HTTPStatusMax, rule.FreezeSeconds, rule.ErrorClass, rule.BodyRegex, rule.Action, rule.FreezeField, rule.FreezeUnit, rule.StallTimeoutSeconds, rule.MinContentChars, rule.ProbeTotalTimeoutSeconds)
 }
 
 // validateFailureRuleFields 校验失败规则字段的通用边界喵。
-func validateFailureRuleFields(ruleOrder int, httpStatus int, httpStatusMax int, freezeSeconds int, errorClass string, bodyRegex string, action model.VirtualModelFailureAction, freezeField string, freezeUnit model.VirtualModelFreezeUnit) error {
+func validateFailureRuleFields(ruleOrder int, httpStatus int, httpStatusMax int, freezeSeconds int, errorClass string, bodyRegex string, action model.VirtualModelFailureAction, freezeField string, freezeUnit model.VirtualModelFreezeUnit, stallTimeoutSeconds int, minContentChars int, probeTotalTimeoutSeconds int) error {
 	// 喵~防御：非法序号、越界状态码、范围上界越界和超长冻结配置必须拒绝持久化喵。
 	if ruleOrder < 0 || httpStatus < 0 || httpStatus > 599 || httpStatusMax < 0 || httpStatusMax > 599 || freezeSeconds < 0 || freezeSeconds > 24*60*60 {
 		return errors.New("virtual model failure rule is invalid")
+	}
+	// 喵~防御：流式探测参数必须在安全范围内，零表示未配置使用默认值喵。
+	if stallTimeoutSeconds < 0 || stallTimeoutSeconds > 600 || minContentChars < 0 || minContentChars > 1024 || probeTotalTimeoutSeconds < 0 || probeTotalTimeoutSeconds > 3600 {
+		return errors.New("virtual model failure rule probe parameters are invalid")
 	}
 	// 喵~防御：范围上界非零时不得小于下界，否则产生永远无法命中的空范围喵。
 	if httpStatusMax > 0 && httpStatusMax < httpStatus {
