@@ -252,6 +252,7 @@ type SharedUserUpstreamModelView struct {
 	RealModelName      string
 	ModelRatio         string
 	CompletionRatio    string
+	CacheRatio         string
 	ShareLimitCents    int64
 	ShowBalanceEnabled bool
 	BalanceCents       int64
@@ -310,7 +311,7 @@ func GetSharedUserUpstreamModels(viewerID int) ([]SharedUserUpstreamModelView, e
 	var views []SharedUserUpstreamModelView
 	// 三账户都是递减账户，任一耗尽即自动停止共享（从共享列表消失）喵。
 	if err := DB.Model(&UserUpstreamModel{}).
-		Select("id", "owner_user_id", "normalized_name", "display_name", "description", "real_model_name", "model_ratio", "completion_ratio", "share_limit_cents", "show_balance_enabled", "balance_cents", "available_cents", "share_whitelist", "share_blacklist", "share_list_mode").
+		Select("id", "owner_user_id", "normalized_name", "display_name", "description", "real_model_name", "model_ratio", "completion_ratio", "cache_ratio", "share_limit_cents", "show_balance_enabled", "balance_cents", "available_cents", "share_whitelist", "share_blacklist", "share_list_mode").
 		Where("share_enabled = ? AND balance_cents > 0 AND available_cents > 0 AND share_limit_cents > 0", true).
 		Find(&views).Error; err != nil {
 		return nil, err

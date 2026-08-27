@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/console_setting"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
@@ -119,16 +120,43 @@ func appendSharedUpstreamPricing(pricing []model.Pricing, viewerUserID any) []mo
 }
 
 // buildSharedUpstreamPricing 把共享模型视图构造为模型广场可展示的定价条目喵。
+// 用户配置的 ModelRatio/CompletionRatio/CacheRatio 语义是「RMB 元/百万 token」，
+// 而模型广场按「model_ratio×2=美元/百万 token」展示并乘回汇率，故此处统一换算：
+// model_ratio=输入价/(汇率×2)、completion_ratio=输出价/输入价、cache_ratio=缓存价/输入价，
+// 使前端最终显示回用户设置的 RMB 原价喵。仅影响展示，共享调用实际计费仍走 RMB 原配置喵。
 // 所有者查看自己的模型时，受展示开关控制附加余额与上限字段喵。
 func buildSharedUpstreamPricing(view model.SharedUserUpstreamModelView, viewerUserID int) model.Pricing {
-	modelRatio, _ := strconv.ParseFloat(view.ModelRatio, 64)
-	completionRatio, _ := strconv.ParseFloat(view.CompletionRatio, 64)
+	inputPrice, _ := strconv.ParseFloat(view.ModelRatio, 64)
+	outputPrice, _ := strconv.ParseFloat(view.CompletionRatio, 64)
+	cachePrice, _ := strconv.ParseFloat(view.CacheRatio, 64)
+	// 汇率取操作设置（RMB/美元），非正时按 1 兜底，避免除零与负价喵。
+	usdRate := operation_setting.USDExchangeRate
+	if usdRate <= 0 {
+		usdRate = 1
+	}
+	modelRatio := 0.0
+	completionRatio := 0.0
+	var cacheRatio *float64
+	// 输入价非正时全部倍率归零，避免构造负价或除以零喵。
+	if inputPrice > 0 {
+		// 换算模型广场倍率：显示价=model_ratio×2×汇率=输入 RMB 价喵。
+		modelRatio = inputPrice / (usdRate * 2)
+		// 输出/缓存价换算为相对输入价的倍率，前端按 model_ratio×倍率×2 展示 RMB 原值喵。
+		if outputPrice > 0 {
+			completionRatio = outputPrice / inputPrice
+		}
+		if cachePrice > 0 {
+			convertedCacheRatio := cachePrice / inputPrice
+			cacheRatio = &convertedCacheRatio
+		}
+	}
 	item := model.Pricing{
 		ModelName:        "user/" + view.NormalizedName,
 		Description:      view.Description,
 		QuotaType:        0,
 		ModelRatio:       modelRatio,
 		CompletionRatio:  completionRatio,
+		CacheRatio:       cacheRatio,
 		OwnerBy:          "user-shared",
 		EnableGroup:      []string{constant.GroupUserShared},
 		ShareOwnerUserID: view.OwnerUserID,
