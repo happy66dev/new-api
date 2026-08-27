@@ -156,6 +156,10 @@ func buildVirtualModelResponse(virtualModel *model.VirtualModel) (*virtualModelR
 				return nil, err
 			}
 			candidateResponse.RealModelName = customCandidate.RealModelName
+			// 引用上游模型且直填真实模型名为空时，回退解析上游模型名，避免编辑界面名称空白喵。
+			if candidateResponse.RealModelName == "" {
+				candidateResponse.RealModelName = resolveVirtualCandidateUpstreamLabel(customCandidate.UpstreamModelID, virtualModel.OwnerUserID)
+			}
 			candidateResponse.BaseURL = customCandidate.BaseURLSummary
 			// 用户上游模型引用回填，供前端候选链编辑器展示喵。
 			candidateResponse.UpstreamModelID = customCandidate.UpstreamModelID
@@ -1096,11 +1100,14 @@ func GetVirtualModelCandidateStatus(c *gin.Context) {
 	}
 	label := ""
 	snapshot, snapshotError := model.GetVirtualModelExecutionSnapshot(virtualModel.ID)
-	// 喵~防御：快照可用时取真实模型名作为节点标签喵。
+	// 喵~防御：快照可用时取真实模型名作为节点标签，引用上游且为空时回退到上游显示名喵。
 	if snapshotError == nil && snapshot != nil {
 		for _, snapshotCandidate := range snapshot.Candidates {
 			if snapshotCandidate.CandidateID == candidateID {
 				label = snapshotCandidate.RealModelName
+				if label == "" {
+					label = resolveVirtualCandidateUpstreamLabel(snapshotCandidate.UpstreamModelID, virtualModel.OwnerUserID)
+				}
 				break
 			}
 		}
@@ -1148,6 +1155,20 @@ type virtualModelCandidateStatusPayload struct {
 	LastError    string  `json:"last_error"`
 }
 
+// resolveVirtualCandidateUpstreamLabel 候选引用用户上游模型且直填真实模型名为空时，回退解析上游模型显示名喵。
+func resolveVirtualCandidateUpstreamLabel(upstreamModelID *int64, ownerUserID int) string {
+	// 喵~防御：无引用或非法编号直接返回空喵。
+	if upstreamModelID == nil || *upstreamModelID <= 0 {
+		return ""
+	}
+	upstreamModel, queryError := model.GetUserUpstreamModelByOwnerID(*upstreamModelID, ownerUserID)
+	// 喵~防御：上游模型缺失或越权时不回填，避免把私有名称泄露给状态视图喵。
+	if queryError != nil || upstreamModel == nil {
+		return ""
+	}
+	return upstreamModel.UserUpstreamModelName()
+}
+
 // buildVirtualModelStatusPayload 组装虚拟模型整体与候选节点摘要的状态载荷喵。
 func buildVirtualModelStatusPayload(virtualModel *model.VirtualModel, snapshot *model.VirtualModelExecutionSnapshot) virtualModelStatusPayload {
 	payload := virtualModelStatusPayload{Candidates: []virtualModelCandidateStatusPayload{}}
@@ -1173,7 +1194,12 @@ func buildVirtualModelStatusPayload(virtualModel *model.VirtualModel, snapshot *
 	// 启用候选快照逐个生成节点摘要喵。
 	if snapshot != nil {
 		for _, candidate := range snapshot.Candidates {
-			payload.Candidates = append(payload.Candidates, buildVirtualModelCandidateStatusPayload(virtualModel, candidate.CandidateID, candidate.RealModelName))
+			// 候选直填真实模型名为空时回退到引用上游模型的显示名，避免 Candidates 标签空白喵。
+			label := candidate.RealModelName
+			if label == "" {
+				label = resolveVirtualCandidateUpstreamLabel(candidate.UpstreamModelID, virtualModel.OwnerUserID)
+			}
+			payload.Candidates = append(payload.Candidates, buildVirtualModelCandidateStatusPayload(virtualModel, candidate.CandidateID, label))
 		}
 	}
 	return payload

@@ -45,7 +45,7 @@ func setupVirtualModelStatusTestDB(t *testing.T) {
 	require.NoError(t, model.DB.AutoMigrate(
 		&model.VirtualModel{}, &model.VirtualModelCandidate{}, &model.VirtualModelInternalCandidate{},
 		&model.VirtualModelCustomCandidate{}, &model.VirtualModelFailureRule{}, &model.VirtualModelGlobalFailureRule{},
-		&model.EntityProbeState{}, &model.PerfMetric{},
+		&model.EntityProbeState{}, &model.PerfMetric{}, &model.UserUpstreamModel{},
 	))
 	// 共享内存库跨用例存活，需清空全部相关表避免候选唯一索引残留冲突喵。
 	require.NoError(t, model.DB.Exec("DELETE FROM virtual_model_internal_candidates").Error)
@@ -56,6 +56,7 @@ func setupVirtualModelStatusTestDB(t *testing.T) {
 	require.NoError(t, model.DB.Exec("DELETE FROM virtual_models").Error)
 	require.NoError(t, model.DB.Exec("DELETE FROM entity_probe_states").Error)
 	require.NoError(t, model.DB.Exec("DELETE FROM perf_metrics").Error)
+	require.NoError(t, model.DB.Exec("DELETE FROM user_upstream_models").Error)
 }
 
 // createStatusTestVirtualModel 创建一个含单个 internal 候选的测试虚拟模型喵。
@@ -162,4 +163,53 @@ func TestGetVirtualModelCandidateStatusForeignCandidate(t *testing.T) {
 	ctx.Set("id", 7)
 	GetVirtualModelCandidateStatus(ctx)
 	require.Equal(t, http.StatusNotFound, recorder.Code)
+}
+
+// TestGetVirtualModelStatusResolvesReferencedUpstreamLabel 验证候选引用用户上游模型且直填真实模型名为空时，节点标签回退为 user/<name> 喵。
+func TestGetVirtualModelStatusResolvesReferencedUpstreamLabel(t *testing.T) {
+	setupVirtualModelStatusTestDB(t)
+
+	// 属主 7 注册一个被虚拟模型候选引用的上游模型，其用户级名称为 user/ref-upstream 喵。
+	referencedUpstream := &model.UserUpstreamModel{
+		ID:            501,
+		OwnerUserID:   7,
+		NormalizedName: "ref-upstream",
+		DisplayName:   "Ref Upstream",
+		Enabled:       true,
+	}
+	require.NoError(t, model.DB.Create(referencedUpstream).Error)
+
+	// 创建引用上述上游模型的自定义候选虚拟模型，直填真实模型名留空以触发回退解析喵。
+	virtualModel := &model.VirtualModel{OwnerUserID: 7, NormalizedName: "vm-ref-custom", DisplayName: "vm-ref-custom", Enabled: true, Version: 1, TotalTimeoutSeconds: 120, MaxLoopRounds: 1}
+	require.NoError(t, model.DB.Create(virtualModel).Error)
+	candidate := &model.VirtualModelCandidate{VirtualModelID: virtualModel.ID, StableOrder: 0, SourceType: model.VirtualModelSourceCustom, Enabled: true, TimeoutSeconds: 60, Version: 1}
+	require.NoError(t, model.DB.Create(candidate).Error)
+	// 仅填引用上游编号，真实模型名与直填凭据留空；执行快照会从 custom 子表读到空名称与引用编号喵。
+	upstreamModelID := referencedUpstream.ID
+	require.NoError(t, model.DB.Create(&model.VirtualModelCustomCandidate{
+		CandidateID:      candidate.ID,
+		EncryptedBaseURL: "https://example.invalid/v1",
+		EncryptedAPIKey:  "enc:test",
+		RealModelName:    "",
+		AuthStyle:        model.VirtualModelAuthBearer,
+		UpstreamModelID:  &upstreamModelID,
+	}).Error)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/virtual-models/"+fmt.Sprintf("%d", virtualModel.ID)+"/status", nil)
+	ctx.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", virtualModel.ID)}}
+	ctx.Set("id", 7)
+	GetVirtualModelStatus(ctx)
+	require.Equal(t, http.StatusOK, recorder.Code)
+
+	var resp struct {
+		Success bool                     `json:"success"`
+		Data    virtualModelStatusPayload `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &resp))
+	require.True(t, resp.Success)
+	// 候选标签应回退为引用上游的用户级名称，而非空字符串喵。
+	require.Len(t, resp.Data.Candidates, 1)
+	require.Equal(t, "user/ref-upstream", resp.Data.Candidates[0].Label)
 }

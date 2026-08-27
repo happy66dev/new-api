@@ -580,7 +580,7 @@ export function UpstreamModels() {
                 </div>
                 <div className='text-muted-foreground mt-1 text-xs'>
                   {t('Balance')}: {centsToYuan(item.balance_cents)} ¥ · {t('Available')}: {centsToYuan(item.available_cents)} ¥ ·{' '}
-                  {t('Share')}: {centsToYuan(item.share_limit_cents)} ¥
+                  {t('Shared balance')}: {centsToYuan(item.share_limit_cents)} ¥
                 </div>
               </div>
               <div className='flex shrink-0 items-center gap-2'>

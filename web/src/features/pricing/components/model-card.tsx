@@ -276,30 +276,6 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
               {primaryGroup === 'user-shared' ? t('User Shared') : primaryGroup}
             </span>
           )}
-          {/* 用户共享模型：展示共享剩余额度；属主且开启展示时附加余额信息喵。 */}
-          {props.model.owner_by === 'user-shared' && (
-            <>
-              <span className='text-muted-foreground/80 text-xs'>
-                {t('Shared remaining')}:{' '}
-                <span className='font-mono font-semibold'>
-                  ¥{((props.model.share_remaining_cents ?? 0) / 100).toFixed(2)}
-                </span>
-              </span>
-              {props.model.share_limit_cents != null && (
-                <span className='text-muted-foreground/50 text-xs'>
-                  / ¥{(props.model.share_limit_cents / 100).toFixed(2)}
-                </span>
-              )}
-              {props.model.balance_cents != null && (
-                <span className='text-muted-foreground/80 text-xs'>
-                  {t('Balance')}:{' '}
-                  <span className='font-mono font-semibold'>
-                    ¥{(props.model.balance_cents / 100).toFixed(2)}
-                  </span>
-                </span>
-              )}
-            </>
-          )}
           <ModelBillingModeBadge model={props.model} />
         </div>
         <ModelPerfBadge perf={props.perf} className='row-span-2 self-start' />
@@ -320,6 +296,31 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
           )}
         </div>
       </div>
+
+      {/* 用户共享模型：共享剩余/上限/余额独立成行，置于延迟吞吐状态下方，避免在窄卡片内折行喵。 */}
+      {props.model.owner_by === 'user-shared' && (
+        <div className='mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1'>
+          <span className='text-muted-foreground/80 inline-flex items-center gap-1 text-xs'>
+            {t('Shared remaining')}
+            <span className='font-mono font-semibold whitespace-nowrap'>
+              ¥{((props.model.share_remaining_cents ?? 0) / 100).toFixed(2)}
+            </span>
+          </span>
+          {props.model.share_limit_cents != null && (
+            <span className='text-muted-foreground/50 text-xs whitespace-nowrap'>
+              / ¥{(props.model.share_limit_cents / 100).toFixed(2)}
+            </span>
+          )}
+          {props.model.balance_cents != null && (
+            <span className='text-muted-foreground/80 inline-flex items-center gap-1 text-xs'>
+              {t('Balance')}
+              <span className='font-mono font-semibold whitespace-nowrap'>
+                ¥{(props.model.balance_cents / 100).toFixed(2)}
+              </span>
+            </span>
+          )}
+        </div>
+      )}
     </div>
   )
 })
