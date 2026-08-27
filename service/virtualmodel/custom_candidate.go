@@ -168,8 +168,8 @@ func probeCustomStreamingResponse(responseReader *bufio.Reader, params ProbePara
 				if strings.EqualFold(dataPayload, "ping") || strings.EqualFold(dataPayload, "pong") {
 					continue
 				}
-				// 累积内容字符，达到门槛才判定健康并放流喵。
-				bufferedContentChars += common.StreamProbeContentChars(dataPayload)
+				// 累积内容字符（Anthropic 元数据事件不计数），达到门槛才判定健康并放流喵。
+				bufferedContentChars += customProbeContentChars(dataPayload)
 				if bufferedContentChars >= minContentChars {
 					return bufferedBytes, nil
 				}
@@ -265,6 +265,8 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 	if headersError := applyCustomUpstreamHeaders(upstreamRequest.Header, input.CustomHeaders); headersError != nil {
 		return &CustomCandidateExecutionResult{Err: customCandidatePrecommitFailure(headersError)}
 	}
+	// 透传 Anthropic /v1/messages 请求时补缺省版本头，避免上游拒绝未带版本号的请求喵。
+	ensureAnthropicVersionHeader(upstreamRequest.Header, upstreamURL.Path)
 	upstreamRequest.ContentLength = int64(len(requestBody))
 	upstreamRequest.Header.Set("Content-Length", strconv.FormatInt(upstreamRequest.ContentLength, 10))
 	// 发起上游请求前打点，用于测量首字节（TTFT）喵。
@@ -333,7 +335,9 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 		if _, writeError := c.Writer.Write(precommitBuffer); writeError != nil {
 			return &CustomCandidateExecutionResult{Err: fmt.Errorf("write committed custom upstream response: %w", writeError), TtftMs: ttftMs}
 		}
-		// 逐行转发剩余 SSE 事件，同时从 data 载荷提取 usage 喵。
+		// 探测缓冲写出后立即刷新，保证首段 SSE 及时到达客户端喵。
+		flushCustomResponse(c)
+		// 逐行转发剩余 SSE 事件，同时从 data 载荷提取 usage 与响应文本喵。
 		for {
 			lineBytes, readError := readLimitedSSELine(responseReader)
 			if len(lineBytes) > 0 {
@@ -344,6 +348,8 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 				if _, writeError := c.Writer.Write(lineBytes); writeError != nil {
 					return &CustomCandidateExecutionResult{Err: fmt.Errorf("write committed custom upstream response: %w", writeError), TtftMs: ttftMs}
 				}
+				// 逐行刷新，SSE 事件及时推送避免客户端空等喵。
+				flushCustomResponse(c)
 			}
 			if readError != nil {
 				if errors.Is(readError, io.EOF) {

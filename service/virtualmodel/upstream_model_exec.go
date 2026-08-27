@@ -111,8 +111,8 @@ func bufferCustomStreamToDone(responseReader *bufio.Reader, stallTimeout time.Du
 				return nil, fmt.Errorf("%w: stream cut before [DONE], buffer limit exceeded", relaykitypes.ErrStreamCut)
 			}
 			bufferedBytes = append(bufferedBytes, lineBytes...)
-			// 到达 [DONE] 事件即流完整，返回全量缓存供一次性回放喵。
-			if strings.Contains(string(lineBytes), "[DONE]") {
+			// 到达 [DONE] 或 Anthropic message_stop 即流完整，返回全量缓存供一次性回放喵。
+			if isCustomStreamEndEvent(lineBytes) {
 				return bufferedBytes, nil
 			}
 		}
@@ -165,6 +165,8 @@ func ExecuteUserUpstreamModel(c *gin.Context, input CustomCandidateExecutionInpu
 	if headersError := applyCustomUpstreamHeaders(upstreamRequest.Header, input.CustomHeaders); headersError != nil {
 		return &UserUpstreamModelExecutionResult{Err: customCandidatePrecommitFailure(headersError)}
 	}
+	// 透传 Anthropic /v1/messages 请求时补缺省版本头，避免上游拒绝未带版本号的请求喵。
+	ensureAnthropicVersionHeader(upstreamRequest.Header, upstreamURL.Path)
 	upstreamRequest.ContentLength = int64(len(requestBody))
 	upstreamRequest.Header.Set("Content-Length", strconv.FormatInt(upstreamRequest.ContentLength, 10))
 	// 发起上游请求前打点，用于测量首字节（TTFT）喵。
@@ -233,7 +235,9 @@ func ExecuteUserUpstreamModel(c *gin.Context, input CustomCandidateExecutionInpu
 		if _, writeError := c.Writer.Write(precommitBuffer); writeError != nil {
 			return &UserUpstreamModelExecutionResult{Err: fmt.Errorf("write committed user upstream response: %w", writeError), TtftMs: ttftMs}
 		}
-		// 逐行转发剩余 SSE 事件，同时从 data 载荷提取 usage 喵。
+		// 探测缓冲写出后立即刷新，保证首段 SSE 及时到达客户端喵。
+		flushCustomResponse(c)
+		// 逐行转发剩余 SSE 事件，同时从 data 载荷提取 usage 与响应文本喵。
 		for {
 			lineBytes, readError := readLimitedSSELine(responseReader)
 			if len(lineBytes) > 0 {
@@ -244,6 +248,8 @@ func ExecuteUserUpstreamModel(c *gin.Context, input CustomCandidateExecutionInpu
 				if _, writeError := c.Writer.Write(lineBytes); writeError != nil {
 					return &UserUpstreamModelExecutionResult{Err: fmt.Errorf("write committed user upstream response: %w", writeError), TtftMs: ttftMs}
 				}
+				// 逐行刷新，SSE 事件及时推送避免客户端空等喵。
+				flushCustomResponse(c)
 			}
 			if readError != nil {
 				if errors.Is(readError, io.EOF) {
