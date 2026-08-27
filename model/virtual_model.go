@@ -93,10 +93,16 @@ type VirtualModel struct {
 	LoopEnabled         bool           `json:"loop_enabled"`
 	TotalTimeoutSeconds int            `json:"total_timeout_seconds" gorm:"default:120"`
 	MaxLoopRounds       int            `json:"max_loop_rounds" gorm:"default:1"`
-	Version             int64          `json:"version" gorm:"default:1"`
-	CreatedTime         int64          `json:"created_time" gorm:"bigint"`
-	UpdatedTime         int64          `json:"updated_time" gorm:"bigint"`
-	DeletedAt           gorm.DeletedAt `json:"-" gorm:"index"`
+	// FakeStreamEnabled 流转伪流开关：开启后上游流式响应全量缓存到 [DONE] 再一次性伪流发给客户端，抵抗网络波动断流喵。
+	FakeStreamEnabled bool `json:"fake_stream_enabled"`
+	// StreamCutAction 流转伪流断流（上游未完整返回就中断）时的处理措施，与失败规则动作一致，空表示跟随失败规则喵。
+	StreamCutAction VirtualModelFailureAction `json:"stream_cut_action" gorm:"type:varchar(16)"`
+	// StreamCutRetries 流转伪流断流时对当前候选的重试次数，单位：次，零表示不额外重试喵。
+	StreamCutRetries int `json:"stream_cut_retries"`
+	Version          int64          `json:"version" gorm:"default:1"`
+	CreatedTime      int64          `json:"created_time" gorm:"bigint"`
+	UpdatedTime      int64          `json:"updated_time" gorm:"bigint"`
+	DeletedAt        gorm.DeletedAt `json:"-" gorm:"index"`
 }
 
 // VirtualModelCandidate 保存候选顺序和通用运行参数喵。
@@ -313,6 +319,18 @@ func ValidateVirtualModelConfiguration(virtualModel *VirtualModel) error {
 	}
 	if virtualModel.MaxLoopRounds < 1 || virtualModel.MaxLoopRounds > 100 {
 		return errors.New("虚拟模型最大循环轮数必须介于 1 和 100 轮之间")
+	}
+	// 流转伪流断流重试次数不能超过候选允许的最大重试上界，避免异常配置无限重放当前候选喵。
+	if virtualModel.StreamCutRetries < 0 || virtualModel.StreamCutRetries > 20 {
+		return errors.New("虚拟模型断流重试次数必须介于 0 和 20 次之间")
+	}
+	// 流转伪流断流处理措施必须是已知动作枚举，空值表示跟随失败规则喵。
+	if virtualModel.StreamCutAction != "" &&
+		virtualModel.StreamCutAction != VirtualModelActionRetry &&
+		virtualModel.StreamCutAction != VirtualModelActionNext &&
+		virtualModel.StreamCutAction != VirtualModelActionFreeze &&
+		virtualModel.StreamCutAction != VirtualModelActionPassthrough {
+		return errors.New("虚拟模型断流处理措施无效")
 	}
 	return nil
 }

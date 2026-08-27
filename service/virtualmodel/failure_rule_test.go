@@ -488,6 +488,20 @@ func TestNormalizeCandidateFailureStalledStream(t *testing.T) {
 	require.Equal(t, "network_error", NormalizeCandidateFailure(0, nil, nil, http.ErrHandlerTimeout).ErrorClass)
 }
 
+// TestNormalizeCandidateFailureStreamCut 验证流转伪流断流哨兵被独立分类为 stream_cut 喵。
+func TestNormalizeCandidateFailureStreamCut(t *testing.T) {
+	// 包装哨兵的错误必须识别为 stream_cut，与 stalled_stream/timeout 区分喵。
+	cutFailure := NormalizeCandidateFailure(0, nil, nil, fmt.Errorf("%w: stream cut before [DONE]", relaykitypes.ErrStreamCut))
+	require.Equal(t, "stream_cut", cutFailure.ErrorClass)
+	// 直接传入哨兵同样命中，HTTP 状态码不参与断流分类喵。
+	require.Equal(t, "stream_cut", NormalizeCandidateFailure(http.StatusBadGateway, nil, nil, relaykitypes.ErrStreamCut).ErrorClass)
+	// 断流分类必须在稳定白名单内，供失败规则保存与匹配喵。
+	require.True(t, validCandidateErrorClass("stream_cut"))
+	// 卡流与断流互不误归喵。
+	require.NotEqual(t, "stalled_stream", NormalizeCandidateFailure(0, nil, nil, relaykitypes.ErrStreamCut).ErrorClass)
+	require.NotEqual(t, "stream_cut", NormalizeCandidateFailure(0, nil, nil, relaykitypes.ErrStalledStream).ErrorClass)
+}
+
 // TestValidateFailureRuleProbeParameters 验证流式探测参数的范围边界喵。
 func TestValidateFailureRuleProbeParameters(t *testing.T) {
 	baseRule := &model.VirtualModelFailureRule{CandidateID: 1, RuleOrder: 0, ErrorClass: "stalled_stream", Action: model.VirtualModelActionNext}

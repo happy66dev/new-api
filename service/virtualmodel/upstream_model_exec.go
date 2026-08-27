@@ -14,6 +14,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	relaykitypes "github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
@@ -32,6 +33,77 @@ const userUpstreamNonStreamingBodyLimit = 8 * 1024 * 1024
 
 // userUpstreamStreamLineLimit 限制单条流式事件行的最大长度，防御超长行拖垮内存喵。
 const userUpstreamStreamLineLimit = 1024 * 1024
+
+// fakeStreamBufferLimit 流转伪流全量缓存的上限，防御异常上游无限流拖垮内存喵。
+// 伪流模式要求完整缓存到 [DONE] 才回放，超大流在此模式下按断流处理回切候选喵。
+const fakeStreamBufferLimit = 16 * 1024 * 1024
+
+// fakeStreamCommitResponse 伪流模式：全量缓存到 [DONE] 后一次性流式回放喵。
+// 返回解析出的 usage（无 token 时为 nil）；失败返回断流/写入错误供调用方编排喵。
+func fakeStreamCommitResponse(c *gin.Context, responseReader *bufio.Reader, responseHeaders http.Header, statusCode int, input CustomCandidateExecutionInput) (*dto.Usage, error) {
+	stallTimeout := time.Duration(DefaultProbeStallTimeoutSeconds) * time.Second
+	if input.StallTimeoutSeconds > 0 {
+		stallTimeout = time.Duration(input.StallTimeoutSeconds) * time.Second
+	}
+	probeTotalTimeout := time.Duration(DefaultProbeTotalTimeoutSeconds) * time.Second
+	if input.ProbeTotalTimeoutSeconds > 0 {
+		probeTotalTimeout = time.Duration(input.ProbeTotalTimeoutSeconds) * time.Second
+	}
+	// 全量缓存到 [DONE]，中途中断按断流分类处理喵。
+	fakeStreamBuffer, fakeStreamError := bufferCustomStreamToDone(responseReader, stallTimeout, probeTotalTimeout)
+	if fakeStreamError != nil {
+		return nil, fakeStreamError
+	}
+	copyCustomResponseHeaders(c.Writer.Header(), responseHeaders)
+	c.Status(statusCode)
+	usage := &dto.Usage{}
+	// 回放前先从全量缓存提取 usage 事件喵。
+	extractUsageFromSSEBytes(fakeStreamBuffer, usage)
+	if _, writeError := c.Writer.Write(fakeStreamBuffer); writeError != nil {
+		return nil, fmt.Errorf("write committed fake stream response: %w", writeError)
+	}
+	usage = normalizeUpstreamModelUsage(usage)
+	if !usageHasTokens(usage) {
+		return nil, nil
+	}
+	return usage, nil
+}
+
+// bufferCustomStreamToDone 在伪流模式下读取整个 SSE 流直到 [DONE]，返回完整行字节缓冲喵。
+// 中途 EOF、静默超时或总预算耗尽且未见 [DONE] 时返回断流哨兵错误，供断流处理措施决策喵。
+func bufferCustomStreamToDone(responseReader *bufio.Reader, stallTimeout time.Duration, probeTotalTimeout time.Duration) ([]byte, error) {
+	// 喵~防御：空 reader 无法缓存，直接按断流处理喵。
+	if responseReader == nil {
+		return nil, fmt.Errorf("%w: custom upstream stream is unavailable", relaykitypes.ErrStreamCut)
+	}
+	bufferedBytes := make([]byte, 0, 4096)
+	probeStartTime := time.Now()
+	for {
+		// 喵~防御：总预算耗尽仍未到 [DONE]，判定断流喵。
+		if probeTotalTimeout > 0 && time.Since(probeStartTime) >= probeTotalTimeout {
+			return nil, fmt.Errorf("%w: stream cut before [DONE], total budget exceeded", relaykitypes.ErrStreamCut)
+		}
+		lineBytes, readError := readProbeLineWithTimeout(responseReader, stallTimeout)
+		if len(lineBytes) > 0 {
+			// 喵~防御：全量缓存超限判定断流，避免异常上游耗尽服务内存喵。
+			if len(bufferedBytes)+len(lineBytes) > fakeStreamBufferLimit {
+				return nil, fmt.Errorf("%w: stream cut before [DONE], buffer limit exceeded", relaykitypes.ErrStreamCut)
+			}
+			bufferedBytes = append(bufferedBytes, lineBytes...)
+			// 到达 [DONE] 事件即流完整，返回全量缓存供一次性回放喵。
+			if strings.Contains(string(lineBytes), "[DONE]") {
+				return bufferedBytes, nil
+			}
+		}
+		if readError != nil {
+			// 喵~防御：EOF 与静默超时都视为未完整返回，统一归入断流分类喵。
+			if errors.Is(readError, io.EOF) {
+				return nil, fmt.Errorf("%w: upstream stream cut before [DONE]", relaykitypes.ErrStreamCut)
+			}
+			return nil, fmt.Errorf("%w: %v", relaykitypes.ErrStreamCut, readError)
+		}
+	}
+}
 
 // ExecuteUserUpstreamModel 执行用户上游模型透传并解析响应 usage 喵。
 // 成功时返回解析出的 usage（可能为 nil 表示上游未提供计费信息），响应已原样提交喵。
@@ -100,6 +172,14 @@ func ExecuteUserUpstreamModel(c *gin.Context, input CustomCandidateExecutionInpu
 	responseReader := bufio.NewReader(response.Body)
 	// 流式请求逐事件转发并累积最后的 usage 事件喵。
 	if isStreamingCustomRequest(c) {
+		// 流转伪流：全量缓存到 [DONE] 后一次性流式回放，抵抗上游网络波动断流喵。
+		if input.FakeStreamEnabled {
+			usage, fakeStreamError := fakeStreamCommitResponse(c, responseReader, response.Header, response.StatusCode, input)
+			if fakeStreamError != nil {
+				return &UserUpstreamModelExecutionResult{Err: customCandidatePrecommitFailure(fakeStreamError), TtftMs: ttftMs}
+			}
+			return &UserUpstreamModelExecutionResult{Usage: usage, TtftMs: ttftMs}
+		}
 		precommitBuffer, precommitError := probeCustomStreamingResponse(responseReader, ProbeParameters{
 			StallTimeoutSeconds:      input.StallTimeoutSeconds,
 			MinContentChars:          input.MinContentChars,

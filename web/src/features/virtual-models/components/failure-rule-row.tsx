@@ -72,6 +72,7 @@ export function FailureRuleEditorRow({
             <option value='http'>{t('HTTP status code')}</option>
             <option value='timeout'>{t('Timeout')}</option>
             <option value='stalled'>{t('Stalled stream')}</option>
+            <option value='stream-cut'>{t('Stream cut')}</option>
           </select>
         </label>
         {/* HTTP 条件：展示状态码输入与常用预设喵。 */}

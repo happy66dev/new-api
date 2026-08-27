@@ -6147,6 +6147,13 @@
     "No token usage data available": "暂无 Token 消耗数据"
   },
   "Stalled stream": "卡流",
+  "Fake stream (cache then replay)": "流转伪流（全量缓存后一次性回放）",
+  "When enabled, upstream streaming is fully buffered until [DONE] then replayed to the client at once, resisting network fluctuation cut-offs. Logs still record streaming.": "开启后上游流式响应全量缓存至 [DONE] 后一次性流式回放给客户端，抵抗网络波动导致的断流。日志仍按流式记录。",
+  "Stream cut handling": "断流处理措施",
+  "Follow failure rules": "跟随失败规则",
+  "Stream cut retries": "断流重试次数",
+  "Stream cut retries must be between 0 and 20": "断流重试次数必须介于 0 和 20 次之间",
+  "Stream cut": "断流",
   "Matches stalled stream failures": "匹配卡流（上游静默）失败",
   "Stall timeout seconds": "卡流静默秒数",
   "Min content chars": "内容字符门槛",

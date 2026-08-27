@@ -22,6 +22,7 @@ import {
   replaceVirtualModelBindings,
   unfreezeVirtualModelCandidate,
   updateVirtualModel,
+  type VirtualModelInput,
 } from './api'
 
 // MockableApiClient 只声明本测试需要替换的 HTTP 方法，避免伪造完整 Axios 实例喵。
@@ -44,13 +45,16 @@ const originalPut = apiClient.put
 const originalDelete = apiClient.delete
 
 // modelInput 提供满足后端约束的最小虚拟模型表单数据喵。
-const modelInput = {
+const modelInput: VirtualModelInput = {
   normalized_name: 'research-route',
   display_name: 'Research Route',
   enabled: true,
   loop_enabled: false,
   total_timeout_seconds: 120,
   max_loop_rounds: 1,
+  fake_stream_enabled: false,
+  stream_cut_action: '',
+  stream_cut_retries: 0,
 }
 
 // 每个用例后恢复全局 HTTP 客户端，防止 mock 泄漏到其他测试喵。

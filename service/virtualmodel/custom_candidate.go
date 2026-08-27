@@ -42,6 +42,8 @@ type CustomCandidateExecutionInput struct {
 	CustomHeaders string
 	// FieldReplacements 字段值映射表 JSON（如 {"reasoning_effort": {"max": "xhigh"}}），空表示不替换喵。
 	FieldReplacements string
+	// FakeStreamEnabled 流转伪流开关：开启后流式响应全量缓存到 [DONE] 再一次性伪流回放，中途中断判定断流喵。
+	FakeStreamEnabled bool
 }
 
 // CustomCandidateExecutionFailure 表示自定义候选在响应提交前可安全编排的失败结果喵。
@@ -261,6 +263,14 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 	// 喵~防御：2xx 响应在确认存在有效业务内容前不得提交，避免空流或 SSE 错误阻断候选故障转移喵。
 	responseReader := bufio.NewReader(response.Body)
 	if isStreamingCustomRequest(c) {
+		// 流转伪流：全量缓存到 [DONE] 后一次性流式回放，抵抗上游网络波动断流喵。
+		if input.FakeStreamEnabled {
+			usage, fakeStreamError := fakeStreamCommitResponse(c, responseReader, response.Header, response.StatusCode, input)
+			if fakeStreamError != nil {
+				return &CustomCandidateExecutionResult{Err: customCandidatePrecommitFailure(fakeStreamError), TtftMs: ttftMs}
+			}
+			return &CustomCandidateExecutionResult{Usage: usage, TtftMs: ttftMs}
+		}
 		precommitBuffer, precommitError := probeCustomStreamingResponse(responseReader, ProbeParameters{
 			StallTimeoutSeconds:      input.StallTimeoutSeconds,
 			MinContentChars:          input.MinContentChars,

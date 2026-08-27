@@ -26,7 +26,11 @@ type virtualModelInput struct {
 	LoopEnabled         bool   `json:"loop_enabled"`
 	TotalTimeoutSeconds int    `json:"total_timeout_seconds"`
 	MaxLoopRounds       int    `json:"max_loop_rounds"`
-	Version             int64  `json:"version"`
+	// 流转伪流：开启后上游流式全量缓存到 [DONE] 再一次性伪流发出，断流按处理措施决策喵。
+	FakeStreamEnabled bool   `json:"fake_stream_enabled"`
+	StreamCutAction   string `json:"stream_cut_action"`
+	StreamCutRetries  int    `json:"stream_cut_retries"`
+	Version           int64  `json:"version"`
 }
 
 // virtualModelCandidateInput 描述候选链编辑需要的非敏感字段喵。
@@ -248,6 +252,10 @@ func saveVirtualModelFields(input virtualModelInput, ownerUserID int, existing *
 	existing.LoopEnabled = input.LoopEnabled
 	existing.TotalTimeoutSeconds = input.TotalTimeoutSeconds
 	existing.MaxLoopRounds = input.MaxLoopRounds
+	// 流转伪流配置：断流处理措施空值表示跟随失败规则，重试次数经共享校验把关喵。
+	existing.FakeStreamEnabled = input.FakeStreamEnabled
+	existing.StreamCutAction = model.VirtualModelFailureAction(input.StreamCutAction)
+	existing.StreamCutRetries = input.StreamCutRetries
 	if existing.TotalTimeoutSeconds == 0 {
 		existing.TotalTimeoutSeconds = 120
 	}
@@ -326,7 +334,7 @@ func UpdateVirtualModel(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	updateResult := model.DB.Model(virtualModel).Where("id = ? AND owner_user_id = ? AND version = ?", modelID, c.GetInt("id"), existingVersion).Select("normalized_name", "display_name", "enabled", "loop_enabled", "total_timeout_seconds", "max_loop_rounds", "version", "updated_time").Updates(virtualModel)
+	updateResult := model.DB.Model(virtualModel).Where("id = ? AND owner_user_id = ? AND version = ?", modelID, c.GetInt("id"), existingVersion).Select("normalized_name", "display_name", "enabled", "loop_enabled", "total_timeout_seconds", "max_loop_rounds", "fake_stream_enabled", "stream_cut_action", "stream_cut_retries", "version", "updated_time").Updates(virtualModel)
 	if updateResult.Error != nil {
 		common.ApiError(c, updateResult.Error)
 		return

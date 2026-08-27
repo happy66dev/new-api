@@ -6147,6 +6147,13 @@
     "No token usage data available": "No token usage data available"
   },
   "Stalled stream": "Stalled stream",
+  "Fake stream (cache then replay)": "Fake stream (cache then replay)",
+  "When enabled, upstream streaming is fully buffered until [DONE] then replayed to the client at once, resisting network fluctuation cut-offs. Logs still record streaming.": "When enabled, upstream streaming is fully buffered until [DONE] then replayed to the client at once, resisting network fluctuation cut-offs. Logs still record streaming.",
+  "Stream cut handling": "Stream cut handling",
+  "Follow failure rules": "Follow failure rules",
+  "Stream cut retries": "Stream cut retries",
+  "Stream cut retries must be between 0 and 20": "Stream cut retries must be between 0 and 20",
+  "Stream cut": "Stream cut",
   "Matches stalled stream failures": "Matches stalled stream failures",
   "Stall timeout seconds": "Stall timeout seconds",
   "Min content chars": "Min content chars",

@@ -26,6 +26,11 @@ func NormalizeCandidateFailure(statusCode int, responseHeaders http.Header, resp
 	failure := CandidateFailure{HTTPStatus: statusCode, ErrorClass: "upstream_error"}
 	// 喵~防御：网络或 TLS 失败没有可信 HTTP 状态，必须与 HTTP 响应故障区分喵。
 	if executionError != nil {
+		// 流转伪流断流哨兵优先识别：上游未完整返回即中断，独立分类供 stream_cut 处理措施匹配喵。
+		if errors.Is(executionError, relaykitypes.ErrStreamCut) {
+			failure.ErrorClass = "stream_cut"
+			return failure
+		}
 		// 卡流哨兵优先识别：静默超时没有 HTTP 状态码可依赖，必须独立分类供 stalled_stream 规则匹配喵。
 		if errors.Is(executionError, relaykitypes.ErrStalledStream) {
 			failure.ErrorClass = "stalled_stream"
@@ -371,7 +376,7 @@ func RetryBackoffSeconds(retryIndex int) int {
 // 与 NormalizeCandidateFailure 产出的分类一一对应，保证规则能命中真实失败喵。
 func validCandidateErrorClass(errorClass string) bool {
 	switch errorClass {
-	case "timeout", "network_error", "rate_limited", "upstream_server_error", "upstream_client_error", "upstream_error", "stalled_stream":
+	case "timeout", "network_error", "rate_limited", "upstream_server_error", "upstream_client_error", "upstream_error", "stalled_stream", "stream_cut":
 		return true
 	}
 	return false

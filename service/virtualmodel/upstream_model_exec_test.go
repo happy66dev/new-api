@@ -1,10 +1,15 @@
 package virtualmodel
 
 import (
+	"bufio"
+	"bytes"
+	"errors"
 	"io"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	relaykitypes "github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -161,4 +166,25 @@ func TestExtractUsageFromSSELineDeepSeekCache(t *testing.T) {
 	// 归一化后缓存命中回填到标准字段，供计费按缓存价收取喵。
 	normalized := normalizeUpstreamModelUsage(usage)
 	require.Equal(t, 30, normalized.PromptTokensDetails.CachedTokens)
+}
+
+// TestBufferCustomStreamToDone 验证流转伪流全量缓存到 [DONE] 与断流分类喵。
+func TestBufferCustomStreamToDone(t *testing.T) {
+	// 完整流到 [DONE]：返回全部行（含 [DONE] 行），供一次性回放喵。
+	completeStream := "data: {\"a\":1}\n\ndata: {\"b\":2}\n\ndata: [DONE]\n"
+	buffered, err := bufferCustomStreamToDone(bufio.NewReader(bytes.NewBufferString(completeStream)), 60*time.Second, 60*time.Second)
+	require.NoError(t, err)
+	assert.Contains(t, string(buffered), `data: {"a":1}`)
+	assert.Contains(t, string(buffered), "[DONE]")
+
+	// EOF 未见 [DONE]：判定断流，返回带 ErrStreamCut 的错误喵。
+	cutStream := "data: {\"a\":1}\n"
+	_, err = bufferCustomStreamToDone(bufio.NewReader(bytes.NewBufferString(cutStream)), 60*time.Second, 60*time.Second)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, relaykitypes.ErrStreamCut), "EOF before [DONE] should classify as stream cut")
+
+	// 空 reader：直接判定断流，不崩溃喵。
+	_, err = bufferCustomStreamToDone(nil, 60*time.Second, 60*time.Second)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, relaykitypes.ErrStreamCut))
 }

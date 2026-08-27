@@ -95,6 +95,10 @@ const (
 // 通过 errors.Is 穿透 NewAPIError.Unwrap 识别，使卡流能独立于 HTTP 状态码进入 stalled_stream 分类喵。
 var ErrStalledStream = errors.New("stream stalled before business content")
 
+// ErrStreamCut 标记流转伪流开启时上游流式响应未完整返回（断流），用于虚拟模型断流处理措施分类喵。
+// 全量缓存模式只把完整到 [DONE] 的流回放客户端，中途 EOF/错误/超时统一归入 stream_cut 分类喵。
+var ErrStreamCut = errors.New("stream cut before completion")
+
 type NewAPIError struct {
 	Err                error
 	RelayError         any

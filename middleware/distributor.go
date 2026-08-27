@@ -242,6 +242,14 @@ type virtualModelExecutionState struct {
 	successExtras perfmetrics.EntityProbeExtras
 	// inflightRequestID 活跃请求注册表里的请求唯一标识，首个候选激活时登记喵。
 	inflightRequestID string
+	// fakeStreamEnabled 流转伪流开关：开启后上游流式全量缓存到 [DONE] 再一次性伪流发出喵。
+	fakeStreamEnabled bool
+	// streamCutAction 流转伪流断流时的处理措施，空表示跟随失败规则喵。
+	streamCutAction model.VirtualModelFailureAction
+	// streamCutRetries 流转伪流断流时对当前候选的重试次数喵。
+	streamCutRetries int
+	// streamCutRetryCounts 记录断流处理措施对候选的重试次数，防止断流 retry 无限重放喵。
+	streamCutRetryCounts map[int]int
 }
 
 // handleVirtualModelRequest 验证虚拟模型授权、构造请求级快照并激活首个可执行候选喵。
@@ -342,6 +350,10 @@ func handleVirtualModelRequest(c *gin.Context, modelRequest *ModelRequest) bool 
 		maximumLoopRounds:               virtualModel.MaxLoopRounds,
 		currentCandidateIndex:           -1,
 		skippedCandidateIDs:             make(map[int]bool),
+		fakeStreamEnabled:               virtualModel.FakeStreamEnabled,
+		streamCutAction:                 virtualModel.StreamCutAction,
+		streamCutRetries:                virtualModel.StreamCutRetries,
+		streamCutRetryCounts:            make(map[int]int),
 		// 整体与候选延迟都从请求进入虚拟层开始计时喵。
 		startTime:                 time.Now(),
 		currentCandidateStartedAt: time.Now(),
@@ -375,6 +387,10 @@ type VirtualModelNativeFailureDecision struct {
 	CustomCandidateCommitted bool
 }
 
+// defaultStreamCutFreezeSeconds 流转伪流断流且处理措施为 freeze 时的默认冻结秒数喵。
+// 断流失败没有响应体可解析冻结时长，使用固定值避免 freeze 动作退化为无意义的跳过喵。
+const defaultStreamCutFreezeSeconds = 60
+
 // AdvanceVirtualModelAfterNativeFailure 在一个内部候选完成全部原生 Channel 重试后按失败规则编排喵。
 func AdvanceVirtualModelAfterNativeFailure(c *gin.Context, nativeError *types.NewAPIError) VirtualModelNativeFailureDecision {
 	decision := VirtualModelNativeFailureDecision{}
@@ -399,9 +415,9 @@ func AdvanceVirtualModelAfterNativeFailure(c *gin.Context, nativeError *types.Ne
 	if currentCandidate.SourceType != model.VirtualModelSourceInternal {
 		return decision
 	}
-	// 仅识别到卡流哨兵时才把执行错误传入分类，避免普通失败因 NewAPIError.Err 非空被误归 network_error 喵。
+	// 仅识别到卡流或断流哨兵时才把执行错误传入分类，避免普通失败因 NewAPIError.Err 非空被误归 network_error 喵。
 	var probeExecutionError error
-	if errors.Is(nativeError, types.ErrStalledStream) {
+	if errors.Is(nativeError, types.ErrStalledStream) || errors.Is(nativeError, types.ErrStreamCut) {
 		probeExecutionError = nativeError
 	}
 	// 规范化为失败规则可匹配的受限结果，候选未配置规则时自动回退模型级全局兜底规则喵。
@@ -418,16 +434,32 @@ func AdvanceVirtualModelAfterNativeFailure(c *gin.Context, nativeError *types.Ne
 		ErrorMessage: nativeFailure.ErrorClass,
 		RetryCount:   executionState.ruleRetryCounts[currentCandidate.CandidateID],
 	})
+	// 流转伪流断流：开启伪流且配置了断流处理措施时，直接按断流措施决策，跳过常规失败规则喵。
+	isStreamCut := nativeFailure.ErrorClass == "stream_cut" && executionState.streamCutAction != ""
 	action, freezeSeconds := virtualmodelservice.DecideVirtualModelFailureAction(executionState.executionSnapshot, currentCandidate.CandidateID, nativeFailure)
+	if isStreamCut {
+		action = executionState.streamCutAction
+		// 断流 freeze 无响应体可解析冻结时长，使用固定默认冻结秒数避免动作退化为无意义跳过喵。
+		freezeSeconds = defaultStreamCutFreezeSeconds
+	}
 	if action == model.VirtualModelActionPassthrough {
 		// 实体状态检测：内部候选失败按规则透传错误，记录候选失败与虚拟模型整体失败喵。
 		RecordActiveVirtualModelCandidateProbe(c, false, nativeFailure.ErrorClass)
 		RecordVirtualModelOverallProbe(c, false, nativeFailure.ErrorClass)
 		return decision
 	}
-	// 失败规则 retry：在候选允许的最大重试次数内重放当前内部候选喵。
-	if action == model.VirtualModelActionRetry && executionState.ruleRetryCounts[currentCandidate.CandidateID] < currentCandidate.MaxRetries {
+	// 失败规则 retry：断流按断流重试次数，其余按候选最大重试次数重放当前内部候选喵。
+	maxInternalRetries := currentCandidate.MaxRetries
+	internalRetryCount := executionState.ruleRetryCounts[currentCandidate.CandidateID]
+	if isStreamCut {
+		maxInternalRetries = executionState.streamCutRetries
+		internalRetryCount = executionState.streamCutRetryCounts[currentCandidate.CandidateID]
+	}
+	if action == model.VirtualModelActionRetry && internalRetryCount < maxInternalRetries {
 		executionState.ruleRetryCounts[currentCandidate.CandidateID]++
+		if isStreamCut {
+			executionState.streamCutRetryCounts[currentCandidate.CandidateID]++
+		}
 		// 恢复客户端原始请求体后重新改写为当前候选，供 relay 循环再次走原生分发喵。
 		if restoreVirtualModelOriginalRequest(c, executionState.originalRequestBody) && applyInternalVirtualModelCandidate(c, executionState.modelRequest, executionState.virtualModelName, &currentCandidate) {
 			decision.RetryCurrentCandidate = true
@@ -897,6 +929,11 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 		// 引用上游模型分支的透传结果提升到外层作用域，供成功路径提取 TTFT/usage 喵。
 		var executionResult *virtualmodelservice.UserUpstreamModelExecutionResult
 		if hasUpstreamReference {
+			// 流转伪流开关随执行状态读取，引用上游候选与直填候选一致生效喵。
+			fakeStreamEnabled := false
+			if executionState, foundState := getVirtualModelExecutionState(c); foundState {
+				fakeStreamEnabled = executionState.fakeStreamEnabled
+			}
 			// 引用用户上游模型：走带 usage 解析的独立透传，返回解析结果供结算喵。
 			executionResult = virtualmodelservice.ExecuteUserUpstreamModel(c, virtualmodelservice.CustomCandidateExecutionInput{
 				CandidateID:    candidate.CandidateID,
@@ -912,10 +949,16 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 				// 引用上游模型的请求定制：自定义请求头与字段替换随条目配置传入喵。
 				CustomHeaders:     referencedUpstreamModel.CustomHeaders,
 				FieldReplacements: referencedUpstreamModel.FieldReplacements,
+				FakeStreamEnabled: fakeStreamEnabled,
 			})
 			executionError = executionResult.Err
 			executionUsage = executionResult.Usage
 		} else {
+			// 流转伪流开关随执行状态读取，引用上游候选与直填候选一致生效喵。
+			fakeStreamEnabled := false
+			if executionState, foundState := getVirtualModelExecutionState(c); foundState {
+				fakeStreamEnabled = executionState.fakeStreamEnabled
+			}
 			// 纯直填 custom 候选：透传并解析 usage/TTFT 返回，供结算与状态探测使用喵。
 			customExecutionResult := virtualmodelservice.ExecuteCustomCandidate(c, virtualmodelservice.CustomCandidateExecutionInput{
 				CandidateID:    candidate.CandidateID,
@@ -928,6 +971,7 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 				StallTimeoutSeconds:      probeParameters.StallTimeoutSeconds,
 				MinContentChars:          probeParameters.MinContentChars,
 				ProbeTotalTimeoutSeconds: probeParameters.ProbeTotalTimeoutSeconds,
+				FakeStreamEnabled:        fakeStreamEnabled,
 			})
 			executionError = customExecutionResult.Err
 			executionUsage = customExecutionResult.Usage
@@ -991,8 +1035,21 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 			abortWithOpenAiMessage(c, http.StatusBadGateway, "virtual model custom upstream is unavailable", types.ErrorCode("virtual_model_unavailable"))
 			return false
 		}
+		// 读取执行状态用于断流措施决策；缺失时视为未配置断流处理喵。
+		executionState, foundExecutionState := getVirtualModelExecutionState(c)
+		// 流转伪流断流：开启伪流且配置了断流处理措施时，直接按断流措施决策，跳过常规失败规则喵。
+		isStreamCut := customFailure.Failure.ErrorClass == "stream_cut" && foundExecutionState && executionState.streamCutAction != ""
+		streamCutAction := model.VirtualModelFailureAction("")
+		if isStreamCut {
+			streamCutAction = executionState.streamCutAction
+		}
 		// 候选失败后按规则决策动作；候选未配置规则时回退模型级全局兜底规则喵。
 		action, freezeSeconds := virtualmodelservice.DecideVirtualModelFailureAction(executionSnapshot, candidate.CandidateID, customFailure.Failure)
+		if isStreamCut {
+			action = streamCutAction
+			// 断流 freeze 无响应体可解析冻结时长，使用固定默认冻结秒数避免动作退化为无意义跳过喵。
+			freezeSeconds = defaultStreamCutFreezeSeconds
+		}
 		// 记录该 custom 候选的失败尝试摘要，供最终日志展示候选链故障转移过程喵。
 		appendVirtualModelCandidateAttempt(c, model.VirtualModelCandidateAttemptRecord{
 			Seq:          currentVirtualModelCandidateSeq(c),
@@ -1006,7 +1063,12 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 			ElapsedMs:    time.Since(startTime).Milliseconds(),
 			RetryCount:   retryIndex,
 		})
-		if action == model.VirtualModelActionRetry && retryIndex < maximumRetries {
+		// 断流 retry 用断流重试次数，其余按候选最大重试次数喵。
+		maxCustomRetries := maximumRetries
+		if isStreamCut {
+			maxCustomRetries = executionState.streamCutRetries
+		}
+		if action == model.VirtualModelActionRetry && retryIndex < maxCustomRetries {
 			retryDelay := time.Duration(virtualmodelservice.RetryBackoffSeconds(retryIndex)) * time.Second
 			// 喵~防御：退避等待必须响应客户端取消和总 deadline，避免断开请求仍占用 goroutine 和连接喵。
 			if executionState, foundState := getVirtualModelExecutionState(c); foundState && !executionState.requestDeadline.IsZero() {
@@ -1094,6 +1156,10 @@ func applyInternalVirtualModelCandidate(c *gin.Context, modelRequest *ModelReque
 	if executionState, foundState := getVirtualModelExecutionState(c); foundState && executionState.executionSnapshot != nil {
 		probeParameters := virtualmodelservice.ResolveProbeParameters(executionState.executionSnapshot.FailureRulesByCandidateID[candidate.CandidateID], executionState.executionSnapshot.GlobalFailureRules)
 		common.SetContextKey(c, constant.ContextKeyVirtualModelProbeParameters, probeParameters)
+		// 流转伪流开关随候选激活写入 context，供 relay 层决定是否全量缓存到 [DONE] 再一次性回放喵。
+		if executionState.fakeStreamEnabled {
+			common.SetContextKey(c, constant.ContextKeyVirtualModelFakeStream, true)
+		}
 	}
 	if !replaceTopLevelRequestModel(c, candidate.RealModelName) {
 		abortWithOpenAiMessage(c, http.StatusBadRequest, "invalid virtual model request", types.ErrorCode("virtual_model_invalid_request"))

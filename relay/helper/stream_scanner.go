@@ -92,6 +92,8 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 
 	// 虚拟模型内部候选的流式探测参数：仅内部候选开启，普通请求为 nil 不启用探测喵。
 	probeConfig := streamProbeConfigFromContext(c)
+	// 流转伪流：从 context 读取开关，开启后全量缓存到 [DONE] 再一次性流式回放喵。
+	fakeStreamEnabled := common.GetContextKeyBool(c, constant.ContextKeyVirtualModelFakeStream)
 
 	var (
 		stopChan    = make(chan bool, 3) // 增加缓冲区避免阻塞
@@ -124,7 +126,8 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	generalSettings := operation_setting.GetGeneralSetting()
 	pingEnabled := generalSettings.PingIntervalEnabled && !info.DisablePing
 	// 探测阶段禁止发送心跳，避免提前向客户端写入字节破坏探测失败回切候选喵。
-	if probeConfig != nil {
+	// 流转伪流模式同样禁止心跳：客户端连接的是流式但体验是非流，提前写字节会破坏一次性回放喵。
+	if probeConfig != nil || fakeStreamEnabled {
 		pingEnabled = false
 	}
 	pingInterval := time.Duration(generalSettings.PingIntervalSeconds) * time.Second
@@ -289,9 +292,13 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				continue
 			}
 			if !strings.HasPrefix(data, "[DONE]") {
-				// 探测阶段：先缓存数据直到内容字符达到门槛，避免“假成功流”喵。
+				// 探测阶段：先缓存数据直到内容字符达到门槛，避免"假成功流"喵。
 				if probeState != nil && !probeState.passed {
 					probeState.buffer = append(probeState.buffer, data)
+					// 流转伪流：全量缓存所有 data 行，不做内容门槛放流，等 [DONE] 后一次性回放喵。
+					if fakeStreamEnabled {
+						continue
+					}
 					// 心跳不构成业务内容，只缓存重放不参与门槛计数喵。
 					if !isProbeHeartbeat(data) {
 						probeState.bufferedContentChars += common.StreamProbeContentChars(data)
@@ -327,6 +334,35 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				}
 			} else {
 				if probeState != nil && !probeState.passed {
+					// 流转伪流：收到 [DONE] 即流完整，一次性回放全部缓存并结束喵。
+					if fakeStreamEnabled {
+						probeState.passed = true
+						ticker.Reset(streamingTimeout)
+						for _, bufferedData := range probeState.buffer {
+							info.SetFirstResponseTime()
+							info.ReceivedResponseCount++
+							select {
+							case dataChan <- bufferedData:
+							case <-ctx.Done():
+								return
+							case <-stopChan:
+								return
+							}
+						}
+						probeState.buffer = nil
+						// 回放 [DONE] 结束标记，客户端据此关闭流喵。
+						info.ReceivedResponseCount++
+						select {
+						case dataChan <- "[DONE]":
+						case <-ctx.Done():
+							return
+						case <-stopChan:
+							return
+						}
+						info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
+						logger.LogDebug(c, "received [DONE], replaying buffered fake stream")
+						return
+					}
 					// 探测阶段收到 [DONE] 而内容不足：空流失败喵。
 					probeState.fail(errProbeEndedBeforeContent)
 					info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonEOF, errProbeEndedBeforeContent)
@@ -345,8 +381,12 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			}
 		}
 		if probeState != nil && !probeState.passed {
-			// 探测阶段 EOF 而内容不足：空流失败喵。
-			probeState.fail(errProbeEndedBeforeContent)
+			// 探测阶段 EOF 而内容不足：普通模式按空流失败，伪流模式按断流失败喵。
+			if fakeStreamEnabled {
+				probeState.fail(fmt.Errorf("%w: upstream stream cut before [DONE]", types.ErrStreamCut))
+			} else {
+				probeState.fail(errProbeEndedBeforeContent)
+			}
 			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonEOF, errProbeEndedBeforeContent)
 			return
 		}
@@ -358,20 +398,28 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	select {
 	case <-ticker.C:
 		if probeState != nil && !probeState.passed {
-			// 探测阶段静默超时：判定为卡流，不向客户端写任何字节喵。
-			probeFailure := fmt.Errorf("%w: stream silent before business content", types.ErrStalledStream)
+			// 探测阶段静默超时：普通模式判定卡流，伪流模式判定断流，均不向客户端写任何字节喵。
+			cutError := types.ErrStalledStream
+			if fakeStreamEnabled {
+				cutError = types.ErrStreamCut
+			}
+			probeFailure := fmt.Errorf("%w: stream silent before business content", cutError)
 			probeFailedError = probeFailure
 			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, probeFailure)
 		} else {
 			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, nil)
 		}
 	case probeFailure := <-probeFailedChan:
-		// scanner goroutine 报告的探测失败（空流、内容不足等）喵。
+		// scanner goroutine 报告的探测失败（空流、内容不足、伪流断流等）喵。
 		probeFailedError = probeFailure
 	case <-probeTotalChan:
 		if probeState != nil && !probeState.passed {
-			// 探测总预算耗尽：判定探测失败喵。
-			probeFailure := fmt.Errorf("%w: probe phase exceeded total budget", types.ErrStalledStream)
+			// 探测总预算耗尽：普通模式判定卡流，伪流模式判定断流喵。
+			cutError := types.ErrStalledStream
+			if fakeStreamEnabled {
+				cutError = types.ErrStreamCut
+			}
+			probeFailure := fmt.Errorf("%w: probe phase exceeded total budget", cutError)
 			probeFailedError = probeFailure
 			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, probeFailure)
 		}

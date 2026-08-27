@@ -16,9 +16,9 @@ export type BodyRegexMode = 'none' | 'preset' | 'simple' | 'custom'
 // seconds 直接按秒；minutes 按分钟乘以 60；mixed 支持 "1m30s" 复合格式；auto 自动扫描自然语言时间喵。
 export type FreezeUnit = 'seconds' | 'minutes' | 'mixed' | 'auto'
 
-// ConditionType 描述失败条件的类型，HTTP 状态码、超时与卡流三选一喵。
-// 大部分失败（限流、5xx 等）都能用 HTTP 状态码表达；超时与卡流没有状态码，需独立条件覆盖喵。
-export type ConditionType = 'http' | 'timeout' | 'stalled'
+// ConditionType 描述失败条件的类型，HTTP 状态码、超时、卡流与断流四选一喵。
+// 大部分失败（限流、5xx 等）都能用 HTTP 状态码表达；超时、卡流与断流没有状态码，需独立条件覆盖喵。
+export type ConditionType = 'http' | 'timeout' | 'stalled' | 'stream-cut'
 
 // CONDITION_TYPE_TO_ERROR_CLASS 把非 HTTP 条件类型映射为后端错误分类值喵。
 export const CONDITION_TYPE_TO_ERROR_CLASS: Partial<Record<ConditionType, string>> = {
@@ -26,6 +26,8 @@ export const CONDITION_TYPE_TO_ERROR_CLASS: Partial<Record<ConditionType, string
   timeout: 'timeout',
   // 卡流条件写入 stalled_stream 分类，匹配上游静默超时喵。
   stalled: 'stalled_stream',
+  // 流转伪流断流条件写入 stream_cut 分类，匹配上游未完整返回就中断喵。
+  'stream-cut': 'stream_cut',
 }
 
 // FREEZE_UNITS 提供响应体冻结单位下拉选项，labelKey 供 i18n 翻译喵。
@@ -116,6 +118,8 @@ export function toFailureRuleDraft(rule: VirtualModelFailureRule): FailureRuleDr
     conditionType = 'timeout'
   } else if ((rule.error_class ?? '') === 'stalled_stream') {
     conditionType = 'stalled'
+  } else if ((rule.error_class ?? '') === 'stream_cut') {
+    conditionType = 'stream-cut'
   }
   return {
     bodyRegex,

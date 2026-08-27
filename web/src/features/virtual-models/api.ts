@@ -57,6 +57,10 @@ export type VirtualModel = {
   loop_enabled: boolean
   total_timeout_seconds: number
   max_loop_rounds: number
+  // 流转伪流：开启后上游流式全量缓存到 [DONE] 再一次性伪流发出，断流按处理措施决策喵。
+  fake_stream_enabled: boolean
+  stream_cut_action: 'retry' | 'next' | 'freeze' | 'passthrough' | ''
+  stream_cut_retries: number
   version: number
   candidates?: VirtualModelCandidate[]
   binding_token_ids?: number[]
@@ -71,6 +75,10 @@ export type VirtualModelInput = {
   loop_enabled: boolean
   total_timeout_seconds: number
   max_loop_rounds: number
+  // 流转伪流配置：断流处理措施与重试次数喵。
+  fake_stream_enabled: boolean
+  stream_cut_action: 'retry' | 'next' | 'freeze' | 'passthrough' | ''
+  stream_cut_retries: number
   version?: number
 }
 

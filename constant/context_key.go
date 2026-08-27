@@ -18,6 +18,8 @@ const (
 	ContextKeyInternalCandidateApplied    ContextKey = "virtual_model_internal_candidate_applied"
 	// ContextKeyVirtualModelProbeParameters 保存当前内部候选解析出的流式探测参数，供 relay 层放流前探测使用喵。
 	ContextKeyVirtualModelProbeParameters ContextKey = "virtual_model_probe_parameters"
+	// ContextKeyVirtualModelFakeStream 标记内部候选开启流转伪流，relay 层全量缓存到 [DONE] 再一次性伪流回放喵。
+	ContextKeyVirtualModelFakeStream ContextKey = "virtual_model_fake_stream"
 	// ContextKeyVirtualLogType 标记虚拟模型请求应写入的日志类型（=LogTypeVirtualModel）喵。
 	ContextKeyVirtualLogType ContextKey = "virtual_model_log_type"
 	// ContextKeyVirtualCandidateSeq 记录当前命中的候选链序号（1 起），供日志渠道字段展示「候选n」喵。
