@@ -220,75 +220,109 @@ func TestSharedUserUpstreamModels(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestSharedUserWhitelistBlacklist 验证白名单/黑名单同时过滤可见性与调用授权喵。
+// TestSharedUserWhitelistBlacklist 验证白名单/黑名单同时过滤可见性与调用授权（含显式模式与属主豁免）喵。
 func TestSharedUserWhitelistBlacklist(t *testing.T) {
 	truncateTables(t)
 	require.NoError(t, DB.AutoMigrate(&UserUpstreamModel{}))
 	require.NoError(t, DB.Exec("DELETE FROM user_upstream_models").Error)
 
-	// 三个共享中模型：无名单、白名单限 7、白名单限 7 且黑名单含 9 喵。
+	// 四个共享中模型：无名单、白名单制、白名单制+黑名单、黑名单制、白名单制不含属主喵。
 	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "open", Enabled: true, ShareEnabled: true, BalanceCents: 100, AvailableCents: 100, ShareLimitCents: 1000}).Error)
-	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "wl", Enabled: true, ShareEnabled: true, BalanceCents: 100, AvailableCents: 100, ShareLimitCents: 1000, ShareWhitelist: "5, 7"}).Error)
-	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "wl-bl", Enabled: true, ShareEnabled: true, BalanceCents: 100, AvailableCents: 100, ShareLimitCents: 1000, ShareWhitelist: "7,8", ShareBlacklist: "8,9"}).Error)
+	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "wl", Enabled: true, ShareEnabled: true, BalanceCents: 100, AvailableCents: 100, ShareLimitCents: 1000, ShareListMode: "whitelist", ShareWhitelist: "5, 7"}).Error)
+	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "wl-bl", Enabled: true, ShareEnabled: true, BalanceCents: 100, AvailableCents: 100, ShareLimitCents: 1000, ShareListMode: "whitelist", ShareWhitelist: "7,8", ShareBlacklist: "8,9"}).Error)
+	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "bl-only", Enabled: true, ShareEnabled: true, BalanceCents: 100, AvailableCents: 100, ShareLimitCents: 1000, ShareListMode: "blacklist", ShareBlacklist: "9"}).Error)
+	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "wl-exclusive", Enabled: true, ShareEnabled: true, BalanceCents: 100, AvailableCents: 100, ShareLimitCents: 1000, ShareListMode: "whitelist", ShareWhitelist: "8"}).Error)
 
-	// 未登录（0）与名单外用户只能看到无名单模型喵。
+	// 未登录（0）：白名单制被挡、黑名单制放行，只见 open 与 bl-only 喵。
 	assert.Contains(t, GetSharedUserUpstreamModelNames(0), "user/open")
+	assert.Contains(t, GetSharedUserUpstreamModelNames(0), "user/bl-only")
 	assert.NotContains(t, GetSharedUserUpstreamModelNames(0), "user/wl")
 	assert.NotContains(t, GetSharedUserUpstreamModelNames(0), "user/wl-bl")
-	assert.NotContains(t, GetSharedUserUpstreamModelNames(8), "user/wl-bl")
+	assert.NotContains(t, GetSharedUserUpstreamModelNames(0), "user/wl-exclusive")
 
-	// 白名单命中用户（7）可见全部三个模型喵。
+	// 黑名单制名单外用户（8）：bl-only 放行、wl-exclusive 白名单命中放行、wl-bl 黑名单命中被挡、wl 白名单外被挡喵。
+	names8 := GetSharedUserUpstreamModelNames(8)
+	assert.Contains(t, names8, "user/open")
+	assert.Contains(t, names8, "user/bl-only")
+	assert.Contains(t, names8, "user/wl-exclusive")
+	assert.NotContains(t, names8, "user/wl-bl")
+	assert.NotContains(t, names8, "user/wl")
+
+	// 黑名单制命中用户（9）：bl-only 被挡，wl-bl 白名单外也挡，只见 open 喵。
+	names9 := GetSharedUserUpstreamModelNames(9)
+	assert.Contains(t, names9, "user/open")
+	assert.NotContains(t, names9, "user/bl-only")
+	assert.NotContains(t, names9, "user/wl-bl")
+
+	// 属主（7）自动豁免：白名单制不含属主的 wl-exclusive 对属主仍可见喵。
 	names7 := GetSharedUserUpstreamModelNames(7)
 	assert.Contains(t, names7, "user/open")
 	assert.Contains(t, names7, "user/wl")
 	assert.Contains(t, names7, "user/wl-bl")
+	assert.Contains(t, names7, "user/wl-exclusive")
+	assert.Contains(t, names7, "user/bl-only")
 
 	// 白名单视图过滤同样生效喵。
 	views8, err := GetSharedUserUpstreamModels(8)
 	require.NoError(t, err)
-	assert.Len(t, views8, 1)
-	assert.Equal(t, "open", views8[0].NormalizedName)
+	viewNames := make([]string, 0, len(views8))
+	for _, view := range views8 {
+		viewNames = append(viewNames, view.NormalizedName)
+	}
+	assert.Contains(t, viewNames, "open")
+	assert.Contains(t, viewNames, "bl-only")
+	assert.NotContains(t, viewNames, "wl")
 
-	// 调用授权：白名单外与黑名单用户按 404 处理，不泄露存在性喵。
+	// 调用授权：白名单外、黑名单命中用户按 404 处理，不泄露存在性喵。
 	_, err = GetEnabledSharedUserUpstreamModelByName("wl", 8)
-	require.Error(t, err)
-	_, err = GetEnabledSharedUserUpstreamModelByName("wl-bl", 8)
 	require.Error(t, err)
 	_, err = GetEnabledSharedUserUpstreamModelByName("wl-bl", 9)
 	require.Error(t, err)
-	// 白名单命中用户可正常调用喵。
-	shared, err := GetEnabledSharedUserUpstreamModelByName("wl", 7)
+	_, err = GetEnabledSharedUserUpstreamModelByName("bl-only", 9)
+	require.Error(t, err)
+	// 名单命中用户可正常调用喵。
+	shared, err := GetEnabledSharedUserUpstreamModelByName("bl-only", 8)
 	require.NoError(t, err)
-	assert.Equal(t, "wl", shared.NormalizedName)
+	assert.Equal(t, "bl-only", shared.NormalizedName)
+	// 属主豁免：白名单制不含属主的模型，属主仍可调用喵。
+	exclusive, err := GetEnabledSharedUserUpstreamModelByName("wl-exclusive", 7)
+	require.NoError(t, err)
+	assert.Equal(t, "wl-exclusive", exclusive.NormalizedName)
 	// 无名单模型对所有用户开放喵。
 	open, err := GetEnabledSharedUserUpstreamModelByName("open", 8)
 	require.NoError(t, err)
 	assert.Equal(t, "open", open.NormalizedName)
 }
 
-// TestIsUserAllowedShared 表驱动验证白名单/黑名单判定规则喵。
+// TestIsUserAllowedShared 表驱动验证白名单/黑名单判定规则（含显式模式与属主豁免）喵。
 func TestIsUserAllowedShared(t *testing.T) {
 	cases := []struct {
 		name      string
 		viewerID  int
+		ownerID   int
+		mode      string
 		whitelist string
 		blacklist string
 		want      bool
 	}{
-		{name: "无名单任意用户放行", viewerID: 8, whitelist: "", blacklist: "", want: true},
-		{name: "无名单未登录放行", viewerID: 0, whitelist: "", blacklist: "", want: true},
-		{name: "白名单命中放行", viewerID: 7, whitelist: "5,7,9", blacklist: "", want: true},
-		{name: "白名单外被挡", viewerID: 8, whitelist: "5,7", blacklist: "", want: false},
-		{name: "未登录遇白名单被挡", viewerID: 0, whitelist: "5,7", blacklist: "", want: false},
-		{name: "黑名单命中被挡", viewerID: 9, whitelist: "", blacklist: "8,9", want: false},
-		{name: "白名单与黑名单都命中时黑名单优先", viewerID: 9, whitelist: "9", blacklist: "9", want: false},
-		{name: "黑名单带空格分隔命中", viewerID: 6, whitelist: "", blacklist: " 5 , 6 ", want: false},
-		{name: "黑名单未命中放行", viewerID: 4, whitelist: "", blacklist: "8,9", want: true},
-		{name: "空白名单串视为不限制", viewerID: 8, whitelist: "  ", blacklist: "", want: true},
+		{name: "无名单任意用户放行", viewerID: 8, ownerID: 7, mode: "", whitelist: "", blacklist: "", want: true},
+		{name: "无名单未登录放行", viewerID: 0, ownerID: 7, mode: "", whitelist: "", blacklist: "", want: true},
+		{name: "白名单制命中放行", viewerID: 7, ownerID: 5, mode: "whitelist", whitelist: "5,7,9", blacklist: "", want: true},
+		{name: "白名单制名单外被挡", viewerID: 8, ownerID: 5, mode: "whitelist", whitelist: "5,7", blacklist: "", want: false},
+		{name: "白名单制未登录被挡", viewerID: 0, ownerID: 5, mode: "whitelist", whitelist: "5,7", blacklist: "", want: false},
+		{name: "黑名单制命中被挡", viewerID: 9, ownerID: 7, mode: "blacklist", whitelist: "", blacklist: "8,9", want: false},
+		{name: "黑名单制名单外放行", viewerID: 4, ownerID: 7, mode: "blacklist", whitelist: "", blacklist: "8,9", want: true},
+		{name: "黑名单制未登录放行", viewerID: 0, ownerID: 7, mode: "blacklist", whitelist: "", blacklist: "8,9", want: true},
+		{name: "属主白名单制豁免即使不在名单", viewerID: 5, ownerID: 5, mode: "whitelist", whitelist: "7,8", blacklist: "", want: true},
+		{name: "属主黑名单制豁免即使被拉黑", viewerID: 5, ownerID: 5, mode: "blacklist", whitelist: "", blacklist: "5,6", want: true},
+		{name: "旧数据白名单非空回退白名单制", viewerID: 8, ownerID: 5, mode: "", whitelist: "5,7", blacklist: "", want: false},
+		{name: "旧数据黑名单非空回退不限制", viewerID: 8, ownerID: 5, mode: "", whitelist: "", blacklist: "9", want: true},
+		{name: "黑名单优先于白名单命中", viewerID: 9, ownerID: 5, mode: "", whitelist: "9", blacklist: "9", want: false},
+		{name: "黑名单带空格分隔命中", viewerID: 6, ownerID: 5, mode: "", whitelist: "", blacklist: " 5 , 6 ", want: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, isUserAllowedShared(tc.viewerID, tc.whitelist, tc.blacklist))
+			assert.Equal(t, tc.want, isUserAllowedShared(tc.viewerID, tc.ownerID, tc.mode, tc.whitelist, tc.blacklist))
 		})
 	}
 }

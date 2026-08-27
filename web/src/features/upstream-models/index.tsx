@@ -25,6 +25,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import {
   Sheet,
   SheetClose,
@@ -103,9 +104,10 @@ function UpstreamModelDrawer({
   const [availableYuan, setAvailableYuan] = useState('0')
   const [shareEnabled, setShareEnabled] = useState(false)
   const [shareLimitYuan, setShareLimitYuan] = useState('0')
-  // 共享白名单/黑名单：逗号分隔的用户 id，白名单非空时仅名单内用户可见可调用喵。
-  const [shareWhitelist, setShareWhitelist] = useState('')
-  const [shareBlacklist, setShareBlacklist] = useState('')
+  // 共享名单模式：all=不限制、whitelist=白名单制、blacklist=黑名单制，用户显式二选一喵。
+  const [shareListMode, setShareListMode] = useState<'all' | 'whitelist' | 'blacklist'>('all')
+  // shareList 是当前模式下生效的逗号分隔用户 id 名单喵。
+  const [shareList, setShareList] = useState('')
   const [showBalanceEnabled, setShowBalanceEnabled] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
 
@@ -134,8 +136,21 @@ function UpstreamModelDrawer({
     setAvailableYuan(centsToYuan(model?.available_cents ?? model?.spend_limit_cents ?? 0))
     setShareEnabled(model?.share_enabled ?? false)
     setShareLimitYuan(centsToYuan(model?.share_limit_cents ?? 0))
-    setShareWhitelist(model?.share_whitelist ?? '')
-    setShareBlacklist(model?.share_blacklist ?? '')
+    // 模式回填：显式 share_list_mode 优先，旧数据按非空名单推断喵。
+    const listMode = model?.share_list_mode
+    if (listMode === 'whitelist' || listMode === 'blacklist') {
+      setShareListMode(listMode)
+      setShareList(listMode === 'whitelist' ? (model?.share_whitelist ?? '') : (model?.share_blacklist ?? ''))
+    } else if (model?.share_whitelist) {
+      setShareListMode('whitelist')
+      setShareList(model.share_whitelist)
+    } else if (model?.share_blacklist) {
+      setShareListMode('blacklist')
+      setShareList(model.share_blacklist)
+    } else {
+      setShareListMode('all')
+      setShareList('')
+    }
     setShowBalanceEnabled(model?.show_balance_enabled ?? false)
   }, [model, open])
 
@@ -180,8 +195,10 @@ function UpstreamModelDrawer({
       available_cents: yuanToCents(availableYuan),
       share_enabled: shareEnabled,
       share_limit_cents: yuanToCents(shareLimitYuan),
-      share_whitelist: shareWhitelist,
-      share_blacklist: shareBlacklist,
+      // 白名单/黑名单模式二选一：只写对应列，另一列清空；all 模式两者都空喵。
+      share_whitelist: shareListMode === 'whitelist' ? shareList : '',
+      share_blacklist: shareListMode === 'blacklist' ? shareList : '',
+      share_list_mode: shareListMode === 'all' ? '' : shareListMode,
       show_balance_enabled: showBalanceEnabled,
       ...(model ? { version: model.version } : {}),
     }
@@ -396,28 +413,46 @@ function UpstreamModelDrawer({
               {t('Share limit (yuan)')}
               <Input inputMode='decimal' value={shareLimitYuan} onChange={(event) => setShareLimitYuan(event.target.value)} disabled={isSaving || !shareEnabled} />
             </label>
-            <label className='grid gap-1 text-sm font-medium'>
-              {t('Share whitelist (user ids)')}
-              <Textarea
-                value={shareWhitelist}
-                onChange={(event) => setShareWhitelist(event.target.value)}
-                placeholder='1, 2, 3'
+            <label className='grid gap-1.5 text-sm'>
+              <span className='font-medium'>{t('Sharing policy')}</span>
+              {/* 名单模式显式二选一：全开放 / 白名单制 / 黑名单制喵。 */}
+              <RadioGroup
+                value={shareListMode}
+                onValueChange={(value) => setShareListMode(value as 'all' | 'whitelist' | 'blacklist')}
                 disabled={isSaving || !shareEnabled}
-                rows={2}
-              />
+              >
+                <label className='flex items-center gap-2'>
+                  <RadioGroupItem value='all' />
+                  <span>{t('All users')}</span>
+                </label>
+                <label className='flex items-center gap-2'>
+                  <RadioGroupItem value='whitelist' />
+                  <span>{t('Whitelist only')}</span>
+                </label>
+                <label className='flex items-center gap-2'>
+                  <RadioGroupItem value='blacklist' />
+                  <span>{t('Blacklist only')}</span>
+                </label>
+              </RadioGroup>
             </label>
-            <label className='grid gap-1 text-sm font-medium'>
-              {t('Share blacklist (user ids)')}
-              <Textarea
-                value={shareBlacklist}
-                onChange={(event) => setShareBlacklist(event.target.value)}
-                placeholder='4, 5, 6'
-                disabled={isSaving || !shareEnabled}
-                rows={2}
-              />
-            </label>
+            {shareListMode !== 'all' && (
+              <label className='grid gap-1 text-sm font-medium'>
+                {shareListMode === 'whitelist' ? t('Whitelist user ids') : t('Blacklist user ids')}
+                <Textarea
+                  value={shareList}
+                  onChange={(event) => setShareList(event.target.value)}
+                  placeholder='1, 2, 3'
+                  disabled={isSaving || !shareEnabled}
+                  rows={2}
+                />
+              </label>
+            )}
             <p className='text-muted-foreground text-xs'>
-              {t('Whitelist users can view and call this model; blacklisted users are always blocked. Leave empty for all users. Unauthenticated users are treated as not in any list.')}
+              {shareListMode === 'whitelist'
+                ? t('Only whitelisted users can view and call this model. The owner is always allowed.')
+                : shareListMode === 'blacklist'
+                  ? t('All users except the blacklist can view and call this model.')
+                  : t('All users can view and call this model.')}
             </p>
           </SideDrawerSection>
         </div>

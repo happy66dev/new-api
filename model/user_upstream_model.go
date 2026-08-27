@@ -63,6 +63,8 @@ type UserUpstreamModel struct {
 	// 共享白名单/黑名单：逗号分隔的用户 id，白名单非空时仅白名单用户可见可调用；黑名单用户一律被挡喵。
 	ShareWhitelist string `json:"share_whitelist" gorm:"type:text"`
 	ShareBlacklist string `json:"share_blacklist" gorm:"type:text"`
+	// ShareListMode 共享名单模式：空=旧数据回退、whitelist=白名单制、blacklist=黑名单制；用户显式二选一喵。
+	ShareListMode string `json:"share_list_mode" gorm:"type:varchar(16)"`
 	// 版本与时间喵。
 	Version     int   `json:"version"`
 	CreatedTime int64 `json:"created_time"`
@@ -248,21 +250,34 @@ type SharedUserUpstreamModelView struct {
 	// 共享白名单/黑名单：逗号分隔的用户 id，供可见性过滤使用喵。
 	ShareWhitelist string
 	ShareBlacklist string
+	// ShareListMode 共享名单模式：whitelist/blacklist，空值按旧数据回退喵。
+	ShareListMode string
 }
 
-// isUserAllowedShared 判断 viewerID 是否被共享白名单/黑名单允许喵。
-// 黑名单优先：黑名单含 viewerID → 禁止；白名单非空且不含 viewerID → 禁止；否则允许喵。
-// viewerID <= 0（未登录）视为"非白名单用户"，白名单非空即被挡喵。
-func isUserAllowedShared(viewerID int, whitelist string, blacklist string) bool {
+// isUserAllowedShared 判断 viewerID 是否被共享名单允许喵。
+// 属主总是豁免（不必把自己写进白名单）；黑名单命中即禁止；白名单非空时仅名单内放行喵。
+// mode 为空（旧数据）时回退旧逻辑：黑名单挡 + 白名单非空限制喵。
+func isUserAllowedShared(viewerID int, ownerUserID int, mode string, whitelist string, blacklist string) bool {
+	// 属主豁免：模型属主自己始终可见可调用自己的共享模型喵。
+	if viewerID > 0 && viewerID == ownerUserID {
+		return true
+	}
 	// 黑名单命中即禁止喵。
 	if containsSharedUserID(blacklist, viewerID) {
 		return false
 	}
-	// 白名单为空表示不限制；非空时必须包含 viewerID 喵。
-	if strings.TrimSpace(whitelist) == "" {
+	// 显式模式优先：黑名单制放行名单外用户，白名单制仅名单内放行喵。
+	switch mode {
+	case "blacklist":
 		return true
+	case "whitelist":
+		return containsSharedUserID(whitelist, viewerID)
 	}
-	return containsSharedUserID(whitelist, viewerID)
+	// 旧数据回退：白名单非空按白名单制，否则视为不限制喵。
+	if strings.TrimSpace(whitelist) != "" {
+		return containsSharedUserID(whitelist, viewerID)
+	}
+	return true
 }
 
 // containsSharedUserID 判断逗号分隔的用户 id 串是否包含目标 id 喵。
@@ -286,7 +301,7 @@ func GetSharedUserUpstreamModels(viewerID int) ([]SharedUserUpstreamModelView, e
 	var views []SharedUserUpstreamModelView
 	// 三账户都是递减账户，任一耗尽即自动停止共享（从共享列表消失）喵。
 	if err := DB.Model(&UserUpstreamModel{}).
-		Select("id", "owner_user_id", "normalized_name", "display_name", "description", "real_model_name", "model_ratio", "completion_ratio", "share_limit_cents", "show_balance_enabled", "balance_cents", "available_cents", "share_whitelist", "share_blacklist").
+		Select("id", "owner_user_id", "normalized_name", "display_name", "description", "real_model_name", "model_ratio", "completion_ratio", "share_limit_cents", "show_balance_enabled", "balance_cents", "available_cents", "share_whitelist", "share_blacklist", "share_list_mode").
 		Where("share_enabled = ? AND balance_cents > 0 AND available_cents > 0 AND share_limit_cents > 0", true).
 		Find(&views).Error; err != nil {
 		return nil, err
@@ -294,7 +309,7 @@ func GetSharedUserUpstreamModels(viewerID int) ([]SharedUserUpstreamModelView, e
 	// 白名单/黑名单在 Go 侧过滤（逗号分隔的 id 串不适合跨库 SQL 表达）喵。
 	filtered := make([]SharedUserUpstreamModelView, 0, len(views))
 	for _, view := range views {
-		if isUserAllowedShared(viewerID, view.ShareWhitelist, view.ShareBlacklist) {
+		if isUserAllowedShared(viewerID, view.OwnerUserID, view.ShareListMode, view.ShareWhitelist, view.ShareBlacklist) {
 			filtered = append(filtered, view)
 		}
 	}
@@ -343,7 +358,7 @@ func GetEnabledSharedUserUpstreamModelByName(normalizedName string, viewerID int
 		return nil, err
 	}
 	// 白名单/黑名单过滤：被挡用户按记录不存在处理，避免泄露模型存在性喵。
-	if !isUserAllowedShared(viewerID, upstreamModel.ShareWhitelist, upstreamModel.ShareBlacklist) {
+	if !isUserAllowedShared(viewerID, upstreamModel.OwnerUserID, upstreamModel.ShareListMode, upstreamModel.ShareWhitelist, upstreamModel.ShareBlacklist) {
 		return nil, gorm.ErrRecordNotFound
 	}
 	return &upstreamModel, nil

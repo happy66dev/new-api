@@ -60,6 +60,7 @@ const sharedModelFixture: UserUpstreamModel = {
   share_spent_cents: 0,
   share_whitelist: '',
   share_blacklist: '',
+  share_list_mode: '',
   show_balance_enabled: false,
   version: 1,
   created_time: 100,

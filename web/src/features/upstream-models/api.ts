@@ -41,6 +41,8 @@ export type UserUpstreamModel = {
   // 共享白名单/黑名单：逗号分隔的用户 id，非白名单或黑名单用户不可见不可调用喵。
   share_whitelist: string
   share_blacklist: string
+  // 共享名单模式：whitelist=白名单制 / blacklist=黑名单制，显式二选一喵。
+  share_list_mode: '' | 'whitelist' | 'blacklist' | string
   show_balance_enabled: boolean
   version: number
   created_time: number
@@ -77,6 +79,8 @@ export type UserUpstreamModelInput = {
   // 共享白名单/黑名单：逗号分隔的用户 id，编辑时可选喵。
   share_whitelist?: string
   share_blacklist?: string
+  // 共享名单模式：whitelist=白名单制 / blacklist=黑名单制 / 空=不限制，显式二选一喵。
+  share_list_mode?: string
   show_balance_enabled: boolean
   version?: number
 }
