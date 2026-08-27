@@ -668,7 +668,8 @@ func strictCustomDialContext(ctx context.Context, network string, address string
 	if allowInsecureCustomUpstream() {
 		return (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext(ctx, network, address)
 	}
-	if portError != nil || port != 443 {
+	// 喵~防御：端口必须落在合法范围（1-65535），允许 http（80）与非 443 端口，公网可达性由下方 IP 校验兜底喵。
+	if portError != nil || port <= 0 || port > 65535 {
 		return nil, errors.New("custom upstream port is invalid")
 	}
 	// 喵~防御：主机直接为 IP 时同样执行公开地址检查，防止绕过 DNS 路径喵。
