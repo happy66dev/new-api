@@ -2626,6 +2626,8 @@
     "Image size": "Размер изображения",
     "Image to Video": "Изображение в видео",
     "Image Tokens": "Токены изображений",
+    "Video Input": "Видео вход",
+    "Video Output": "Видео выход",
     "Image workspace": "Рабочая область изображений",
     "Imagine the pricing table has three groups: default (ratio 1.0), premium (ratio 0.5), and vip (ratio 0.8). Users whose account is in the vip group get user-level perks, and premium is a cheaper channel pool that users can pick for their tokens.": "Представьте, что в таблице тарифов три группы: default (коэффициент 1,0), premium (коэффициент 0,5) и vip (коэффициент 0,8). Пользователи из группы vip получают привилегии на уровне аккаунта, а premium — более дешёвый пул каналов, который пользователи могут выбирать для своих токенов.",
     "Import to CC Switch": "Импорт в CC Switch",

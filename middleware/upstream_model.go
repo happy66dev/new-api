@@ -699,7 +699,7 @@ func settleUserUpstreamModelCharge(c *gin.Context, ownerUserID int, upstreamMode
 	if isShared {
 		logUserID = c.GetInt("id")
 	}
-	promptTokens, completionTokens, cachedTokens, cacheCreationTokens, imageTokens, audioTokens, cacheCreation5mTokens, cacheCreation1hTokens := splitUpstreamModelUsage(usage)
+	promptTokens, completionTokens, cachedTokens, cacheCreationTokens, imageTokens, audioTokens, videoTokens, videoOutputTokens, cacheCreation5mTokens, cacheCreation1hTokens := splitUpstreamModelUsage(usage)
 	// 估计标记：usage 由文本估算而来（上游未返回 token 计数），供日志与前端展示「?」喵。
 	estimatedTokens := usage != nil && usage.BillingUsage != nil && usage.BillingUsage.Estimated
 	// Other 记录独立 RMB 计费明细，供日志详情与筛选展示喵。
@@ -723,6 +723,8 @@ func settleUserUpstreamModelCharge(c *gin.Context, ownerUserID int, upstreamMode
 		"cache_creation_1h_tokens": cacheCreation1hTokens,
 		"image_tokens":             imageTokens,
 		"audio_tokens":             audioTokens,
+		"video_tokens":             videoTokens,
+		"video_output_tokens":      videoOutputTokens,
 		"usage_available":          usage != nil,
 		"estimated_tokens":         estimatedTokens,
 		"is_shared_call":           isShared,
@@ -802,10 +804,10 @@ func recordUserUpstreamModelFailureLog(c *gin.Context, upstreamModel *model.User
 }
 
 // splitUpstreamModelUsage 从 usage 提取各 token 分类数，空 usage 全部回退为零喵。
-func splitUpstreamModelUsage(usage *dto.Usage) (promptTokens int, completionTokens int, cachedTokens int, cacheCreationTokens int, imageTokens int, audioTokens int, cacheCreation5mTokens int, cacheCreation1hTokens int) {
+func splitUpstreamModelUsage(usage *dto.Usage) (promptTokens int, completionTokens int, cachedTokens int, cacheCreationTokens int, imageTokens int, audioTokens int, videoTokens int, videoOutputTokens int, cacheCreation5mTokens int, cacheCreation1hTokens int) {
 	// 喵~防御：无 usage 时返回全零，避免空指针喵。
 	if usage == nil {
-		return 0, 0, 0, 0, 0, 0, 0, 0
+		return 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 	}
 	promptTokens = usage.PromptTokens
 	completionTokens = usage.CompletionTokens
@@ -813,9 +815,12 @@ func splitUpstreamModelUsage(usage *dto.Usage) (promptTokens int, completionToke
 	cacheCreationTokens = usage.PromptTokensDetails.CacheCreationTokensTotal()
 	imageTokens = usage.PromptTokensDetails.ImageTokens
 	audioTokens = usage.PromptTokensDetails.AudioTokens
+	// 视频分类：输入与输出分离提取，供独立 RMB 日志展示喵。
+	videoTokens = usage.PromptTokensDetails.VideoTokens
+	videoOutputTokens = usage.CompletionTokenDetails.VideoTokens
 	cacheCreation5mTokens = usage.ClaudeCacheCreation5mTokens
 	cacheCreation1hTokens = usage.ClaudeCacheCreation1hTokens
-	return promptTokens, completionTokens, cachedTokens, cacheCreationTokens, imageTokens, audioTokens, cacheCreation5mTokens, cacheCreation1hTokens
+	return promptTokens, completionTokens, cachedTokens, cacheCreationTokens, imageTokens, audioTokens, videoTokens, videoOutputTokens, cacheCreation5mTokens, cacheCreation1hTokens
 }
 
 // isUpstreamModelRequestStreaming 从可复用 JSON 请求确认客户端是否请求 SSE 流式输出喵。

@@ -12,6 +12,12 @@ func applyUsagePostProcessing(info *relaycommon.RelayInfo, usage *dto.Usage, res
 		return
 	}
 
+	// 通用归一化：中转站风格的 cache_read_input_tokens 与标准 cached_tokens 语义等价，
+	// 并入 CachedTokens 以便只读该字段的展示/计费路径同样正确喵。
+	if usage.PromptTokensDetails.CachedTokens == 0 && usage.PromptTokensDetails.CacheReadInputTokens > 0 {
+		usage.PromptTokensDetails.CachedTokens = usage.PromptTokensDetails.CacheReadInputTokens
+	}
+
 	switch info.ChannelType {
 	case constant.ChannelTypeDeepSeek:
 		if usage.PromptTokensDetails.CachedTokens == 0 && usage.PromptCacheHitTokens != 0 {
@@ -58,7 +64,8 @@ func extractCachedTokensFromBody(body []byte) (int, bool) {
 	var payload struct {
 		Usage struct {
 			PromptTokensDetails struct {
-				CachedTokens *int `json:"cached_tokens"`
+				CachedTokens        *int `json:"cached_tokens"`
+				CacheReadInputTokens *int `json:"cache_read_input_tokens"`
 			} `json:"prompt_tokens_details"`
 			CachedTokens         *int `json:"cached_tokens"`
 			PromptCacheHitTokens *int `json:"prompt_cache_hit_tokens"`
@@ -69,8 +76,12 @@ func extractCachedTokensFromBody(body []byte) (int, bool) {
 		return 0, false
 	}
 
+	// 优先标准 cached_tokens，其次中转站风格 cache_read_input_tokens，再回退顶层/缓存命中喵。
 	if payload.Usage.PromptTokensDetails.CachedTokens != nil {
 		return *payload.Usage.PromptTokensDetails.CachedTokens, true
+	}
+	if payload.Usage.PromptTokensDetails.CacheReadInputTokens != nil {
+		return *payload.Usage.PromptTokensDetails.CacheReadInputTokens, true
 	}
 	if payload.Usage.CachedTokens != nil {
 		return *payload.Usage.CachedTokens, true

@@ -103,6 +103,24 @@ func TestBuildClaudeUsageFromOpenAICacheWriteUsage(t *testing.T) {
 	assert.Equal(t, 3616, usage.BillingUsage.OpenAIUsage.PromptTokensDetails.CacheWriteTokens)
 }
 
+// TestBuildClaudeUsageFromOpenAIRespectsNonStandardCacheFields 验证中转站 cache_read/creation_input_tokens 正确映射进 Claude usage 喵。
+func TestBuildClaudeUsageFromOpenAIRespectsNonStandardCacheFields(t *testing.T) {
+	usage := buildClaudeUsageFromOpenAIUsage(&dto.Usage{
+		PromptTokens:     1000,
+		CompletionTokens: 20,
+		PromptTokensDetails: dto.InputTokenDetails{
+			CacheReadInputTokens:     300,
+			CacheCreationInputTokens: 50,
+		},
+	})
+
+	require.NotNil(t, usage)
+	// 缓存命中与缓存写入经归一化进入 Claude 对应字段，供上游按缓存价计费喵。
+	assert.Equal(t, 300, usage.CacheReadInputTokens)
+	assert.Equal(t, 50, usage.CacheCreationInputTokens)
+	assert.Equal(t, 20, usage.OutputTokens)
+}
+
 func TestStreamResponseOpenAI2ClaudeClosesTextThinkingAndToolBlocks(t *testing.T) {
 	info := &convmeta.Values{
 		ClaudeConvertInfo: &convmeta.ClaudeConvertInfo{

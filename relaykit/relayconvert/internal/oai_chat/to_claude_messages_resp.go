@@ -64,7 +64,7 @@ func buildClaudeUsageFromOpenAIUsage(oaiUsage *dto.Usage) *dto.ClaudeUsage {
 		// inside prompt_tokens, while Claude semantics reports input_tokens
 		// excluding both. Both counts are unadjusted prefixes and may overlap,
 		// so clamp a negative remainder at zero.
-		inputTokens = oaiUsage.PromptTokens - oaiUsage.PromptTokensDetails.CachedTokens - cacheCreationTokens
+		inputTokens = oaiUsage.PromptTokens - oaiUsage.PromptTokensDetails.CachedTokensTotal() - cacheCreationTokens
 		if inputTokens < 0 {
 			inputTokens = 0
 		}
@@ -73,7 +73,7 @@ func buildClaudeUsageFromOpenAIUsage(oaiUsage *dto.Usage) *dto.ClaudeUsage {
 		InputTokens:              inputTokens,
 		OutputTokens:             oaiUsage.CompletionTokens,
 		CacheCreationInputTokens: cacheCreationTokens,
-		CacheReadInputTokens:     oaiUsage.PromptTokensDetails.CachedTokens,
+		CacheReadInputTokens:     oaiUsage.PromptTokensDetails.CachedTokensTotal(),
 		BillingUsage:             billingUsage,
 	}
 	if cacheCreation5m > 0 || cacheCreation1h > 0 {

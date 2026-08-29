@@ -41,6 +41,27 @@ func TestCalculateUpstreamModelCostCents(t *testing.T) {
 			want: 96,
 		},
 		{
+			name:  "中转站 cache_read_input_tokens 按 cache_ratio 价格计费",
+			model: &model.UserUpstreamModel{ModelRatio: "10", CacheRatio: "0.1"},
+			usage: &dto.Usage{PromptTokens: 100000, PromptTokensDetails: dto.InputTokenDetails{CacheReadInputTokens: 10000}},
+			// 基础输入 90000×10 + 缓存命中 10000×0.1 = 901000 → 90 分喵。
+			want: 90,
+		},
+		{
+			name:  "中转站 cache_creation_input_tokens 按 cache_creation_ratio 价格计费",
+			model: &model.UserUpstreamModel{ModelRatio: "10", CacheCreationRatio: "2"},
+			usage: &dto.Usage{PromptTokens: 100000, PromptTokensDetails: dto.InputTokenDetails{CacheCreationInputTokens: 5000}},
+			// 基础输入 95000×10 + 缓存写入 5000×2 = 960000 → 96 分喵。
+			want: 96,
+		},
+		{
+			name:  "video_tokens 无独立价格留在基础输入价计费",
+			model: &model.UserUpstreamModel{ModelRatio: "10"},
+			usage: &dto.Usage{PromptTokens: 100000, PromptTokensDetails: dto.InputTokenDetails{VideoTokens: 20000}},
+			// 视频 token 无独立分类价，不单独扣减，仍按基础输入 10 元计费：100000×10 → 100 分喵。
+			want: 100,
+		},
+		{
 			name:  "Claude 5m/1h 缓存写入拆分计费",
 			model: &model.UserUpstreamModel{ModelRatio: "10", CacheCreationRatio: "1", CacheCreation5mRatio: "3", CacheCreation1hRatio: "5"},
 			usage: &dto.Usage{

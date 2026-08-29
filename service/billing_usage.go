@@ -123,6 +123,16 @@ func usageFromOpenAIBillingUsage(billingUsage *dto.BillingUsage) *dto.Usage {
 		if usage.PromptTokensDetails.CacheWriteTokens == 0 && inputDetails.CacheWriteTokens > 0 {
 			usage.PromptTokensDetails.CacheWriteTokens = inputDetails.CacheWriteTokens
 		}
+		// 中转站风格的缓存写入/命中与视频 token 一并从 input_tokens_details 并入喵。
+		if usage.PromptTokensDetails.CacheCreationInputTokens == 0 && inputDetails.CacheCreationInputTokens > 0 {
+			usage.PromptTokensDetails.CacheCreationInputTokens = inputDetails.CacheCreationInputTokens
+		}
+		if usage.PromptTokensDetails.CacheReadInputTokens == 0 && inputDetails.CacheReadInputTokens > 0 {
+			usage.PromptTokensDetails.CacheReadInputTokens = inputDetails.CacheReadInputTokens
+		}
+		if usage.PromptTokensDetails.VideoTokens == 0 && inputDetails.VideoTokens > 0 {
+			usage.PromptTokensDetails.VideoTokens = inputDetails.VideoTokens
+		}
 		if usage.PromptTokensDetails.TextTokens == 0 && inputDetails.TextTokens > 0 {
 			usage.PromptTokensDetails.TextTokens = inputDetails.TextTokens
 		}

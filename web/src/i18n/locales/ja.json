@@ -2626,6 +2626,8 @@
     "Image size": "画像サイズ",
     "Image to Video": "画像から動画",
     "Image Tokens": "画像トークン",
+    "Video Input": "ビデオ入力",
+    "Video Output": "ビデオ出力",
     "Image workspace": "画像ワークスペース",
     "Imagine the pricing table has three groups: default (ratio 1.0), premium (ratio 0.5), and vip (ratio 0.8). Users whose account is in the vip group get user-level perks, and premium is a cheaper channel pool that users can pick for their tokens.": "料金表に3つのグループがあるとします：default（倍率 1.0）、premium（倍率 0.5）、vip（倍率 0.8）。アカウントが vip グループのユーザーはユーザーレベルの特典を受けられ、premium はユーザーがトークン用に選べる安いチャネルプールです。",
     "Import to CC Switch": "CC Switch にインポート",

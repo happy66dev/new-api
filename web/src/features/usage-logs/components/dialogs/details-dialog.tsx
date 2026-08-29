@@ -481,6 +481,17 @@ function TokenBreakdown(props: { log: UsageLog; other: LogOtherData }) {
     })
   }
 
+  if (other.video && (other.video_input != null || other.video_output != null)) {
+    rows.push({
+      label: t('Video Input'),
+      value: (other.video_input ?? 0).toLocaleString(),
+    })
+    rows.push({
+      label: t('Video Output'),
+      value: (other.video_output ?? 0).toLocaleString(),
+    })
+  }
+
   return (
     <DetailSection label={t('Token Breakdown')}>
       {rows.map((row) => (

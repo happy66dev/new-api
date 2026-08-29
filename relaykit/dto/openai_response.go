@@ -261,15 +261,22 @@ type InputTokenDetails struct {
 	// input_tokens_details.cache_write_tokens (Responses). It is billed at the
 	// cache-creation price.
 	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
-	TextTokens       int `json:"text_tokens"`
-	AudioTokens      int `json:"audio_tokens"`
-	ImageTokens      int `json:"image_tokens"`
+	// CacheCreationInputTokens 是 DeepSeek/中转站风格的缓存写入计数（与 Claude 语义同名），按缓存创建价计费喵。
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	// CacheReadInputTokens 是 DeepSeek/中转站风格的缓存命中计数，与 cached_tokens 语义等价，按缓存折扣价计费喵。
+	CacheReadInputTokens int `json:"cache_read_input_tokens,omitempty"`
+	TextTokens           int `json:"text_tokens"`
+	AudioTokens          int `json:"audio_tokens"`
+	ImageTokens          int `json:"image_tokens"`
+	// VideoTokens 视频输入 token；new-api 无独立视频价格，计费时留在基础文本价内、不单独扣减喵。
+	VideoTokens int `json:"video_tokens,omitempty"`
 }
 
 // CacheCreationTokensTotal returns the cache-write token count regardless of
 // which field the upstream reported it in: Claude-derived conversions populate
-// CachedCreationTokens while OpenAI reports cache_write_tokens natively. Both
-// are billed at the cache-creation price; when both are present the larger
+// CachedCreationTokens while OpenAI reports cache_write_tokens natively, and
+// DeepSeek/中转站 style upstreams report cache_creation_input_tokens. All are
+// billed at the cache-creation price; when multiple are present the largest
 // value wins so the same tokens are never double-counted. Negative upstream
 // values are clamped to zero so they can never lower a charge.
 func (d InputTokenDetails) CacheCreationTokensTotal() int {
@@ -277,6 +284,23 @@ func (d InputTokenDetails) CacheCreationTokensTotal() int {
 	if d.CacheWriteTokens > total {
 		total = d.CacheWriteTokens
 	}
+	if d.CacheCreationInputTokens > total {
+		total = d.CacheCreationInputTokens
+	}
+	if total < 0 {
+		return 0
+	}
+	return total
+}
+
+// CachedTokensTotal returns the cache-hit token count across both spellings:
+// the OpenAI/Claude standard cached_tokens and the DeepSeek/中转站 style
+// cache_read_input_tokens. Both mean "prefix cache hit" and bill at the cache
+// discount price. They are summed (not maxed) because distinct upstreams fill
+// one or the other; if a single upstream reports both, it counts both token
+// groups. Negative values are clamped to zero so they can never lower a charge.
+func (d InputTokenDetails) CachedTokensTotal() int {
+	total := d.CachedTokens + d.CacheReadInputTokens
 	if total < 0 {
 		return 0
 	}
@@ -288,6 +312,12 @@ type OutputTokenDetails struct {
 	AudioTokens     int `json:"audio_tokens"`
 	ImageTokens     int `json:"image_tokens"`
 	ReasoningTokens int `json:"reasoning_tokens"`
+	// VideoTokens 视频输出 token；无独立视频价格，计费时并入文本输出价喵。
+	VideoTokens int `json:"video_tokens,omitempty"`
+	// AcceptedPredictionTokens 投机解码中被上游接受的预测 token，已计入 completion_tokens，仅供展示喵。
+	AcceptedPredictionTokens int `json:"accepted_prediction_tokens,omitempty"`
+	// RejectedPredictionTokens 投机解码中被上游丢弃的预测 token，不产生费用，仅供展示喵。
+	RejectedPredictionTokens int `json:"rejected_prediction_tokens,omitempty"`
 }
 
 type OpenAIResponsesResponse struct {

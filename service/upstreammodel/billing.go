@@ -32,8 +32,9 @@ func CalculateUpstreamModelCostCents(upstreamModel *model.UserUpstreamModel, usa
 	audioCompletionRatio := parseRatio(upstreamModel.AudioCompletionRatio)
 
 	// 提取各分类 token 数量，缓存命中与缓存写入从基础输入中扣除喵。
+	// 缓存命中用 CachedTokensTotal 同时覆盖 cached_tokens 与中转站的 cache_read_input_tokens 喵。
 	promptTokens := int64(usage.PromptTokens)
-	cachedTokens := int64(usage.PromptTokensDetails.CachedTokens)
+	cachedTokens := int64(usage.PromptTokensDetails.CachedTokensTotal())
 	cacheCreationTokens := int64(usage.PromptTokensDetails.CacheCreationTokensTotal())
 	imageTokens := int64(usage.PromptTokensDetails.ImageTokens)
 	audioTokens := int64(usage.PromptTokensDetails.AudioTokens)

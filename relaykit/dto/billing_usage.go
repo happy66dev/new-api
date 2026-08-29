@@ -89,12 +89,18 @@ func HasOpenAIUsageTokens(usage *Usage) bool {
 	if usage.PromptTokensDetails.CachedTokens != 0 ||
 		usage.PromptTokensDetails.CachedCreationTokens != 0 ||
 		usage.PromptTokensDetails.CacheWriteTokens != 0 ||
+		usage.PromptTokensDetails.CacheCreationInputTokens != 0 ||
+		usage.PromptTokensDetails.CacheReadInputTokens != 0 ||
+		usage.PromptTokensDetails.VideoTokens != 0 ||
 		usage.PromptTokensDetails.TextTokens != 0 ||
 		usage.PromptTokensDetails.ImageTokens != 0 ||
 		usage.PromptTokensDetails.AudioTokens != 0 {
 		return true
 	}
 	if usage.CompletionTokenDetails.ReasoningTokens != 0 ||
+		usage.CompletionTokenDetails.VideoTokens != 0 ||
+		usage.CompletionTokenDetails.AcceptedPredictionTokens != 0 ||
+		usage.CompletionTokenDetails.RejectedPredictionTokens != 0 ||
 		usage.CompletionTokenDetails.TextTokens != 0 ||
 		usage.CompletionTokenDetails.ImageTokens != 0 ||
 		usage.CompletionTokenDetails.AudioTokens != 0 {

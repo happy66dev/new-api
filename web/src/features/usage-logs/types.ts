@@ -200,6 +200,10 @@ export interface LogOtherData {
   image?: boolean
   image_ratio?: number
   image_output?: number
+  // 视频 token 分类（非文本输入），与 image/audio 对称展示喵。
+  video?: boolean
+  video_input?: number
+  video_output?: number
   web_search?: boolean
   web_search_call_count?: number
   web_search_price?: number

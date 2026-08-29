@@ -78,6 +78,8 @@ type textQuotaSummary struct {
 	CacheCreationTokens1h  int
 	ImageTokens            int
 	AudioTokens            int
+	VideoTokens            int
+	VideoOutputTokens      int
 	ModelName              string
 	TokenName              string
 	UseTimeSeconds         int64
@@ -287,12 +289,15 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 	summary.PromptTokens = usage.PromptTokens
 	summary.CompletionTokens = usage.CompletionTokens
 	summary.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-	summary.CacheTokens = usage.PromptTokensDetails.CachedTokens
+	summary.CacheTokens = usage.PromptTokensDetails.CachedTokensTotal()
 	summary.CacheCreationTokens = usage.PromptTokensDetails.CacheCreationTokensTotal()
 	summary.CacheCreationTokens5m = usage.ClaudeCacheCreation5mTokens
 	summary.CacheCreationTokens1h = usage.ClaudeCacheCreation1hTokens
 	summary.ImageTokens = usage.PromptTokensDetails.ImageTokens
 	summary.AudioTokens = usage.PromptTokensDetails.AudioTokens
+	// 视频 token：输入与输出分离记录，供日志展示；计费无独立视频价，留在基础文本价内喵。
+	summary.VideoTokens = usage.PromptTokensDetails.VideoTokens
+	summary.VideoOutputTokens = usage.CompletionTokenDetails.VideoTokens
 	legacyClaudeDerived := isLegacyClaudeDerivedOpenAIUsage(relayInfo, usage)
 	isOpenRouterClaudeBilling := relayInfo.ChannelMeta != nil &&
 		relayInfo.ChannelType == constant.ChannelTypeOpenRouter &&
@@ -525,6 +530,12 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		other["image"] = true
 		other["image_ratio"] = summary.ImageRatio
 		other["image_output"] = summary.ImageTokens
+	}
+	if summary.VideoTokens != 0 || summary.VideoOutputTokens != 0 {
+		// 视频 token 参考 image/audio 非文本输入日志：标记 video 并记录输入/输出分类 token 喵。
+		other["video"] = true
+		other["video_input"] = summary.VideoTokens
+		other["video_output"] = summary.VideoOutputTokens
 	}
 	appendToolSurchargeLogInfo(other, summary.ToolSurchargeItems)
 	if summary.AudioInputPrice > 0 && summary.AudioTokens > 0 {

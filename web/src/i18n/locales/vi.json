@@ -2626,6 +2626,8 @@
     "Image size": "Kích thước ảnh",
     "Image to Video": "Ảnh sang video",
     "Image Tokens": "Token hình ảnh",
+    "Video Input": "Video đầu vào",
+    "Video Output": "Video đầu ra",
     "Image workspace": "Không gian ảnh",
     "Imagine the pricing table has three groups: default (ratio 1.0), premium (ratio 0.5), and vip (ratio 0.8). Users whose account is in the vip group get user-level perks, and premium is a cheaper channel pool that users can pick for their tokens.": "Giả sử bảng định giá có ba nhóm: default (hệ số 1.0), premium (hệ số 0.5) và vip (hệ số 0.8). Người dùng có tài khoản thuộc nhóm vip nhận ưu đãi cấp người dùng, còn premium là một nhóm kênh rẻ hơn mà người dùng có thể chọn cho token của mình.",
     "Import to CC Switch": "Nhập vào CC Switch",
