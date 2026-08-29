@@ -6038,6 +6038,8 @@
     "Enter a new API Key to save this custom candidate": "Enter a new API Key to save this custom candidate",
     "Enter upstream API Key": "Enter upstream API Key",
     "Authentication style": "Authentication style",
+    "API type": "Loại API",
+    "OpenAI-compatible by default; Anthropic enables native format conversion": "Mặc định tương thích OpenAI; Anthropic bật chuyển đổi định dạng gốc",
     "Request Customization": "Request Customization",
     "Custom headers and field replacements for upstream requests": "Custom headers and field replacements for upstream requests",
     "Custom request headers": "Custom request headers",

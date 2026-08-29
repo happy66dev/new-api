@@ -35,6 +35,173 @@ func abortUpstreamModelQuotaExhausted(c *gin.Context) {
 	abortWithOpenAiMessage(c, http.StatusConflict, "user upstream model quota exhausted", types.ErrorCode("upstream_model_quota_exhausted"))
 }
 
+// userUpstreamModelRelayContext 保存自定义上游 relay 执行的结算上下文喵。
+type userUpstreamModelRelayContext struct {
+	upstreamModel    *model.UserUpstreamModel
+	ownerUserID      int
+	isShared         bool
+	group            string
+	preConsumedCents int64
+	startTime        time.Time
+	// settled 标记本次请求是否已完成差额结算，未结算时由 Distribute 兜底 defer 退还预扣喵。
+	settled bool
+}
+
+// getUserUpstreamModelRelayContext 读取自定义上游 relay 的结算上下文，不存在时返回 nil 喵。
+func getUserUpstreamModelRelayContext(c *gin.Context) *userUpstreamModelRelayContext {
+	value, found := common.GetContextKey(c, constant.ContextKeyUpstreamModelRelayContext)
+	if !found {
+		return nil
+	}
+	relayCtx, ok := value.(*userUpstreamModelRelayContext)
+	if !ok {
+		return nil
+	}
+	return relayCtx
+}
+
+// IsUpstreamModelRelayRequest 判断请求是否已注入自定义上游临时渠道、应走原生 relay 中转链喵。
+func IsUpstreamModelRelayRequest(c *gin.Context) bool {
+	// 喵~防御：空上下文按非 relay 处理，避免空指针喵。
+	if c == nil {
+		return false
+	}
+	return common.GetContextKeyBool(c, constant.ContextKeyUpstreamModelRelay)
+}
+
+// userUpstreamAPITypeToChannelType 把上游 API 类型映射为临时渠道类型，未知类型按 OpenAI 兼容兜底喵。
+func userUpstreamAPITypeToChannelType(apiType string) int {
+	switch strings.ToLower(strings.TrimSpace(apiType)) {
+	case model.UserUpstreamAPITypeAnthropic:
+		return constant.ChannelTypeAnthropic
+	default:
+		return constant.ChannelTypeOpenAI
+	}
+}
+
+// setupUserUpstreamModelRelay 构造临时渠道注入 context，让请求走原生 relay 中转链喵。
+// 渠道信息（类型/base_url/key/model）写入 context，relay 的 getChannel 与 InitChannelMeta 直接读取喵。
+func setupUserUpstreamModelRelay(c *gin.Context, upstreamModel *model.UserUpstreamModel, baseURL string, apiKey string, isShared bool, group string, preConsumedCents int64, startTime time.Time) bool {
+	// 喵~防御：空上下文或空模型对象直接失败，避免空指针喵。
+	if c == nil || upstreamModel == nil {
+		return false
+	}
+	// 按上游 API 类型映射临时渠道类型，OpenAI 兼容为默认喵。
+	channelType := userUpstreamAPITypeToChannelType(upstreamModel.APIType)
+	baseURLValue := baseURL
+	tempChannel := &model.Channel{
+		Type:    channelType,
+		BaseURL: &baseURLValue,
+		Key:     apiKey,
+		Name:    "user/" + upstreamModel.NormalizedName,
+	}
+	// 注入渠道上下文：original/selected model 与 base_url/key/channel_type 等，供 relay 读取喵。
+	if setupError := SetupContextForSelectedChannel(c, tempChannel, upstreamModel.RealModelName); setupError != nil {
+		// 实体状态检测：渠道注入失败按配置态处理，不改变成功率喵。
+		recordUpstreamModelProbeState(upstreamModel, isShared, false, false, "", startTime, upstreamProbeExtras{})
+		abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "user upstream model is not available", types.ErrorCode("upstream_model_unavailable"))
+		return false
+	}
+	// 保存结算上下文并标记 relay 执行，Distribute 据此跳过普通渠道选择喵。
+	common.SetContextKey(c, constant.ContextKeyUpstreamModelRelay, true)
+	common.SetContextKey(c, constant.ContextKeyUpstreamModelRelayContext, &userUpstreamModelRelayContext{
+		upstreamModel:    upstreamModel,
+		ownerUserID:      upstreamModel.OwnerUserID,
+		isShared:         isShared,
+		group:            group,
+		preConsumedCents: preConsumedCents,
+		startTime:        startTime,
+	})
+	return true
+}
+
+// getUpstreamModelRelayUsage 读取自定义上游 relay 执行成功后的 usage 喵。
+func getUpstreamModelRelayUsage(c *gin.Context) *dto.Usage {
+	value, found := common.GetContextKey(c, constant.ContextKeyUpstreamModelUsage)
+	if !found {
+		return nil
+	}
+	usage, ok := value.(*dto.Usage)
+	if !ok {
+		return nil
+	}
+	return usage
+}
+
+// SettleUpstreamModelRelaySuccess 在自定义上游 relay 成功后完成独立 RMB 结算与状态探测喵。
+// 由 controller.Relay 成功分支调用；ttftMs 为响应头到达耗时（毫秒），零表示未测到喵。
+func SettleUpstreamModelRelaySuccess(c *gin.Context, ttftMs int64) {
+	relayCtx := getUserUpstreamModelRelayContext(c)
+	// 喵~防御：非自定义上游或缺少结算上下文时跳过，普通请求不产生任何写入喵。
+	if c == nil || relayCtx == nil || relayCtx.upstreamModel == nil {
+		return
+	}
+	usage := getUpstreamModelRelayUsage(c)
+	// 耗时口径：总耗时取请求入口到当前，首字优先取请求级打点，其次上游 TTFT 兜底喵。
+	requestElapsedMs := time.Since(relayCtx.startTime).Milliseconds()
+	requestFirstByteMs := ttftMs
+	if firstByteMs := virtualModelFirstByteMs(c); firstByteMs > 0 {
+		requestFirstByteMs = firstByteMs
+	}
+	// 成功结算：上游模型探测成功 + 独立 RMB 结算 + 日志喵。
+	result := &virtualmodelservice.UserUpstreamModelExecutionResult{Usage: usage, TtftMs: ttftMs}
+	recordUpstreamModelProbeState(relayCtx.upstreamModel, relayCtx.isShared, true, true, "", relayCtx.startTime, buildUpstreamProbeExtras(result))
+	settleUserUpstreamModelCharge(c, relayCtx.ownerUserID, relayCtx.upstreamModel, usage, relayCtx.group, isUpstreamModelRequestStreaming(c), int(requestElapsedMs/1000), relayCtx.isShared, requestFirstByteMs, relayCtx.preConsumedCents)
+	relayCtx.settled = true
+	// 虚拟模型上下文：记录候选成功尝试摘要与候选/整体成功样本喵。
+	if executionState, foundState := getVirtualModelExecutionState(c); foundState && executionState != nil && executionState.currentCandidateIndex >= 0 && executionState.currentCandidateIndex < len(executionState.executionSnapshot.Candidates) {
+		currentCandidate := executionState.executionSnapshot.Candidates[executionState.currentCandidateIndex]
+		appendVirtualModelCandidateAttempt(c, model.VirtualModelCandidateAttemptRecord{
+			Seq:         currentVirtualModelCandidateSeq(c),
+			CandidateID: currentCandidate.CandidateID,
+			Source:      "internal",
+			Label:       buildVirtualModelAttemptLabel(&currentCandidate, currentCandidate.RealModelName),
+			Success:     true,
+			StatusCode:  http.StatusOK,
+			TtftMs:      ttftMs,
+			ElapsedMs:   time.Since(relayCtx.startTime).Milliseconds(),
+		})
+		recordVirtualModelProbeSuccess(c, executionState, currentCandidate.CandidateID, usage, requestFirstByteMs)
+	}
+}
+
+// HandleUpstreamModelRelayFailure 在自定义上游 relay 最终失败时退还预扣并记录失败日志与探测喵。
+// 错误正文由 controller.Relay 的收尾逻辑按客户端格式输出喵。
+func HandleUpstreamModelRelayFailure(c *gin.Context, newAPIError *types.NewAPIError) {
+	relayCtx := getUserUpstreamModelRelayContext(c)
+	// 喵~防御：缺少结算上下文时按通用失败处理，普通请求不产生任何写入喵。
+	if c == nil || relayCtx == nil || relayCtx.upstreamModel == nil {
+		return
+	}
+	errorClass := "upstream_unavailable"
+	statusCode := http.StatusBadGateway
+	if newAPIError != nil {
+		if newAPIError.StatusCode > 0 {
+			statusCode = newAPIError.StatusCode
+		}
+		errorClass = string(newAPIError.GetErrorCode())
+		// 喵~防御：错误码为空时回退通用分类喵。
+		if errorClass == "" {
+			errorClass = "upstream_unavailable"
+		}
+	}
+	// 退还预扣：请求未结算时释放预扣金额，避免额度被永久锁定喵。
+	if relayCtx.preConsumedCents > 0 && !relayCtx.settled {
+		if refundError := model.AdjustUserUpstreamModelCharge(relayCtx.upstreamModel.ID, relayCtx.ownerUserID, -relayCtx.preConsumedCents, relayCtx.isShared); refundError != nil {
+			common.SysError("user upstream model relay failure refund failed: " + refundError.Error())
+		}
+		relayCtx.settled = true
+	}
+	// 实体状态检测：上游模型失败计入失败喵。
+	recordUpstreamModelProbeState(relayCtx.upstreamModel, relayCtx.isShared, true, false, errorClass, relayCtx.startTime, upstreamProbeExtras{})
+	// 失败日志：非虚拟上下文直接写，虚拟上下文由候选链最终失败路径兜底写喵。
+	if _, inVirtualModelContext := getVirtualModelExecutionState(c); !inVirtualModelContext {
+		recordUserUpstreamModelFailureLog(c, relayCtx.upstreamModel, relayCtx.isShared, relayCtx.group, &virtualmodelservice.CustomCandidateExecutionFailure{
+			Failure: virtualmodelservice.CandidateFailure{ErrorClass: errorClass, HTTPStatus: statusCode},
+		}, relayCtx.startTime)
+	}
+}
+
 // handleUserUpstreamModelRequest 验证用户上游模型授权、执行透传并完成独立 RMB 计费喵。
 // 返回 false 表示请求已经被完全处理（成功或失败），调用方应停止继续分发喵。
 // 虚拟模型 user/xxx 内部候选失败切换候选时返回 true，让 Distribute 循环重新分发新的 user/xxx 候选喵。
@@ -88,19 +255,8 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 		abortUpstreamModelQuotaExhausted(c)
 		return false
 	}
-	// 活跃请求注册：进入上游模型活跃计数，函数返回（含错误路径）时统一退出喵。
+	// 活跃请求注册：进入上游模型活跃计数喵。
 	EnterUpstreamModelInflight(upstreamModel.ID, upstreamModel.UserUpstreamModelName(), isShared)
-	defer ExitUpstreamModelInflight(upstreamModel.ID, isShared)
-	// settled 标记本次请求是否已完成差额结算；未结算时由 defer 在函数退出前退还预扣喵。
-	settled := false
-	defer func() {
-		// 喵~防御：请求结束仍未结算（透传失败）时退还预扣金额，避免额度被永久锁定喵。
-		if preConsumedCents > 0 && !settled {
-			if refundError := model.AdjustUserUpstreamModelCharge(upstreamModel.ID, upstreamModel.OwnerUserID, -preConsumedCents, isShared); refundError != nil {
-				common.SysError("user upstream model pre-consume refund failed: " + refundError.Error())
-			}
-		}
-	}()
 	baseURL, decryptBaseURLError := virtualmodelservice.DecryptCredential(upstreamModel.EncryptedBaseURL, upstreamModel.CredentialVersion)
 	apiKey, decryptAPIKeyError := virtualmodelservice.DecryptCredential(upstreamModel.EncryptedAPIKey, upstreamModel.CredentialVersion)
 	// 喵~防御：凭据密文篡改、主密钥缺失或解密失败均只返回受控不可用错误，不泄露秘密或密文状态喵。
@@ -108,6 +264,30 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 		// 凭据解密失败计入失败（反映配置问题），记录受控错误分类喵。
 		recordUpstreamModelProbeState(upstreamModel, isShared, true, false, "credential_error", startTime, upstreamProbeExtras{})
 		abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "user upstream model is not available", types.ErrorCode("upstream_model_unavailable"))
+		return false
+	}
+	// 虚拟模型 user/xxx 候选：保持哑代理透传（候选链编排依赖同步执行），请求同步结束后退出活跃计数喵。
+	if _, inVirtualModelContext := getVirtualModelExecutionState(c); inVirtualModelContext {
+		defer ExitUpstreamModelInflight(upstreamModel.ID, isShared)
+		return executeUserUpstreamModelPassthrough(c, upstreamModel, modelRequest, baseURL, apiKey, isShared, preConsumedCents, startTime)
+	}
+	// 非虚拟 user/xxx 直调：注入临时渠道走原生 relay 中转链（自动格式转换与流式处理）喵。
+	requestGroup := modelRequest.Group
+	if !setupUserUpstreamModelRelay(c, upstreamModel, baseURL, apiKey, isShared, requestGroup, preConsumedCents, startTime) {
+		// 注入失败：请求已终结，退出活跃计数喵。
+		ExitUpstreamModelInflight(upstreamModel.ID, isShared)
+		return false
+	}
+	// 注入成功：返回 false，Distribute 检测到 relay 标记后继续走 controller.Relay；活跃计数由 Distribute relay 分支执行完毕后统一退出喵。
+	return false
+}
+
+// executeUserUpstreamModelPassthrough 虚拟模型 user/xxx 候选的哑代理透传执行喵。
+// 虚拟候选链依赖同步透传做失败规则编排（retry/next/freeze/passthrough），
+// 在虚拟模型候选 relay 化完成前保持此过渡路径，避免破坏候选链行为喵。
+func executeUserUpstreamModelPassthrough(c *gin.Context, upstreamModel *model.UserUpstreamModel, modelRequest *ModelRequest, baseURL string, apiKey string, isShared bool, preConsumedCents int64, startTime time.Time) bool {
+	// 喵~防御：空上下文或空模型对象直接终止，避免空指针喵。
+	if c == nil || upstreamModel == nil {
 		return false
 	}
 	// 超时：模型配置了超时秒数时使用配置值，否则回退默认 60 秒喵。
@@ -150,23 +330,6 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 			abortWithOpenAiMessage(c, http.StatusBadGateway, "user upstream model is unavailable", types.ErrorCode("upstream_model_unavailable"))
 			return false
 		}
-		// 非虚拟上下文：把受限错误响应原样回传客户端，保持上游错误可读喵。
-		if !inVirtualModelContext {
-			// 诊断日志：记录结构化失败的具体原因（错误分类、HTTP 状态与底层错误），供用户上游连接问题定位喵。
-			common.SysError(fmt.Sprintf("user upstream model request failed: model=%s error_class=%s http_status=%d cause=%v", upstreamModel.UserUpstreamModelName(), customFailure.Failure.ErrorClass, customFailure.Failure.HTTPStatus, customFailure.Cause))
-			// 实体状态检测：上游 4xx/5xx 透传失败计入失败喵。
-			recordUpstreamModelProbeState(upstreamModel, isShared, true, false, upstreamModelFailureErrorClass(executionResult.Err), startTime, upstreamProbeExtras{})
-			// 失败日志：记录本次上游错误供日志页排查，与成功结算同口径喵。
-			recordUserUpstreamModelFailureLog(c, upstreamModel, isShared, modelRequest.Group, customFailure, startTime)
-			// 上游返回了 HTTP 错误时按状态码透传；2xx 内嵌的 SSE error 事件也携带错误正文原样透传，仅网络类失败才回退通用错误喵。
-			if len(customFailure.ResponseBody) > 0 || customFailure.Failure.HTTPStatus >= http.StatusBadRequest {
-				virtualmodelservice.CopyCustomPassthroughResponse(c.Writer, customFailure.ResponseHeaders, customFailure.Failure.HTTPStatus, customFailure.ResponseBody)
-				c.Abort()
-				return false
-			}
-			abortWithOpenAiMessage(c, http.StatusBadGateway, "user upstream model is unavailable", types.ErrorCode("upstream_model_unavailable"))
-			return false
-		}
 		// 虚拟模型上下文：按失败规则决策动作并推进候选链喵。
 		outcome := handleVirtualModelUpstreamFailure(c, upstreamModel, isShared, customFailure, startTime)
 		if outcome != virtualModelUpstreamFailureRetry {
@@ -186,46 +349,38 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 			return false
 		}
 	}
-	// 耗时口径：虚拟模型上下文取请求级（new-api 接收请求 → 首次写响应 / 请求完成），非虚拟上下文沿用候选级喵。
+	// 耗时口径：虚拟模型上下文取请求级（new-api 接收请求 → 首次写响应 / 请求完成）喵。
 	requestElapsedMs := time.Since(startTime).Milliseconds()
 	requestFirstByteMs := executionResult.TtftMs
-	if inVirtualModelContext {
-		if executionState, foundState := getVirtualModelExecutionState(c); foundState && executionState != nil && !executionState.startTime.IsZero() {
-			requestElapsedMs = time.Since(executionState.startTime).Milliseconds()
-		}
-		// 请求级首字：首次向客户端写响应时刻减请求入口时刻；未打点时回退上游 TTFT 兜底喵。
-		if firstByteMs := virtualModelFirstByteMs(c); firstByteMs > 0 {
-			requestFirstByteMs = firstByteMs
-		}
+	if executionState, foundState := getVirtualModelExecutionState(c); foundState && executionState != nil && !executionState.startTime.IsZero() {
+		requestElapsedMs = time.Since(executionState.startTime).Milliseconds()
+	}
+	// 请求级首字：首次向客户端写响应时刻减请求入口时刻；未打点时回退上游 TTFT 兜底喵。
+	if firstByteMs := virtualModelFirstByteMs(c); firstByteMs > 0 {
+		requestFirstByteMs = firstByteMs
 	}
 	// 虚拟模型 user/xxx 内部候选成功：先追加成功尝试摘要，确保日志写入时候选序列已包含本次成功喵。
-	if inVirtualModelContext {
-		if executionState, foundState := getVirtualModelExecutionState(c); foundState && executionState != nil && executionState.currentCandidateIndex >= 0 && executionState.currentCandidateIndex < len(executionState.executionSnapshot.Candidates) {
-			currentCandidate := executionState.executionSnapshot.Candidates[executionState.currentCandidateIndex]
-			appendVirtualModelCandidateAttempt(c, model.VirtualModelCandidateAttemptRecord{
-				Seq:          currentVirtualModelCandidateSeq(c),
-				CandidateID:  currentCandidate.CandidateID,
-				Source:       "internal",
-				Label:        buildVirtualModelAttemptLabel(&currentCandidate, currentCandidate.RealModelName),
-				Success:      true,
-				StatusCode:   http.StatusOK,
-				// 候选尝试序列展示该候选自己的耗时（模型级口径）：首字取上游响应头到达，总耗时取候选启动到当前喵。
-				TtftMs:    executionResult.TtftMs,
-				ElapsedMs: time.Since(startTime).Milliseconds(),
-			})
-		}
+	if executionState, foundState := getVirtualModelExecutionState(c); foundState && executionState != nil && executionState.currentCandidateIndex >= 0 && executionState.currentCandidateIndex < len(executionState.executionSnapshot.Candidates) {
+		currentCandidate := executionState.executionSnapshot.Candidates[executionState.currentCandidateIndex]
+		appendVirtualModelCandidateAttempt(c, model.VirtualModelCandidateAttemptRecord{
+			Seq:          currentVirtualModelCandidateSeq(c),
+			CandidateID:  currentCandidate.CandidateID,
+			Source:       "internal",
+			Label:        buildVirtualModelAttemptLabel(&currentCandidate, currentCandidate.RealModelName),
+			Success:      true,
+			StatusCode:   http.StatusOK,
+			// 候选尝试序列展示该候选自己的耗时（模型级口径）：首字取上游响应头到达，总耗时取候选启动到当前喵。
+			TtftMs:    executionResult.TtftMs,
+			ElapsedMs: time.Since(startTime).Milliseconds(),
+		})
 	}
 	// 成功透传计入成功，随后按独立 RMB 计费系统扣费与写日志；共享调用免费只累计共享消耗喵。
 	recordUpstreamModelProbeState(upstreamModel, isShared, true, true, "", startTime, buildUpstreamProbeExtras(executionResult))
 	settleUserUpstreamModelCharge(c, upstreamModel.OwnerUserID, upstreamModel, executionResult.Usage, modelRequest.Group, isUpstreamModelRequestStreaming(c), int(requestElapsedMs/1000), isShared, requestFirstByteMs, preConsumedCents)
-	// 已按差额结算完毕，defer 不再退还预扣喵。
-	settled = true
 	// 虚拟模型 user/xxx 内部候选成功：记录候选与整体成功样本，供虚拟模型状态监控展示喵。
-	if inVirtualModelContext {
-		if executionState, foundState := getVirtualModelExecutionState(c); foundState && executionState != nil && executionState.currentCandidateIndex >= 0 && executionState.currentCandidateIndex < len(executionState.executionSnapshot.Candidates) {
-			currentCandidate := executionState.executionSnapshot.Candidates[executionState.currentCandidateIndex]
-			recordVirtualModelProbeSuccess(c, executionState, currentCandidate.CandidateID, executionResult.Usage, requestFirstByteMs)
-		}
+	if executionState, foundState := getVirtualModelExecutionState(c); foundState && executionState != nil && executionState.currentCandidateIndex >= 0 && executionState.currentCandidateIndex < len(executionState.executionSnapshot.Candidates) {
+		currentCandidate := executionState.executionSnapshot.Candidates[executionState.currentCandidateIndex]
+		recordVirtualModelProbeSuccess(c, executionState, currentCandidate.CandidateID, executionResult.Usage, requestFirstByteMs)
 	}
 	c.Abort()
 	return false

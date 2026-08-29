@@ -59,6 +59,79 @@ func relayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIErro
 	return err
 }
 
+// relayUpstreamModel 执行自定义上游的 relay 中转链，自动做请求/响应格式转换喵。
+// 渠道已由 middleware 注入 context（临时渠道），relay 的 getChannel 直接使用；
+// 成功时由 middleware 完成独立 RMB 结算，失败时退还预扣并由调用方按客户端格式输出错误喵。
+func relayUpstreamModel(c *gin.Context, relayInfo *relaycommon.RelayInfo, relayFormat types.RelayFormat) *types.NewAPIError {
+	var newAPIError *types.NewAPIError
+candidateRelayLoop:
+	for {
+		retryParam := &service.RetryParam{
+			Ctx:         c,
+			TokenGroup:  relayInfo.TokenGroup,
+			ModelName:   relayInfo.OriginModelName,
+			RequestPath: c.Request.URL.Path,
+			Retry:       common.GetPointer(0),
+		}
+		relayInfo.RetryIndex = 0
+		relayInfo.LastError = nil
+
+		for ; ; retryParam.IncreaseRetry() {
+			relayInfo.RetryIndex = retryParam.GetRetry()
+			channel, channelErr := getChannel(c, relayInfo, retryParam)
+			if channelErr != nil {
+				logger.LogError(c, channelErr.Error())
+				newAPIError = channelErr
+				break
+			}
+			addUsedChannel(c, channel.Id)
+			bodyStorage, bodyErr := common.GetBodyStorage(c)
+			if bodyErr != nil {
+				// 请求体不可复用按 400 拒绝，与普通 relay 路径一致喵。
+				newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+				break
+			}
+			c.Request.Body = io.NopCloser(bodyStorage)
+
+			switch relayFormat {
+			case types.RelayFormatClaude:
+				newAPIError = relay.ClaudeHelper(c, relayInfo)
+			case types.RelayFormatGemini:
+				newAPIError = geminiRelayHandler(c, relayInfo)
+			default:
+				newAPIError = relayHandler(c, relayInfo)
+			}
+
+			if newAPIError == nil {
+				relayInfo.LastError = nil
+				// 自定义上游成功：TTFT 取响应头到达减请求入口，交 middleware 完成独立 RMB 结算与日志喵。
+				internalTtftMs := int64(0)
+				if !relayInfo.FirstResponseTime.IsZero() {
+					internalTtftMs = relayInfo.FirstResponseTime.Sub(relayInfo.StartTime).Milliseconds()
+				}
+				middleware.SettleUpstreamModelRelaySuccess(c, internalTtftMs)
+				return nil
+			}
+
+			newAPIError = service.NormalizeViolationFeeError(newAPIError)
+			relayInfo.LastError = newAPIError
+			processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
+
+			retryTimes := getRetryTimesForCurrentGroup(c, relayInfo.TokenGroup)
+			if !shouldRetry(c, newAPIError, retryTimes-retryParam.GetRetry()) {
+				break
+			}
+		}
+
+		if newAPIError != nil {
+			// 自定义上游 relay 失败：退款与失败日志/探测由 middleware 收尾，虚拟候选编排在虚拟上下文生效喵。
+			middleware.HandleUpstreamModelRelayFailure(c, newAPIError)
+		}
+		break candidateRelayLoop
+	}
+	return newAPIError
+}
+
 func geminiRelayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIError {
 	var err *types.NewAPIError
 	if strings.Contains(c.Request.URL.Path, "embed") {
@@ -153,6 +226,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			return
 		}
 		relayInfo.BillingRequestInput = &requestInput
+	}
+
+	// 自定义上游模式：已由 middleware 注入临时渠道并独立预扣，跳过配额计费与 token 预估，直接执行 relay 中转链喵。
+	if middleware.IsUpstreamModelRelayRequest(c) {
+		newAPIError = relayUpstreamModel(c, relayInfo, relayFormat)
+		return
 	}
 
 	needSensitiveCheck := setting.ShouldCheckPromptSensitive()

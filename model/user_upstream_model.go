@@ -16,6 +16,14 @@ import (
 // UserUpstreamModelNamePattern 只允许 ASCII 字母、数字、短横线和下划线喵。
 var UserUpstreamModelNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
+// 上游 API 类型常量：决定 relay 把客户端请求转成什么格式发给上游喵。
+const (
+	// UserUpstreamAPITypeOpenAI 上游为 OpenAI 兼容 API（默认），Anthropic 格式请求会转成 OpenAI 格式发出喵。
+	UserUpstreamAPITypeOpenAI = "openai"
+	// UserUpstreamAPITypeAnthropic 上游为 Anthropic 原生 API，OpenAI 格式请求会转成 Anthropic 格式发出喵。
+	UserUpstreamAPITypeAnthropic = "anthropic"
+)
+
 // UserUpstreamModel 表示用户私有的一个上游模型（一模型一上游）喵。
 // 金额字段一律以"分"存储（RMB），前端展示转元，避免浮点误差喵。
 type UserUpstreamModel struct {
@@ -34,6 +42,8 @@ type UserUpstreamModel struct {
 	CredentialVersion  int    `json:"-"`
 	RealModelName      string `json:"real_model_name" gorm:"type:varchar(128)"`
 	AuthStyle          string `json:"auth_style" gorm:"type:varchar(32)"`
+	// APIType 上游 API 类型：openai（默认，OpenAI 兼容）或 anthropic（Anthropic 原生），决定 relay 格式转换方向喵。
+	APIType string `json:"api_type" gorm:"type:varchar(16);default:'openai'"`
 	// TimeoutSeconds 自用调用超时，单位：秒；零表示使用默认 60 秒喵。
 	TimeoutSeconds int `json:"timeout_seconds"`
 	// 自定义请求头：结构化 JSON，如 {"*": true, "User-Agent": "Kilo-Code/7.3.50"}，* 表示对全部请求生效喵。

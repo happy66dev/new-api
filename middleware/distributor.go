@@ -56,15 +56,45 @@ func Distribute() func(c *gin.Context) {
 			// 直到新候选不再是 user/xxx（交给下方普通 channel 选择）或请求已终结喵。
 			for shouldSelectChannel && isUserUpstreamModelRequest(modelRequest.Model) {
 				if !handleUserUpstreamModelRequest(c, modelRequest) {
+					// 已注入自定义上游临时渠道时继续走 relay，否则终止喵。
+					if !IsUpstreamModelRelayRequest(c) {
+						return
+					}
+					break
+				}
+			}
+		}
+		// 用户上游模型直接调用：注入 relay 后继续，否则终止喵。
+		if shouldSelectChannel && isUserUpstreamModelRequest(modelRequest.Model) {
+			if !handleUserUpstreamModelRequest(c, modelRequest) {
+				if !IsUpstreamModelRelayRequest(c) {
 					return
 				}
 			}
 		}
-		// 用户上游模型直接调用：透传后终止，不进入普通 channel 选择喵。
-		if shouldSelectChannel && isUserUpstreamModelRequest(modelRequest.Model) {
-			if !handleUserUpstreamModelRequest(c, modelRequest) {
-				return
+		// 自定义上游已注入临时渠道：跳过普通渠道选择，注册退款兜底后直接进入 relay 路由 handler 喵。
+		if IsUpstreamModelRelayRequest(c) {
+			// 注册兜底退款：c.Next()（relay 执行）完成后仍未结算时退还预扣，避免异常路径锁定额度喵。
+			if relayCtx := getUserUpstreamModelRelayContext(c); relayCtx != nil && relayCtx.preConsumedCents > 0 {
+				defer func() {
+					if !relayCtx.settled {
+						if refundError := model.AdjustUserUpstreamModelCharge(relayCtx.upstreamModel.ID, relayCtx.ownerUserID, -relayCtx.preConsumedCents, relayCtx.isShared); refundError != nil {
+							common.SysError("user upstream model relay refund guard failed: " + refundError.Error())
+						}
+						relayCtx.settled = true
+					}
+				}()
 			}
+			common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
+			if shouldSelectChannel {
+				common.SetContextKey(c, constant.ContextKeySelectedModel, selectedModel)
+			}
+			c.Next()
+			// relay 请求链执行完成：退出自定义上游活跃计数（handle 阶段注册）喵。
+			if relayCtx := getUserUpstreamModelRelayContext(c); relayCtx != nil && relayCtx.upstreamModel != nil {
+				ExitUpstreamModelInflight(relayCtx.upstreamModel.ID, relayCtx.isShared)
+			}
+			return
 		}
 		if ok {
 			id, err := strconv.Atoi(channelId.(string))

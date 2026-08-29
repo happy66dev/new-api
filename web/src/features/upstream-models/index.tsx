@@ -108,6 +108,8 @@ function UpstreamModelDrawer({
   const [apiKey, setAPIKey] = useState('')
   const [realModelName, setRealModelName] = useState('')
   const [authStyle, setAuthStyle] = useState('bearer')
+  // apiType 上游 API 类型：openai=OpenAI 兼容（默认）/ anthropic=Anthropic 原生，决定 relay 格式转换方向喵。
+  const [apiType, setAPIType] = useState('openai')
   const [modelRatio, setModelRatio] = useState('1')
   const [completionRatio, setCompletionRatio] = useState('1')
   const [cacheRatio, setCacheRatio] = useState('1')
@@ -145,6 +147,7 @@ function UpstreamModelDrawer({
     setAPIKey('')
     setRealModelName(model?.real_model_name ?? '')
     setAuthStyle(model?.auth_style ?? 'bearer')
+    setAPIType(model?.api_type ?? 'openai')
     setModelRatio(model?.model_ratio ?? '1')
     setCompletionRatio(model?.completion_ratio ?? '1')
     setCacheRatio(model?.cache_ratio ?? '1')
@@ -228,6 +231,7 @@ function UpstreamModelDrawer({
       api_key: apiKey,
       real_model_name: realModelName.trim(),
       auth_style: authStyle,
+      api_type: apiType,
       timeout_seconds: resolvedTimeoutSeconds,
       custom_headers: trimmedCustomHeaders,
       field_replacements: trimmedFieldReplacements,
@@ -343,6 +347,21 @@ function UpstreamModelDrawer({
                 placeholder='gpt-4o'
                 disabled={isSaving}
               />
+            </label>
+            <label className='grid gap-1 text-sm font-medium'>
+              {t('API type')}
+              <select
+                className='h-9 rounded-md border border-input bg-background px-3 text-sm'
+                value={apiType}
+                onChange={(event) => setAPIType(event.target.value)}
+                disabled={isSaving}
+              >
+                <option value='openai'>OpenAI</option>
+                <option value='anthropic'>Anthropic</option>
+              </select>
+              <span className='text-muted-foreground text-xs'>
+                {t('OpenAI-compatible by default; Anthropic enables native format conversion')}
+              </span>
             </label>
             <label className='grid gap-1 text-sm font-medium'>
               {t('Authentication style')}

@@ -6038,6 +6038,8 @@
     "Enter a new API Key to save this custom candidate": "输入新的 API Key 以保存此自定义候选",
     "Enter upstream API Key": "输入上游 API Key",
     "Authentication style": "认证方式",
+    "API type": "API 类型",
+    "OpenAI-compatible by default; Anthropic enables native format conversion": "默认 OpenAI 兼容；选 Anthropic 时按原生格式自动转换",
     "Request Customization": "请求定制",
     "Custom headers and field replacements for upstream requests": "上游请求的自定义请求头与字段替换",
     "Custom request headers": "自定义请求头",

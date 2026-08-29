@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,15 +11,19 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	virtualmodelservice "github.com/QuantumNous/new-api/service/virtualmodel"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
 
-// TestHandleUserUpstreamModelRequestTokenLog 验证 user/xxx 候选成功时日志 token 正确落库喵。
-func TestHandleUserUpstreamModelRequestTokenLog(t *testing.T) {
+// TestHandleUserUpstreamModelRequestInjectsRelay 验证非虚拟 user/xxx 直调改为注入临时渠道走原生 relay 中转链喵。
+// handle 阶段只做授权/预扣/解密/渠道注入，不再同步透传与写日志；
+// relay 成功结算与失败退款由 SettleUpstreamModelRelaySuccess / HandleUpstreamModelRelayFailure hook 完成喵。
+func TestHandleUserUpstreamModelRequestInjectsRelay(t *testing.T) {
 	// 开发模式允许本地 http mock 上游，测试结束后自动恢复环境变量喵。
 	t.Setenv("VIRTUAL_MODEL_INSECURE_UPSTREAM", "1")
 	// 配置随机测试主密钥，使凭据加解密全链路可跑通喵。
@@ -37,17 +42,8 @@ func TestHandleUserUpstreamModelRequestTokenLog(t *testing.T) {
 		model.LOG_DB = oldLogDB
 	}()
 
-	// mock 上游按 OpenAI 流式格式回包，末尾带 usage 事件喵。
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"))
-		_, _ = w.Write([]byte("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":50,\"total_tokens\":150}}\n\n"))
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
-	}))
-	defer upstream.Close()
-
-	// 用真实凭据加密生成模型条目，使解密与透传全链路可跑通喵。
-	baseURLCipher, version, encryptError := virtualmodelservice.EncryptCredential(upstream.URL)
+	// 用真实凭据加密生成模型条目，使解密与注入全链路可跑通喵。
+	baseURLCipher, version, encryptError := virtualmodelservice.EncryptCredential("https://upstream.example.com")
 	require.NoError(t, encryptError)
 	apiKeyCipher, _, apiKeyError := virtualmodelservice.EncryptCredential("sk-test")
 	require.NoError(t, apiKeyError)
@@ -83,13 +79,17 @@ func TestHandleUserUpstreamModelRequestTokenLog(t *testing.T) {
 
 	handled := handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "user/demo"})
 	require.False(t, handled)
+	// 注入 relay：标记已设置，临时渠道（类型/base_url/key）写入 context 供 relay 读取喵。
+	require.True(t, IsUpstreamModelRelayRequest(ctx))
+	require.Equal(t, constant.ChannelTypeOpenAI, common.GetContextKeyInt(ctx, constant.ContextKeyChannelType))
+	require.Equal(t, "sk-test", common.GetContextKeyString(ctx, constant.ContextKeyChannelKey))
+	require.Equal(t, "https://upstream.example.com", common.GetContextKeyString(ctx, constant.ContextKeyChannelBaseUrl))
+	require.Equal(t, "gpt-4o", common.GetContextKeyString(ctx, constant.ContextKeySelectedModel))
+	// handle 阶段不写日志、不写响应；透传、结算与错误输出全部交由 relay 层喵。
+	var logCount int64
+	require.NoError(t, testDB.Model(&model.Log{}).Count(&logCount).Error)
+	require.Zero(t, logCount)
 	require.Equal(t, http.StatusOK, recorder.Code)
-
-	// 日志必须落库且携带真实 token 计数喵。
-	var logRecord model.Log
-	require.NoError(t, testDB.Where("type = ?", model.LogTypeCustomUpstream).First(&logRecord).Error)
-	require.Equal(t, 100, logRecord.PromptTokens)
-	require.Equal(t, 50, logRecord.CompletionTokens)
 }
 
 // TestHandleUserUpstreamModelRequestVirtualLogToken 验证虚拟模型 user/xxx 候选成功日志（type=9）token 正确喵。
@@ -152,6 +152,21 @@ func TestHandleUserUpstreamModelRequestVirtualLogToken(t *testing.T) {
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"virtual/vm","stream":true,"messages":[]}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Set("id", 7)
+	// 虚拟模型执行状态：单内部候选 user/demo，成功路径写 type=9 日志喵。
+	executionState := &virtualModelExecutionState{
+		virtualModelName:      "virtual/vm",
+		virtualModelID:        3,
+		ownerUserID:           7,
+		startTime:             time.Now(),
+		currentCandidateIndex: 0,
+		executionSnapshot: &model.VirtualModelExecutionSnapshot{
+			Candidates: []model.VirtualModelCandidateSnapshot{
+				{CandidateID: 71, VirtualModelID: 3, StableOrder: 0, SourceType: model.VirtualModelSourceInternal, Enabled: true, GroupName: "default", RealModelName: "user/demo"},
+			},
+			FailureRulesByCandidateID: map[int][]model.VirtualModelFailureRule{},
+		},
+	}
+	common.SetContextKey(ctx, constant.ContextKeyVirtualModelExecutionState, executionState)
 	// 标记虚拟模型上下文：日志归入 type=9 且附带候选尝试序列喵。
 	common.SetContextKey(ctx, constant.ContextKeyVirtualLogType, model.LogTypeVirtualModel)
 	common.SetContextKey(ctx, constant.ContextKeyVirtualCandidateSeq, 1)
@@ -288,9 +303,8 @@ func TestHandleUserUpstreamModelRequestRequestLevelTiming(t *testing.T) {
 	require.Less(t, attemptTtftMs, float64(1000), "成功候选首字应为模型级上游 TTFT（小于 1 秒），而非请求级（约 5 秒）喵")
 }
 
-// TestHandleUserUpstreamModelRequestPassthroughUpstreamError 验证直调 user/xxx 时上游 HTTP 错误原样透传喵。
-// 上游 4xx/5xx 必须透传其状态码与错误正文，而不是被替换为通用 unavailable 错误喵。
-func TestHandleUserUpstreamModelRequestPassthroughUpstreamError(t *testing.T) {
+// TestSettleUpstreamModelRelaySuccess 验证自定义上游 relay 成功后 hook 完成独立 RMB 结算并写 type=8 日志喵。
+func TestSettleUpstreamModelRelaySuccess(t *testing.T) {
 	// 开发模式允许本地 http mock 上游，测试结束后自动恢复环境变量喵。
 	t.Setenv("VIRTUAL_MODEL_INSECURE_UPSTREAM", "1")
 	// 配置随机测试主密钥，使凭据加解密全链路可跑通喵。
@@ -308,94 +322,8 @@ func TestHandleUserUpstreamModelRequestPassthroughUpstreamError(t *testing.T) {
 		model.LOG_DB = oldLogDB
 	}()
 
-	// mock 上游返回 429 限流错误，正文为 OpenAI 风格错误喵。
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusTooManyRequests)
-		_, _ = w.Write([]byte(`{"error":{"message":"rate limited by upstream","type":"rate_limit_error"}}`))
-	}))
-	defer upstream.Close()
-
-	baseURLCipher, version, encryptError := virtualmodelservice.EncryptCredential(upstream.URL)
-	require.NoError(t, encryptError)
-	apiKeyCipher, _, apiKeyError := virtualmodelservice.EncryptCredential("sk-test")
-	require.NoError(t, apiKeyError)
-	require.NoError(t, testDB.Create(&model.UserUpstreamModel{
-		OwnerUserID:          7,
-		NormalizedName:       "demo",
-		DisplayName:          "Demo",
-		Enabled:              true,
-		EncryptedBaseURL:     baseURLCipher,
-		EncryptedAPIKey:      apiKeyCipher,
-		CredentialVersion:    version,
-		RealModelName:        "gpt-4o",
-		BalanceCents:         1000,
-		AvailableCents:       800,
-		AuthStyle:            "bearer",
-		ModelRatio:           "1",
-		CompletionRatio:      "1",
-		CacheRatio:           "1",
-		CacheCreationRatio:   "1",
-		CacheCreation5mRatio: "1",
-		CacheCreation1hRatio: "1",
-		ImageRatio:           "1",
-		AudioRatio:           "1",
-		AudioCompletionRatio: "1",
-		Version:              1,
-	}).Error)
-
-	recorder := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/demo","messages":[]}`))
-	ctx.Request.Header.Set("Content-Type", "application/json")
-	ctx.Set("id", 7)
-
-	handled := handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "user/demo"})
-	require.False(t, handled)
-	// 上游 429 必须原样透传状态码与正文，而不是被替换为 502 unavailable 喵。
-	require.Equal(t, http.StatusTooManyRequests, recorder.Code)
-	require.Contains(t, recorder.Body.String(), "rate limited by upstream")
-	require.NotContains(t, recorder.Body.String(), "user upstream model is unavailable")
-
-	// 失败也必须写 type=8 日志，内容含上游错误体摘要喵。
-	var failureLog model.Log
-	require.NoError(t, testDB.Where("type = ? AND model_name = ?", model.LogTypeCustomUpstream, "user/demo").First(&failureLog).Error)
-	require.Contains(t, failureLog.Content, "rate limited by upstream")
-	var failureOther map[string]interface{}
-	require.NoError(t, common.UnmarshalJsonStr(failureLog.Other, &failureOther))
-	require.Equal(t, "rate_limited", failureOther["error_class"])
-	require.Equal(t, float64(http.StatusTooManyRequests), failureOther["http_status"])
-	require.Equal(t, false, failureOther["final_success"])
-}
-
-// TestHandleUserUpstreamModelRequestSseErrorPassthrough 验证直调 user/xxx 流式时上游 2xx 内嵌 SSE error 事件原样透传喵。
-// 上游 HTTP 200 但在 SSE 流内报告 error 事件时，错误正文必须透传给客户端，而不是被替换为 502 unavailable 喵。
-func TestHandleUserUpstreamModelRequestSseErrorPassthrough(t *testing.T) {
-	// 开发模式允许本地 http mock 上游，测试结束后自动恢复环境变量喵。
-	t.Setenv("VIRTUAL_MODEL_INSECURE_UPSTREAM", "1")
-	// 配置随机测试主密钥，使凭据加解密全链路可跑通喵。
-	t.Setenv(virtualmodelservice.CredentialMasterKeyEnvironmentName, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
-	gin.SetMode(gin.TestMode)
-	testDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	require.NoError(t, err)
-	require.NoError(t, testDB.AutoMigrate(&model.UserUpstreamModel{}, &model.EntityProbeState{}, &model.Log{}))
-	oldDB := model.DB
-	oldLogDB := model.LOG_DB
-	model.DB = testDB
-	model.LOG_DB = testDB
-	defer func() {
-		model.DB = oldDB
-		model.LOG_DB = oldLogDB
-	}()
-
-	// mock 上游返回 200 + SSE error 事件（流内业务错误），这是 OpenAI 兼容上游常见的错误形态喵。
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"error\":{\"message\":\"upstream sse broken\",\"type\":\"invalid_request_error\"}}\n\n"))
-	}))
-	defer upstream.Close()
-
-	baseURLCipher, version, encryptError := virtualmodelservice.EncryptCredential(upstream.URL)
+	// 用真实凭据加密生成模型条目，使解密与注入全链路可跑通喵。
+	baseURLCipher, version, encryptError := virtualmodelservice.EncryptCredential("https://upstream.example.com")
 	require.NoError(t, encryptError)
 	apiKeyCipher, _, apiKeyError := virtualmodelservice.EncryptCredential("sk-test")
 	require.NoError(t, apiKeyError)
@@ -431,20 +359,102 @@ func TestHandleUserUpstreamModelRequestSseErrorPassthrough(t *testing.T) {
 
 	handled := handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "user/demo"})
 	require.False(t, handled)
-	// 上游 SSE error 事件必须原样透传（HTTP 200 + 错误正文），而不是被替换为 502 unavailable 喵。
-	require.Equal(t, http.StatusOK, recorder.Code)
-	require.Contains(t, recorder.Body.String(), "upstream sse broken")
-	require.NotContains(t, recorder.Body.String(), "user upstream model is unavailable")
+	require.True(t, IsUpstreamModelRelayRequest(ctx))
 
-	// 失败也必须写 type=8 日志，内容含上游 SSE 错误事件摘要喵。
+	// 模拟 relay 成功拿到上游 usage（真实 token 计数落库）喵。
+	usage := &dto.Usage{PromptTokens: 100, CompletionTokens: 50}
+	common.SetContextKey(ctx, constant.ContextKeyUpstreamModelUsage, usage)
+	SettleUpstreamModelRelaySuccess(ctx, 0)
+
+	// 日志必须落库且携带真实 token 计数喵。
+	var logRecord model.Log
+	require.NoError(t, testDB.Where("type = ?", model.LogTypeCustomUpstream).First(&logRecord).Error)
+	require.Equal(t, 100, logRecord.PromptTokens)
+	require.Equal(t, 50, logRecord.CompletionTokens)
+	// 结算标记：预扣已差额结算，Distribute 兜底退款不再触发喵。
+	relayCtx := getUserUpstreamModelRelayContext(ctx)
+	require.NotNil(t, relayCtx)
+	require.True(t, relayCtx.settled)
+}
+
+// TestHandleUpstreamModelRelayFailure 验证自定义上游 relay 最终失败时 hook 退还预扣并写 type=8 失败日志喵。
+func TestHandleUpstreamModelRelayFailure(t *testing.T) {
+	// 开发模式允许本地 http mock 上游，测试结束后自动恢复环境变量喵。
+	t.Setenv("VIRTUAL_MODEL_INSECURE_UPSTREAM", "1")
+	// 配置随机测试主密钥，使凭据加解密全链路可跑通喵。
+	t.Setenv(virtualmodelservice.CredentialMasterKeyEnvironmentName, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	gin.SetMode(gin.TestMode)
+	testDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, testDB.AutoMigrate(&model.UserUpstreamModel{}, &model.EntityProbeState{}, &model.Log{}))
+	oldDB := model.DB
+	oldLogDB := model.LOG_DB
+	model.DB = testDB
+	model.LOG_DB = testDB
+	defer func() {
+		model.DB = oldDB
+		model.LOG_DB = oldLogDB
+	}()
+
+	// 用真实凭据加密生成模型条目，使解密与注入全链路可跑通喵。
+	// ModelRatio=1000：输入按 min 兜底 500 token 估算，预扣 500×1000/1e6×100=50 分，在余额内且非零，验证失败退款路径喵。
+	baseURLCipher, version, encryptError := virtualmodelservice.EncryptCredential("https://upstream.example.com")
+	require.NoError(t, encryptError)
+	apiKeyCipher, _, apiKeyError := virtualmodelservice.EncryptCredential("sk-test")
+	require.NoError(t, apiKeyError)
+	require.NoError(t, testDB.Create(&model.UserUpstreamModel{
+		OwnerUserID:          7,
+		NormalizedName:       "demo",
+		DisplayName:          "Demo",
+		Enabled:              true,
+		EncryptedBaseURL:     baseURLCipher,
+		EncryptedAPIKey:      apiKeyCipher,
+		CredentialVersion:    version,
+		RealModelName:        "gpt-4o",
+		BalanceCents:         1000,
+		AvailableCents:       800,
+		AuthStyle:            "bearer",
+		ModelRatio:           "1000",
+		CompletionRatio:      "1",
+		CacheRatio:           "1",
+		CacheCreationRatio:   "1",
+		CacheCreation5mRatio: "1",
+		CacheCreation1hRatio: "1",
+		ImageRatio:           "1",
+		AudioRatio:           "1",
+		AudioCompletionRatio: "1",
+		Version:              1,
+	}).Error)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/demo","stream":true,"messages":[]}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Set("id", 7)
+
+	handled := handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "user/demo"})
+	require.False(t, handled)
+	require.True(t, IsUpstreamModelRelayRequest(ctx))
+	// 预扣已发生：输入按 min 兜底 500 token，ModelRatio=1000 时预扣 50 分喵。
+	require.Positive(t, getUserUpstreamModelRelayContext(ctx).preConsumedCents)
+
+	// 模拟 relay 失败：上游 429 限流喵。
+	newAPIError := types.NewErrorWithStatusCode(errors.New("rate limited by upstream"), types.ErrorCode("rate_limited"), http.StatusTooManyRequests)
+	HandleUpstreamModelRelayFailure(ctx, newAPIError)
+
+	// 失败日志：type=8、模型名 user/demo、错误分类与状态码落库喵。
 	var failureLog model.Log
 	require.NoError(t, testDB.Where("type = ? AND model_name = ?", model.LogTypeCustomUpstream, "user/demo").First(&failureLog).Error)
-	require.Contains(t, failureLog.Content, "upstream sse broken")
+	require.Contains(t, failureLog.Content, "rate_limited")
 	var failureOther map[string]interface{}
 	require.NoError(t, common.UnmarshalJsonStr(failureLog.Other, &failureOther))
-	require.Equal(t, "upstream_error", failureOther["error_class"])
-	require.Equal(t, float64(http.StatusOK), failureOther["http_status"])
+	require.Equal(t, "rate_limited", failureOther["error_class"])
+	require.Equal(t, float64(http.StatusTooManyRequests), failureOther["http_status"])
 	require.Equal(t, false, failureOther["final_success"])
+	// 结算标记：预扣已退还，Distribute 兜底退款不再触发喵。
+	relayCtx := getUserUpstreamModelRelayContext(ctx)
+	require.NotNil(t, relayCtx)
+	require.True(t, relayCtx.settled)
 }
 
 // TestHandleUserUpstreamModelRequestVirtualFailureLog 验证虚拟模型 user/xxx 候选失败（passthrough）写 type=9 日志喵。

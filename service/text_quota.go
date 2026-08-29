@@ -425,6 +425,17 @@ func usageSemanticFromUsage(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) 
 }
 
 func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent []string) {
+	// 自定义上游 relay：只保存 usage 供 middleware 独立 RMB 结算，跳过配额扣减与普通消费日志喵。
+	if common.GetContextKeyBool(ctx, constant.ContextKeyUpstreamModelRelay) {
+		if usage != nil {
+			common.SetContextKey(ctx, constant.ContextKeyUpstreamModelUsage, usage)
+		}
+		// 虚拟模型上下文：同步写入成功 usage 供状态探测填充 token 喵。
+		if common.GetContextKeyInt(ctx, constant.ContextKeyVirtualLogType) > 0 {
+			common.SetContextKey(ctx, constant.ContextKeyVirtualModelSuccessUsage, usage)
+		}
+		return
+	}
 	originUsage := usage
 	billingUsage := effectiveBillingUsage(usage)
 	if usage == nil {
