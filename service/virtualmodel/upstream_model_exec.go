@@ -99,12 +99,17 @@ func bufferCustomStreamToDone(responseReader *bufio.Reader, stallTimeout time.Du
 	}
 	bufferedBytes := make([]byte, 0, 4096)
 	probeStartTime := time.Now()
+	// 伪流阶段的总预算截止时刻，传入读行函数作为硬上限，防止 stall > total 时预算被单次读行绕过喵。
+	probeDeadline := time.Time{}
+	if probeTotalTimeout > 0 {
+		probeDeadline = probeStartTime.Add(probeTotalTimeout)
+	}
 	for {
 		// 喵~防御：总预算耗尽仍未到 [DONE]，判定断流喵。
 		if probeTotalTimeout > 0 && time.Since(probeStartTime) >= probeTotalTimeout {
 			return nil, fmt.Errorf("%w: stream cut before [DONE], total budget exceeded", relaykitypes.ErrStreamCut)
 		}
-		lineBytes, readError := readProbeLineWithTimeout(responseReader, stallTimeout)
+		lineBytes, readError := readProbeLineWithTimeout(responseReader, stallTimeout, probeDeadline)
 		if len(lineBytes) > 0 {
 			// 喵~防御：全量缓存超限判定断流，避免异常上游耗尽服务内存喵。
 			if len(bufferedBytes)+len(lineBytes) > fakeStreamBufferLimit {
@@ -117,6 +122,10 @@ func bufferCustomStreamToDone(responseReader *bufio.Reader, stallTimeout time.Du
 			}
 		}
 		if readError != nil {
+			// 总预算硬上限触发：即使单行未到也判定断流，保证伪流阶段受总预算约束喵。
+			if errors.Is(readError, errProbeTotalBudgetExceeded) {
+				return nil, fmt.Errorf("%w: stream cut before [DONE], total budget exceeded", relaykitypes.ErrStreamCut)
+			}
 			// 喵~防御：EOF 与静默超时都视为未完整返回，统一归入断流分类喵。
 			if errors.Is(readError, io.EOF) {
 				return nil, fmt.Errorf("%w: upstream stream cut before [DONE]", relaykitypes.ErrStreamCut)
@@ -169,6 +178,9 @@ func ExecuteUserUpstreamModel(c *gin.Context, input CustomCandidateExecutionInpu
 	ensureAnthropicVersionHeader(upstreamRequest.Header, upstreamURL.Path)
 	upstreamRequest.ContentLength = int64(len(requestBody))
 	upstreamRequest.Header.Set("Content-Length", strconv.FormatInt(upstreamRequest.ContentLength, 10))
+	// 注入回环检测标记：若 baseURL 指向本实例，入口 LoopGuard 中间件可拦截请求风暴循环喵。
+	// 放在所有请求头改写之后，保证客户端或自定义头无法覆盖该标记喵。
+	upstreamRequest.Header.Set(common.LoopGuardHeaderKey, common.BuildLoopGuardValue(c.GetString(common.RequestIdKey)))
 	// 发起上游请求前打点，用于测量首字节（TTFT）喵。
 	execStart := time.Now()
 	response, responseError := strictCustomHTTPClient(candidateTimeout).Do(upstreamRequest)

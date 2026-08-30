@@ -27,11 +27,15 @@ import (
 
 // CustomCandidateExecutionInput 描述一次自定义候选透传所需的脱敏配置喵。
 type CustomCandidateExecutionInput struct {
-	CandidateID    int
-	BaseURL        string
-	APIKey         string
-	RealModelName  string
-	AuthStyle      model.VirtualModelAuthStyle
+	// BaseURL 上游服务的基础地址，仅作加密传输目标，禁止回显完整凭据喵。
+	BaseURL string
+	// APIKey 上游认证密钥，脱敏注入请求头，禁止写入日志喵。
+	APIKey string
+	// RealModelName 改写后的真实上游模型名，替换客户端请求中的 model 字段喵。
+	RealModelName string
+	// AuthStyle 认证头样式，决定凭据注入到 Authorization 还是 x-api-key 喵。
+	AuthStyle model.VirtualModelAuthStyle
+	// TimeoutSeconds 单次候选执行超时，单位：秒；零或越界时回退安全默认值喵。
 	TimeoutSeconds int
 	// StallTimeoutSeconds 静默多久判定流式卡流，单位：秒；零使用默认 60 喵。
 	StallTimeoutSeconds int
@@ -139,6 +143,8 @@ func probeCustomStreamingResponse(responseReader *bufio.Reader, params ProbePara
 		minContentChars = params.MinContentChars
 	}
 	probeStartTime := time.Now()
+	// 探测总预算的绝对截止时刻，传入读行函数作为硬上限，防止单次读行阻塞绕过总预算喵。
+	probeDeadline := probeStartTime.Add(probeTotalTimeout)
 	bufferedBytes := make([]byte, 0, 4096)
 	// 已累积的内容字符数，达到门槛才判定上游健康喵。
 	bufferedContentChars := 0
@@ -147,7 +153,7 @@ func probeCustomStreamingResponse(responseReader *bufio.Reader, params ProbePara
 		if time.Since(probeStartTime) >= probeTotalTimeout {
 			return nil, fmt.Errorf("%w: probe phase exceeded total budget", relaykitypes.ErrStalledStream)
 		}
-		lineBytes, readError := readProbeLineWithTimeout(responseReader, stallTimeout)
+		lineBytes, readError := readProbeLineWithTimeout(responseReader, stallTimeout, probeDeadline)
 		if len(lineBytes) > 0 {
 			if len(bufferedBytes)+len(lineBytes) > customCandidatePrecommitBufferLimit {
 				return nil, errors.New("custom upstream stream precommit buffer limit exceeded")
@@ -176,6 +182,10 @@ func probeCustomStreamingResponse(responseReader *bufio.Reader, params ProbePara
 			}
 		}
 		if readError != nil {
+			if errors.Is(readError, errProbeTotalBudgetExceeded) {
+				// 总预算成为硬上限：即使单行尚未读到也必须在预算内终止，归入卡流分类喵。
+				return nil, fmt.Errorf("%w: probe phase exceeded total budget", relaykitypes.ErrStalledStream)
+			}
 			if errors.Is(readError, io.EOF) {
 				// 喵~防御：流在达到内容门槛前结束但已缓冲任何事件字节时视为成功放流，
 				// 兼容短回复、仅心跳或非标准 SSE 的上游；仅零字节空响应判定故障喵。
@@ -190,8 +200,13 @@ func probeCustomStreamingResponse(responseReader *bufio.Reader, params ProbePara
 	return nil, errors.New("custom upstream stream precommit buffer limit exceeded")
 }
 
-// readProbeLineWithTimeout 读取一行 SSE 数据，超过静默秒数未读到新行则返回卡流哨兵喵。
-func readProbeLineWithTimeout(reader *bufio.Reader, stallTimeout time.Duration) ([]byte, error) {
+// errProbeTotalBudgetExceeded 表示探测或伪流阶段的总预算在单次读行中耗尽，供调用方按各自语义分类喵。
+var errProbeTotalBudgetExceeded = errors.New("custom upstream probe total budget exceeded")
+
+// readProbeLineWithTimeout 读取一行 SSE 数据并限制最大长度喵。
+// stallTimeout 为单次读行的静默上限（正常有数据流动时按此判定卡流），deadline 为探测总预算的绝对截止时刻，
+// 即使单行未到也必须在 deadline 前返回，保证总预算成为硬上限（防止 stall > total 时预算被绕过）喵。
+func readProbeLineWithTimeout(reader *bufio.Reader, stallTimeout time.Duration, deadline time.Time) ([]byte, error) {
 	// 喵~防御：非法超时或空 reader 时直接按卡流处理，避免无限阻塞喵。
 	if reader == nil || stallTimeout <= 0 {
 		return nil, relaykitypes.ErrStalledStream
@@ -201,17 +216,58 @@ func readProbeLineWithTimeout(reader *bufio.Reader, stallTimeout time.Duration) 
 		readError error
 	}
 	// 每次读行启动一个 goroutine，配合 select 实现“距上次读到字节”的静默计时喵。
+	// 主人注意：每行一个 goroutine 在高频 SSE 流下开销较大；由于 bufio.Reader 的阻塞读无法被
+	// select 直接打断，这是同时满足静默超时与总预算硬上限下相对简单的方案，若追求极致性能
+	// 可改为对底层 net.Conn 使用 SetReadDeadline 复用单读 goroutine 喵。
 	resultChannel := make(chan lineReadResult, 1)
 	go func() {
-		lineBytes, readError := reader.ReadBytes('\n')
+		// 使用有界读行，超长单行按错误处理，避免异常上游单行耗尽探测与伪流阶段的内存喵。
+		lineBytes, readError := readProbeLineBounded(reader)
 		resultChannel <- lineReadResult{lineBytes: lineBytes, readError: readError}
 	}()
+	// 静默计时器：距上次读到字节超过 stall 判定卡流喵。
+	stallTimer := time.NewTimer(stallTimeout)
+	defer stallTimer.Stop()
+	// 总预算计时器：即使单行未到也必须在 deadline 前返回，使总预算成为硬上限喵。
+	var deadlineChannel <-chan time.Time
+	if !deadline.IsZero() {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, errProbeTotalBudgetExceeded
+		}
+		deadlineTimer := time.NewTimer(remaining)
+		defer deadlineTimer.Stop()
+		deadlineChannel = deadlineTimer.C
+	}
 	select {
 	case result := <-resultChannel:
 		return result.lineBytes, result.readError
-	case <-time.After(stallTimeout):
+	case <-stallTimer.C:
 		// 超时后调用方关闭响应体会解除阻塞读，goroutine 写入有缓冲的 channel 后自然退出，不泄漏喵。
 		return nil, fmt.Errorf("%w: upstream stream silent for %s", relaykitypes.ErrStalledStream, stallTimeout)
+	case <-deadlineChannel:
+		return nil, errProbeTotalBudgetExceeded
+	}
+}
+
+// readProbeLineBounded 从 bufio.Reader 读取一行并限制最大长度喵。
+// 超长时返回错误，防止异常上游单行耗尽探测与伪流阶段的内存喵。
+func readProbeLineBounded(reader *bufio.Reader) ([]byte, error) {
+	var lineBytes []byte
+	for {
+		chunk, readError := reader.ReadSlice('\n')
+		lineBytes = append(lineBytes, chunk...)
+		// 喵~防御：单行超过上限立即返回错误，避免继续累积无界数据喵。
+		if len(lineBytes) > userUpstreamStreamLineLimit {
+			return nil, errors.New("custom upstream stream line exceeds the limit")
+		}
+		if readError == bufio.ErrBufferFull {
+			continue
+		}
+		if readError != nil {
+			return lineBytes, readError
+		}
+		return lineBytes, nil
 	}
 }
 
@@ -229,7 +285,6 @@ type CustomCandidateExecutionResult struct {
 // 返回结构携带解析出的 usage 与 TTFT，供虚拟模型日志与状态探测使用喵。
 func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput) *CustomCandidateExecutionResult {
 	// 喵~防御：Gin 上下文、请求和候选必要字段缺失时拒绝执行，避免产生未认证外发请求喵。
-	// CandidateID 为 0 时表示用户上游模型独立直接调用（无候选链身份），同样允许执行喵。
 	if c == nil || c.Request == nil || strings.TrimSpace(input.BaseURL) == "" || strings.TrimSpace(input.APIKey) == "" || strings.TrimSpace(input.RealModelName) == "" {
 		return &CustomCandidateExecutionResult{Err: customCandidatePrecommitFailure(errors.New("custom candidate execution input is invalid"))}
 	}
@@ -269,6 +324,9 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 	ensureAnthropicVersionHeader(upstreamRequest.Header, upstreamURL.Path)
 	upstreamRequest.ContentLength = int64(len(requestBody))
 	upstreamRequest.Header.Set("Content-Length", strconv.FormatInt(upstreamRequest.ContentLength, 10))
+	// 注入回环检测标记：若 baseURL 指向本实例，入口 LoopGuard 中间件可拦截请求风暴循环喵。
+	// 放在所有请求头改写之后，保证客户端或自定义头无法覆盖该标记喵。
+	upstreamRequest.Header.Set(common.LoopGuardHeaderKey, common.BuildLoopGuardValue(c.GetString(common.RequestIdKey)))
 	// 发起上游请求前打点，用于测量首字节（TTFT）喵。
 	execStart := time.Now()
 	response, responseError := strictCustomHTTPClient(candidateTimeout).Do(upstreamRequest)
@@ -652,9 +710,9 @@ func CopyCustomPassthroughResponse(writer http.ResponseWriter, responseHeaders h
 
 // copyCustomResponseHeaders 过滤上游 hop-by-hop 响应头后复制其余字段喵。
 func copyCustomResponseHeaders(targetHeaders http.Header, sourceHeaders http.Header) {
-	// 喵~防御：上游不得为 new-api 域写入 Cookie、跨域、安全策略或连接控制头喵。
+	// 喵~防御：上游不得为 new-api 域写入 Cookie、跨域、安全策略或连接控制头；content-length 与截断正文不匹配会导致客户端悬挂，一并剥离喵。
 	blockedHeaders := map[string]struct{}{
-		"connection": {}, "keep-alive": {}, "proxy-authenticate": {}, "proxy-authorization": {}, "te": {}, "trailer": {}, "transfer-encoding": {}, "upgrade": {}, "set-cookie": {}, "access-control-allow-origin": {}, "access-control-allow-credentials": {}, "access-control-expose-headers": {}, "content-security-policy": {}, "strict-transport-security": {}, "x-frame-options": {}, "x-content-type-options": {}, "permissions-policy": {},
+		"connection": {}, "keep-alive": {}, "proxy-authenticate": {}, "proxy-authorization": {}, "te": {}, "trailer": {}, "transfer-encoding": {}, "upgrade": {}, "set-cookie": {}, "access-control-allow-origin": {}, "access-control-allow-credentials": {}, "access-control-expose-headers": {}, "content-security-policy": {}, "strict-transport-security": {}, "x-frame-options": {}, "x-content-type-options": {}, "permissions-policy": {}, "content-length": {},
 	}
 	for headerName, headerValues := range sourceHeaders {
 		if _, blocked := blockedHeaders[strings.ToLower(headerName)]; blocked {
@@ -673,6 +731,9 @@ func StrictCustomHTTPClient(timeout time.Duration) *http.Client {
 
 // strictCustomHTTPClient 创建不信任环境代理、禁止重定向且固定 DNS 校验拨号的专用客户端喵。
 func strictCustomHTTPClient(timeout time.Duration) *http.Client {
+	// 主人注意：每次调用都新建 http.Transport，无法复用连接池，高频候选透传时握手开销较大；
+	// 之所以不复用共享 Transport，是因为 ResponseHeaderTimeout 随单次候选超时变化且共享拨号策略
+	// 需与候选级超时解耦，权衡正确性优先，如未来需要可改为按超时档位缓存少量 Transport 喵。
 	transport := &http.Transport{
 		Proxy:                 nil,
 		DialContext:           strictCustomDialContext,

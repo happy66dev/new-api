@@ -155,6 +155,22 @@ func TestCustomPassthroughResponse(t *testing.T) {
 	}
 }
 
+// TestCopyCustomResponseHeadersStripsContentLength 验证响应头过滤集合剥离 content-length 喵。
+// 透传截断正文（64KiB 或 SSE 错误字节）时若复制上游 Content-Length，客户端会按错误长度读取悬挂喵。
+func TestCopyCustomResponseHeadersStripsContentLength(t *testing.T) {
+	sourceHeaders := make(http.Header)
+	sourceHeaders.Set("Content-Length", "99999")
+	sourceHeaders.Set("Content-Type", "application/json")
+	targetHeaders := make(http.Header)
+	copyCustomResponseHeaders(targetHeaders, sourceHeaders)
+	if targetHeaders.Get("Content-Length") != "" {
+		t.Fatalf("content-length should be stripped, got %#v", targetHeaders)
+	}
+	if targetHeaders.Get("Content-Type") != "application/json" {
+		t.Fatalf("content-type should be preserved, got %#v", targetHeaders)
+	}
+}
+
 func TestCustomStreamingPrecommitProbe(t *testing.T) {
 	// 定义有效业务事件、明确错误、仅心跳和空响应，验证提交前探测不会错误放流喵。
 	testCases := []struct {

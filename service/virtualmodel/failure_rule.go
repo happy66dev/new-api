@@ -121,12 +121,15 @@ func DecideVirtualModelFailureAction(executionSnapshot *model.VirtualModelExecut
 
 // IsHedgeExemptFailure 判断失败是否豁免于自动避险的连续失败计数喵。
 // 用户侧 4xx 客户端错误（如上下文超限、参数错误）不属于上游故障，不应触发候选自动避险冻结喵。
+// 豁免语义：被豁免的失败既不参与连续计数（不 +1），也不打断连续序列（不清零），
+// 因此 [5xx, 4xx, 5xx, 5xx] 仍视为连续 4 次 5xx 中计 3 次，配合阈值 3 可在第 4 次触发冻结喵。
 func IsHedgeExemptFailure(failure CandidateFailure) bool {
 	return failure.ErrorClass == "upstream_client_error"
 }
 
 // RecordCandidateAutoHedge 独立于失效规则累计候选自动避险连续失败，达到阈值时冻结退避喵。
-// 候选未配置阈值（HedgeThreshold <= 0）或失败属 4xx 豁免时不累计并返回 false；
+// 候选未配置阈值（HedgeThreshold <= 0）或参数非法时不累计并返回 false；
+// 4xx 豁免失败同样直接返回 false：被豁免的失败不参与连续计数（不 +1）也不打断连续序列（不清零）喵；
 // 达到阈值时按候选来源写入对应冻结状态并返回 true，未达阈值仅累计计数返回 false喵。
 func RecordCandidateAutoHedge(ownerUserID int, candidate model.VirtualModelCandidateSnapshot, failure CandidateFailure, currentTimestamp int64) (bool, error) {
 	// 喵~防御：候选未配置连续失败阈值或参数非法时视为无操作，保持既有失败语义喵。
@@ -134,6 +137,7 @@ func RecordCandidateAutoHedge(ownerUserID int, candidate model.VirtualModelCandi
 		return false, nil
 	}
 	// 4xx 客户端错误属于用户侧问题，豁免不计入连续失败喵。
+	// 豁免 = 完全忽略：直接返回而不触碰连续计数，因此既不累计也不清零，连续序列保持不变喵。
 	if IsHedgeExemptFailure(failure) {
 		return false, nil
 	}
@@ -186,8 +190,14 @@ func candidateFailureRuleMatches(rule model.VirtualModelFailureRule, failure Can
 // candidateFreezeSeconds 综合规则固定时长、响应体字段解析与上游 Retry-After 三者取安全有效值喵。
 func candidateFreezeSeconds(rule model.VirtualModelFailureRule, failure CandidateFailure) int {
 	freezeSeconds := rule.FreezeSeconds
-	// FreezeField 非空时从响应体指定字段解析冻结时间，与固定时长取较大值避免过度放宽冷却喵。
-	if strings.TrimSpace(rule.FreezeField) != "" {
+	// auto 单位无条件调用响应体解析：内部按全文扫描自然语言时间，不依赖 FreezeField 是否配置喵。
+	if rule.FreezeUnit == model.VirtualModelFreezeUnitAuto {
+		bodyFreezeSeconds := parseBodyFreezeSeconds(rule.FreezeField, rule.FreezeUnit, failure.BodyPreview)
+		if bodyFreezeSeconds > freezeSeconds {
+			freezeSeconds = bodyFreezeSeconds
+		}
+	} else if strings.TrimSpace(rule.FreezeField) != "" {
+		// FreezeField 非空时从响应体指定字段解析冻结时间，与固定时长取较大值避免过度放宽冷却喵。
 		bodyFreezeSeconds := parseBodyFreezeSeconds(rule.FreezeField, rule.FreezeUnit, failure.BodyPreview)
 		if bodyFreezeSeconds > freezeSeconds {
 			freezeSeconds = bodyFreezeSeconds

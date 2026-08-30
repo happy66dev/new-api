@@ -9,7 +9,9 @@ import (
 
 	"github.com/QuantumNous/new-api/model"
 	relaykitypes "github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 // TestDecideCandidateFailureAction 验证规则顺序、默认 next 与冻结时长边界喵。
@@ -292,6 +294,21 @@ func TestCandidateFreezeSecondsBodyField(t *testing.T) {
 	if seconds := candidateFreezeSeconds(model.VirtualModelFailureRule{FreezeSeconds: 5}, CandidateFailure{BodyPreview: `{"retry_after":999}`}); seconds != 5 {
 		t.Fatalf("no field freeze = %d, want 5", seconds)
 	}
+}
+
+// TestCandidateFreezeSecondsAutoUnitEmptyField 验证 auto 单位 + 空 FreezeField 仍能全文扫描响应体喵。
+// 校验层允许 auto 单位字段名为空，此处必须无条件调用响应体解析，否则该配置成为死路径喵。
+func TestCandidateFreezeSecondsAutoUnitEmptyField(t *testing.T) {
+	// auto 单位无需字段名：全文扫描 "in 22 minutes" 换算为 1320 秒喵。
+	rule := model.VirtualModelFailureRule{Action: model.VirtualModelActionFreeze, FreezeSeconds: 0, FreezeUnit: model.VirtualModelFreezeUnitAuto}
+	seconds := candidateFreezeSeconds(rule, CandidateFailure{BodyPreview: `{"error":"quota exceeded, retry in 22 minutes"}`})
+	require.Equal(t, 22*60, seconds)
+	// 固定时长与全文扫描取较大值，避免过度放宽冷却喵。
+	largerRule := model.VirtualModelFailureRule{Action: model.VirtualModelActionFreeze, FreezeSeconds: 100, FreezeUnit: model.VirtualModelFreezeUnitAuto}
+	require.Equal(t, 300, candidateFreezeSeconds(largerRule, CandidateFailure{BodyPreview: `retry in 5 minutes`}))
+	// 响应体无自然语言时间时保持固定时长喵。
+	plainRule := model.VirtualModelFailureRule{Action: model.VirtualModelActionFreeze, FreezeSeconds: 45, FreezeUnit: model.VirtualModelFreezeUnitAuto}
+	require.Equal(t, 45, candidateFreezeSeconds(plainRule, CandidateFailure{BodyPreview: `status_code=429`}))
 }
 
 // TestValidateFailureRuleFreezeField 验证响应体冻结字段名与单位的控制面校验喵。
@@ -610,6 +627,40 @@ func TestIsHedgeExemptFailure(t *testing.T) {
 	require.False(t, IsHedgeExemptFailure(CandidateFailure{HTTPStatus: http.StatusTooManyRequests, ErrorClass: "rate_limited"}))
 	require.False(t, IsHedgeExemptFailure(CandidateFailure{ErrorClass: "network_error"}))
 	require.False(t, IsHedgeExemptFailure(CandidateFailure{ErrorClass: "timeout"}))
+}
+
+// TestRecordCandidateAutoHedgeExemptDoesNotBreakSequence 锁定 4xx 豁免语义喵。
+// 被豁免的失败不参与连续计数也不打断连续序列：[5xx,4xx,5xx,5xx] 计 3 次 5xx，
+// 阈值 3 在第 4 次失败（5xx）触发冻结；若 4xx 打断序列，第 4 次只累计 2 次不会触发喵。
+func TestRecordCandidateAutoHedgeExemptDoesNotBreakSequence(t *testing.T) {
+	// 测试库没有 TestMain，为计数断言临时准备独立数据库喵。
+	testDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	oldDB := model.DB
+	model.DB = testDB
+	defer func() { model.DB = oldDB }()
+	require.NoError(t, testDB.AutoMigrate(&model.VirtualModelInternalFreezeState{}))
+
+	candidate := model.VirtualModelCandidateSnapshot{CandidateID: 71, SourceType: model.VirtualModelSourceInternal, HedgeThreshold: 3, HedgeFreezeSeconds: 30}
+	serverFailure := CandidateFailure{HTTPStatus: http.StatusInternalServerError, ErrorClass: "upstream_server_error"}
+	clientFailure := CandidateFailure{HTTPStatus: http.StatusBadRequest, ErrorClass: "upstream_client_error"}
+
+	// 第 1 次 5xx：累计 1，未达阈值喵。
+	froze, recordError := RecordCandidateAutoHedge(7, candidate, serverFailure, 1000)
+	require.NoError(t, recordError)
+	require.False(t, froze)
+	// 第 2 次 4xx：豁免不计入也不清零，计数保持 1 喵。
+	froze, recordError = RecordCandidateAutoHedge(7, candidate, clientFailure, 2000)
+	require.NoError(t, recordError)
+	require.False(t, froze)
+	// 第 3 次 5xx：累计 2，未达阈值喵。
+	froze, recordError = RecordCandidateAutoHedge(7, candidate, serverFailure, 3000)
+	require.NoError(t, recordError)
+	require.False(t, froze)
+	// 第 4 次 5xx：累计 3 达到阈值 3，触发冻结喵。
+	froze, recordError = RecordCandidateAutoHedge(7, candidate, serverFailure, 4000)
+	require.NoError(t, recordError)
+	require.True(t, froze)
 }
 
 // TestValidateGlobalFailureRuleThreshold 验证模型级全局规则不再持有自动避险阈值字段喵。

@@ -1067,7 +1067,6 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 			}
 			// 引用用户上游模型：走带 usage 解析的独立透传，返回解析结果供结算喵。
 			executionResult = virtualmodelservice.ExecuteUserUpstreamModel(c, virtualmodelservice.CustomCandidateExecutionInput{
-				CandidateID:    candidate.CandidateID,
 				BaseURL:        baseURL,
 				APIKey:         apiKey,
 				RealModelName:  candidateRealModelName,
@@ -1092,7 +1091,6 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 			}
 			// 纯直填 custom 候选：透传并解析 usage/TTFT 返回，供结算与状态探测使用喵。
 			customExecutionResult := virtualmodelservice.ExecuteCustomCandidate(c, virtualmodelservice.CustomCandidateExecutionInput{
-				CandidateID:    candidate.CandidateID,
 				BaseURL:        baseURL,
 				APIKey:         apiKey,
 				RealModelName:  candidateRealModelName,
@@ -1181,6 +1179,14 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 			// 实体状态检测：非结构化异常记录候选失败与虚拟模型整体失败喵。
 			recordCustomCandidateFailureProbe(c, candidate, hasUpstreamReference, referencedUpstreamModel, "upstream_unavailable", startTime, true)
 			abortWithOpenAiMessage(c, http.StatusBadGateway, "virtual model custom upstream is unavailable", types.ErrorCode("virtual_model_unavailable"))
+			return false
+		}
+		// 喵~防御：响应已提交（如伪流回放写入失败）后的结构化失败不得再二次分发，
+		// 否则 retry 会重放、next 会激活下一候选、passthrough 会再次 WriteHeader，全部产生二次响应喵。
+		if c.Writer != nil && c.Writer.Written() {
+			// 实体状态检测：响应已部分提交但仍失败，记录候选失败与整体失败喵。
+			recordCustomCandidateFailureProbe(c, candidate, hasUpstreamReference, referencedUpstreamModel, customFailure.Failure.ErrorClass, startTime, true)
+			c.Abort()
 			return false
 		}
 		// 候选失败后按规则决策动作；断流与普通失败统一走失败规则（候选规则优先，无则全局兜底），目标模式断流措施已由全局兜底规则代替喵。

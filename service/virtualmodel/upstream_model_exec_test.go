@@ -188,3 +188,14 @@ func TestBufferCustomStreamToDone(t *testing.T) {
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, relaykitypes.ErrStreamCut))
 }
+
+// TestBufferCustomStreamToDoneTotalBudgetHardCap 验证伪流阶段 stall > total 时总预算仍是硬上限喵。
+func TestBufferCustomStreamToDoneTotalBudgetHardCap(t *testing.T) {
+	// 完全静默的上游：stall 设为 60s 远大于 total 1s，读行必须在 total 内被硬性终止并归入断流喵。
+	release := make(chan struct{})
+	defer close(release)
+	reader := bufio.NewReader(blockingProbeReader{release: release})
+	_, err := bufferCustomStreamToDone(reader, 60*time.Second, time.Second)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, relaykitypes.ErrStreamCut))
+}

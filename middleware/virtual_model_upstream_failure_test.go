@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -62,6 +63,20 @@ func newUpstreamFailure() *virtualmodelservice.CustomCandidateExecutionFailure {
 		ResponseHeaders: http.Header{},
 		ResponseBody:    []byte(`{"error":"invalid token"}`),
 	}
+}
+
+// failingWriteResponseWriter 包装 gin 响应写入器，使 Write 返回模拟错误但先提交响应头喵。
+// 真实写入器在 Write 时会先 WriteHeaderNow 提交头，本类型模拟该语义后再返回错误，
+// 用于构造「响应已提交（头已写）但正文写入失败」的伪流结构化失败场景喵。
+type failingWriteResponseWriter struct {
+	gin.ResponseWriter
+	writeError error
+}
+
+// Write 覆盖写入：先提交响应头（使 Written() 为真），再返回模拟错误触发伪流回放写入失败喵。
+func (writer *failingWriteResponseWriter) Write(body []byte) (int, error) {
+	writer.WriteHeaderNow()
+	return 0, writer.writeError
 }
 
 // TestHandleVirtualModelUpstreamFailureNext 验证 user/xxx 候选失败默认切换下一候选喵。
@@ -206,4 +221,60 @@ func TestVirtualModelUpstreamRetryDelayDeadline(t *testing.T) {
 	delay, canRetry := virtualModelUpstreamRetryDelay(livingCtx)
 	require.True(t, canRetry)
 	require.Equal(t, 1*time.Second, delay)
+}
+
+// TestExecuteCustomVirtualModelCandidateWrittenStructuredFailureAborts 验证响应已提交后的结构化失败不会二次分发喵。
+// 伪流模式回放写入失败会返回结构化失败，但响应头已写出；若缺少 Written 守卫，
+// retry/next/passthrough 会二次写响应，本测试断言直接中止且候选链不推进喵。
+func TestExecuteCustomVirtualModelCandidateWrittenStructuredFailureAborts(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	// 开发模式允许本地 http mock 上游，测试结束后自动恢复环境变量喵。
+	t.Setenv("VIRTUAL_MODEL_INSECURE_UPSTREAM", "1")
+	// 配置凭据主密钥并加密 mock 上游地址与密钥，供直填自定义候选解密使用喵。
+	t.Setenv(virtualmodelservice.CredentialMasterKeyEnvironmentName, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+
+	// mock 上游返回带业务内容的完整 SSE 流（到 [DONE]），伪流模式会全量缓存后一次性回放喵。
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	encryptedBaseURL, _, baseURLError := virtualmodelservice.EncryptCredential(upstream.URL)
+	require.NoError(t, baseURLError)
+	encryptedAPIKey, _, apiKeyError := virtualmodelservice.EncryptCredential("sk-test")
+	require.NoError(t, apiKeyError)
+
+	// 单个直填 custom 候选，未配置失败规则时默认动作是 next（守卫缺失会再次分发）喵。
+	candidates := []model.VirtualModelCandidateSnapshot{
+		{CandidateID: 71, VirtualModelID: 9, StableOrder: 0, SourceType: model.VirtualModelSourceCustom, Enabled: true, MaxRetries: 1, RealModelName: "custom-a", EncryptedBaseURL: encryptedBaseURL, EncryptedAPIKey: encryptedAPIKey, CredentialVersion: 1, AuthStyle: "bearer"},
+	}
+	executionState := newUpstreamFailureTestState(candidates, nil, nil)
+	executionState.fakeStreamEnabled = true
+	executionState.requestDeadline = time.Now().Add(30 * time.Second)
+	executionState.startTime = time.Now()
+
+	// 构造带 stream:true 请求体的上下文，使伪流分支生效喵。
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"vm-test","stream":true,"messages":[]}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Set("id", 7)
+	common.SetContextKey(ctx, constant.ContextKeyVirtualModelExecutionState, executionState)
+	common.SetContextKey(ctx, constant.ContextKeyUserGroupAccess, service.UserGroupAccess{UsableGroups: map[string]string{"default": "default"}, AutoGroups: []string{}})
+	attempts := make([]model.VirtualModelCandidateAttemptRecord, 0, 4)
+	common.SetContextKey(ctx, constant.ContextKeyVirtualCandidateAttempts, &attempts)
+	// 用「写入失败」的响应写入器替换默认 writer，模拟伪流回放写盘失败喵。
+	ctx.Writer = &failingWriteResponseWriter{ResponseWriter: ctx.Writer, writeError: errors.New("simulated write failure")}
+
+	// 执行自定义候选：伪流已提交响应但写入失败，应中止而非再次分发喵。
+	handled := executeCustomVirtualModelCandidate(ctx, &candidates[0], executionState.executionSnapshot)
+	require.False(t, handled)
+	// 响应已标记提交，守卫必须阻止二次写响应喵。
+	require.True(t, ctx.Writer.Written())
+	// 候选索引仍停留在唯一候选，未发生候选推进喵。
+	require.Equal(t, 0, executionState.currentCandidateIndex)
+	// 未发生 passthrough 二次写入，recorder 正文为空喵。
+	require.Empty(t, recorder.Body.String())
 }

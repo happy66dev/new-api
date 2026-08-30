@@ -98,3 +98,24 @@ func TestProbeCustomStreamingResponseTotalBudget(t *testing.T) {
 	require.Error(t, err)
 	require.True(t, errors.Is(err, relaykitypes.ErrStalledStream))
 }
+
+// TestProbeCustomStreamingResponseTotalBudgetHardCap 验证 stall > total 时总预算仍是硬上限喵。
+// 单次读行最长阻塞 stall 秒，但总预算必须成为硬上限：完全静默的上游也会在 total 内被终止喵。
+func TestProbeCustomStreamingResponseTotalBudgetHardCap(t *testing.T) {
+	// stall 设为 60s 远大于 total 1s，阻塞读上游没有任何数据，读行必须在 total 内被硬性终止喵。
+	release := make(chan struct{})
+	defer close(release)
+	reader := bufio.NewReader(blockingProbeReader{release: release})
+	_, err := probeCustomStreamingResponse(reader, ProbeParameters{StallTimeoutSeconds: 60, MinContentChars: 10, ProbeTotalTimeoutSeconds: 1})
+	require.Error(t, err)
+	require.True(t, errors.Is(err, relaykitypes.ErrStalledStream))
+}
+
+// TestProbeCustomStreamingResponseOversizeLine 验证超长单行被拒绝喵。
+func TestProbeCustomStreamingResponseOversizeLine(t *testing.T) {
+	// 构造单行超过 1MB 上限的 SSE 流，探测必须报错而非无限缓冲喵。
+	oversizeLine := "data: " + strings.Repeat("x", userUpstreamStreamLineLimit+1024) + "\n"
+	reader := bufio.NewReader(strings.NewReader(oversizeLine))
+	_, err := probeCustomStreamingResponse(reader, ProbeParameters{StallTimeoutSeconds: 60, MinContentChars: 10, ProbeTotalTimeoutSeconds: 60})
+	require.Error(t, err)
+}
