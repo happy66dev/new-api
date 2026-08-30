@@ -230,6 +230,8 @@ export type VirtualModelFailureRule = {
   timeout_seconds?: number
   // retry_count 规则重试当前候选的最大重试次数，零或省略表示未配置时沿用候选 MaxRetries 喵。
   retry_count?: number
+  // failure_threshold 连续失败达到该次数才触发冻结（自动避险），仅模型级全局规则有意义；零或省略表示单次失败立即冻结喵。
+  failure_threshold?: number
 }
 
 export type VirtualModelFailureRulesReplaceInput = {

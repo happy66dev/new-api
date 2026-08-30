@@ -36,6 +36,7 @@ export function FailureRuleEditorRow({
   onChange,
   onMove,
   onRemove,
+  allowThreshold = false,
 }: {
   rule: FailureRuleDraft
   index: number
@@ -44,6 +45,8 @@ export function FailureRuleEditorRow({
   onChange: (patch: Partial<FailureRuleDraft>) => void
   onMove: (direction: 'up' | 'down') => void
   onRemove: () => void
+  // allowThreshold 标记该编辑器是否可配置自动避险连续失败阈值；仅模型级全局规则编辑器启用，候选级规则不支持喵。
+  allowThreshold?: boolean
 }) {
   const { t } = useTranslation()
 
@@ -187,6 +190,14 @@ export function FailureRuleEditorRow({
               {t('Freeze seconds')}
               <Input inputMode='numeric' value={rule.freezeSeconds} disabled={isSaving} placeholder={t('0 = auto from the response body field')} onChange={(event) => onChange({ freezeSeconds: event.target.value })} />
             </label>
+            {/* 连续失败阈值仅在模型级全局规则可配置：达到阈值才触发冻结（自动避险），零表示单次失败立即冻结喵。 */}
+            {allowThreshold && (
+              <label className='grid gap-1 text-sm font-medium'>
+                {t('Failure threshold')}
+                <Input inputMode='numeric' value={rule.failureThreshold} disabled={isSaving} placeholder={t('0 = freeze on every failure, up to 1000')} onChange={(event) => onChange({ failureThreshold: event.target.value })} />
+                <span className='text-muted-foreground text-xs'>{t('Freeze only after this many consecutive failures (0 = freeze immediately)')}</span>
+              </label>
+            )}
             {/* 高级冻结：从响应体指定字段解析冻结时间，适配上游不返回 Retry-After 头的情况喵。 */}
             <div className='grid gap-3 rounded-md border border-dashed p-3 sm:col-span-3'>
               <p className='text-sm font-medium'>{t('Advanced freeze from response body')}</p>

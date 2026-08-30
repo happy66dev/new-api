@@ -84,3 +84,73 @@ func TestVirtualModelInternalFreezeStateSafeGuards(t *testing.T) {
 	require.NoError(t, ClearVirtualModelInternalFreezeState(0, 11, 1000, 1001))
 	require.NoError(t, ClearVirtualModelInternalFreezeState(7, 11, 0, 1001))
 }
+
+// TestRecordVirtualModelInternalFailureThreshold 验证自动避险：连续失败未达阈值不冻结、达到阈值才冻结并清零计数喵。
+func TestRecordVirtualModelInternalFailureThreshold(t *testing.T) {
+	truncateTables(t)
+	require.NoError(t, DB.AutoMigrate(&VirtualModelInternalFreezeState{}))
+	require.NoError(t, DB.Exec("DELETE FROM virtual_model_internal_freeze_states").Error)
+
+	// 首次失败：阈值 3，计数 1，未达阈值不冻结喵。
+	reached, err := RecordVirtualModelInternalFailure(7, 21, 3, 3000, "upstream_server_error", 1000)
+	require.NoError(t, err)
+	require.False(t, reached)
+	// 未冻结时活动状态查询不返回该候选，证明没有产生冻结喵。
+	states, err := GetActiveVirtualModelInternalFreezeStates(7, []int{21}, 1001)
+	require.NoError(t, err)
+	require.NotContains(t, states, 21)
+
+	// 第二次失败：计数 2，仍未达阈值不冻结喵。
+	reached, err = RecordVirtualModelInternalFailure(7, 21, 3, 3000, "upstream_server_error", 1002)
+	require.NoError(t, err)
+	require.False(t, reached)
+
+	// 第三次失败：计数 3 达到阈值，触发冻结且计数清零供冻结到期后重新攒喵。
+	reached, err = RecordVirtualModelInternalFailure(7, 21, 3, 3000, "upstream_server_error", 1003)
+	require.NoError(t, err)
+	require.True(t, reached)
+	states, err = GetActiveVirtualModelInternalFreezeStates(7, []int{21}, 1004)
+	require.NoError(t, err)
+	require.Contains(t, states, 21)
+	require.Equal(t, int64(3000), states[21].FrozenUntil)
+	require.Equal(t, 0, states[21].ConsecutiveFails)
+}
+
+// TestRecordVirtualModelInternalFailureThresholdOneAndReset 验证阈值 1 每次失败即冻结、成功清除后重新计数喵。
+func TestRecordVirtualModelInternalFailureThresholdOneAndReset(t *testing.T) {
+	truncateTables(t)
+	require.NoError(t, DB.AutoMigrate(&VirtualModelInternalFreezeState{}))
+	require.NoError(t, DB.Exec("DELETE FROM virtual_model_internal_freeze_states").Error)
+
+	// 阈值 1：首次失败即触发冻结喵。
+	reached, err := RecordVirtualModelInternalFailure(7, 22, 1, 3000, "rate_limited", 1000)
+	require.NoError(t, err)
+	require.True(t, reached)
+
+	// 成功调用清除冻结后，再次失败从计数 1 重新开始喵。
+	states, err := GetActiveVirtualModelInternalFreezeStates(7, []int{22}, 1001)
+	require.NoError(t, err)
+	require.Contains(t, states, 22)
+	require.NoError(t, ClearVirtualModelInternalFreezeState(7, 22, states[22].UpdatedTime, 1002))
+	reached, err = RecordVirtualModelInternalFailure(7, 22, 2, 3000, "rate_limited", 1003)
+	require.NoError(t, err)
+	require.False(t, reached)
+}
+
+// TestRecordVirtualModelInternalFailureSafeGuards 验证自动避险计数的非法输入防御边界喵。
+func TestRecordVirtualModelInternalFailureSafeGuards(t *testing.T) {
+	truncateTables(t)
+	require.NoError(t, DB.AutoMigrate(&VirtualModelInternalFreezeState{}))
+	require.NoError(t, DB.Exec("DELETE FROM virtual_model_internal_freeze_states").Error)
+
+	// 非正阈值、无效所有者或候选编号按无操作返回，不产生冻结喵。
+	reached, err := RecordVirtualModelInternalFailure(7, 23, 0, 3000, "rate_limited", 1000)
+	require.NoError(t, err)
+	require.False(t, reached)
+	reached, err = RecordVirtualModelInternalFailure(0, 23, 3, 3000, "rate_limited", 1000)
+	require.NoError(t, err)
+	require.False(t, reached)
+	reached, err = RecordVirtualModelInternalFailure(7, 0, 3, 3000, "rate_limited", 1000)
+	require.NoError(t, err)
+	require.False(t, reached)
+}

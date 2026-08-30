@@ -98,3 +98,48 @@ func TestVirtualModelRuntimeSnapshotQueries(t *testing.T) {
 	require.NoError(t, automaticFreezeError)
 	require.Empty(t, automaticFreezeStates)
 }
+
+// TestRecordVirtualModelCustomFailureThreshold 验证自定义候选自动避险：连续失败达到阈值才冻结、触发后计数清零喵。
+func TestRecordVirtualModelCustomFailureThreshold(t *testing.T) {
+	// 使用独立内存数据库，避免与全局连接互相污染喵。
+	database, openError := gorm.Open(sqlite.Open("file:virtual-model-custom-hedge-test?mode=memory&cache=shared"), &gorm.Config{})
+	require.NoError(t, openError)
+	t.Cleanup(func() {
+		sqlDatabase, closeError := database.DB()
+		if closeError == nil {
+			_ = sqlDatabase.Close()
+		}
+	})
+	require.NoError(t, database.AutoMigrate(&VirtualModelCustomFreezeState{}))
+
+	// 首次失败：阈值 3，计数 1，未达阈值不冻结喵。
+	reached, err := RecordVirtualModelCustomFailureWithDB(database, 7, "hedge-identity", 3, 3000, "upstream_server_error", 1000)
+	require.NoError(t, err)
+	require.False(t, reached)
+	// 未冻结时活动状态查询不返回该身份，证明没有产生冻结喵。
+	states, err := GetVirtualModelCustomFreezeStatesWithDB(database, 7, []string{"hedge-identity"}, 1001)
+	require.NoError(t, err)
+	require.Empty(t, states)
+
+	// 第二次失败：计数 2，仍未达阈值不冻结喵。
+	reached, err = RecordVirtualModelCustomFailureWithDB(database, 7, "hedge-identity", 3, 3000, "upstream_server_error", 1002)
+	require.NoError(t, err)
+	require.False(t, reached)
+
+	// 第三次失败：达到阈值触发冻结且计数清零，冻结到期后需重新攒满一轮喵。
+	reached, err = RecordVirtualModelCustomFailureWithDB(database, 7, "hedge-identity", 3, 3000, "upstream_server_error", 1003)
+	require.NoError(t, err)
+	require.True(t, reached)
+	states, err = GetVirtualModelCustomFreezeStatesWithDB(database, 7, []string{"hedge-identity"}, 1004)
+	require.NoError(t, err)
+	require.Equal(t, int64(3000), states["hedge-identity"].FrozenUntil)
+	require.Equal(t, 0, states["hedge-identity"].ConsecutiveFails)
+
+	// 非法输入：空身份与非正阈值按无操作返回，不产生冻结喵。
+	reached, err = RecordVirtualModelCustomFailureWithDB(database, 7, "  ", 3, 3000, "upstream_server_error", 1005)
+	require.NoError(t, err)
+	require.False(t, reached)
+	reached, err = RecordVirtualModelCustomFailureWithDB(database, 7, "hedge-identity", 0, 3000, "upstream_server_error", 1005)
+	require.NoError(t, err)
+	require.False(t, reached)
+}

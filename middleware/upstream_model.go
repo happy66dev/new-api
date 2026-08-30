@@ -363,12 +363,12 @@ func executeUserUpstreamModelPassthrough(c *gin.Context, upstreamModel *model.Us
 	if executionState, foundState := getVirtualModelExecutionState(c); foundState && executionState != nil && executionState.currentCandidateIndex >= 0 && executionState.currentCandidateIndex < len(executionState.executionSnapshot.Candidates) {
 		currentCandidate := executionState.executionSnapshot.Candidates[executionState.currentCandidateIndex]
 		appendVirtualModelCandidateAttempt(c, model.VirtualModelCandidateAttemptRecord{
-			Seq:          currentVirtualModelCandidateSeq(c),
-			CandidateID:  currentCandidate.CandidateID,
-			Source:       "internal",
-			Label:        buildVirtualModelAttemptLabel(&currentCandidate, currentCandidate.RealModelName),
-			Success:      true,
-			StatusCode:   http.StatusOK,
+			Seq:         currentVirtualModelCandidateSeq(c),
+			CandidateID: currentCandidate.CandidateID,
+			Source:      "internal",
+			Label:       buildVirtualModelAttemptLabel(&currentCandidate, currentCandidate.RealModelName),
+			Success:     true,
+			StatusCode:  http.StatusOK,
 			// 候选尝试序列展示该候选自己的耗时（模型级口径）：首字取上游响应头到达，总耗时取候选启动到当前喵。
 			TtftMs:    executionResult.TtftMs,
 			ElapsedMs: time.Since(startTime).Milliseconds(),
@@ -425,7 +425,7 @@ func handleVirtualModelUpstreamFailure(c *gin.Context, upstreamModel *model.User
 		RetryCount: executionState.ruleRetryCounts[candidateID],
 	})
 	// 按失败规则决策动作；候选未配置规则时回退模型级全局兜底规则喵。
-	action, freezeSeconds, ruleRetryCount := virtualmodelservice.DecideVirtualModelFailureAction(executionState.executionSnapshot, candidateID, customFailure.Failure)
+	action, freezeSeconds, ruleRetryCount, failureThreshold := virtualmodelservice.DecideVirtualModelFailureAction(executionState.executionSnapshot, candidateID, customFailure.Failure)
 	// 失败规则 retry：规则级最大重试次数优先，未配置时回退候选 MaxRetries，在其内重放当前上游请求喵。
 	maxUpstreamRetries := currentCandidate.MaxRetries
 	if ruleRetryCount > 0 {
@@ -435,19 +435,40 @@ func handleVirtualModelUpstreamFailure(c *gin.Context, upstreamModel *model.User
 		executionState.ruleRetryCounts[candidateID]++
 		return virtualModelUpstreamFailureRetry
 	}
-	// 失败规则 freeze：在 owner 范围内按候选编号冻结指定时长，随后跳过该候选喵。
+	// 失败规则 freeze：在 owner 范围内冻结指定时长，随后跳过该候选喵。
+	// 模型级全局规则配置连续失败阈值时走自动避险累计路径，达到阈值才真正冻结；未配置时维持单次失败立即冻结喵。
 	if action == model.VirtualModelActionFreeze && freezeSeconds > 0 {
-		frozenUntil := common.GetTimestamp() + int64(freezeSeconds)
-		freezeError := model.UpsertVirtualModelInternalFreezeState(executionState.ownerUserID, candidateID, frozenUntil, errorClass, common.GetTimestamp())
-		// 喵~防御：冻结状态写入失败时保守终结候选链，避免上游故障扩大为循环请求喵。
-		if freezeError != nil {
-			// 实体状态检测：冻结失败终结请求，记录候选、上游模型与整体失败喵。
-			recordVirtualModelUpstreamFailureProbe(c, executionState, candidateID, upstreamModel, isShared, errorClass, startTime, true)
-			abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
-			return virtualModelUpstreamFailureEnd
+		if failureThreshold > 0 {
+			// 自动避险累计路径：4xx 用户侧错误豁免不计入连续失败，直接跳过候选不冻结喵。
+			if !virtualmodelservice.IsHedgeExemptFailure(customFailure.Failure) {
+				frozenUntil := common.GetTimestamp() + int64(freezeSeconds)
+				reachedThreshold, freezeError := model.RecordVirtualModelInternalFailure(executionState.ownerUserID, candidateID, failureThreshold, frozenUntil, errorClass, common.GetTimestamp())
+				// 喵~防御：连续失败计数写入失败时保守终结候选链，避免上游故障扩大为循环请求喵。
+				if freezeError != nil {
+					// 实体状态检测：计数写入失败终结请求，记录候选、上游模型与整体失败喵。
+					recordVirtualModelUpstreamFailureProbe(c, executionState, candidateID, upstreamModel, isShared, errorClass, startTime, true)
+					abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
+					return virtualModelUpstreamFailureEnd
+				}
+				// 同步内存快照：达到阈值冻结后，本次请求后续候选激活立即跳过刚冻结的内部候选喵。
+				if reachedThreshold {
+					executionState.internalFreezeStatesByCandidate[candidateID] = model.VirtualModelInternalFreezeState{CandidateID: candidateID, FrozenUntil: frozenUntil}
+				}
+			}
+		} else {
+			// 未配置阈值：维持单次失败立即冻结的既有语义喵。
+			frozenUntil := common.GetTimestamp() + int64(freezeSeconds)
+			freezeError := model.UpsertVirtualModelInternalFreezeState(executionState.ownerUserID, candidateID, frozenUntil, errorClass, common.GetTimestamp())
+			// 喵~防御：冻结状态写入失败时保守终结候选链，避免上游故障扩大为循环请求喵。
+			if freezeError != nil {
+				// 实体状态检测：冻结失败终结请求，记录候选、上游模型与整体失败喵。
+				recordVirtualModelUpstreamFailureProbe(c, executionState, candidateID, upstreamModel, isShared, errorClass, startTime, true)
+				abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
+				return virtualModelUpstreamFailureEnd
+			}
+			// 同步内存快照，使本次请求后续候选激活立即跳过刚冻结的内部候选喵。
+			executionState.internalFreezeStatesByCandidate[candidateID] = model.VirtualModelInternalFreezeState{CandidateID: candidateID, FrozenUntil: frozenUntil}
 		}
-		// 同步内存快照，使本次请求后续候选激活立即跳过刚冻结的内部候选喵。
-		executionState.internalFreezeStatesByCandidate[candidateID] = model.VirtualModelInternalFreezeState{CandidateID: candidateID, FrozenUntil: frozenUntil}
 	}
 	// 失败规则 passthrough：把受限上游错误正文原样回传客户端喵。
 	if action == model.VirtualModelActionPassthrough {
@@ -611,14 +632,14 @@ func recordUpstreamModelProbeState(upstreamModel *model.UserUpstreamModel, isSha
 		return
 	}
 	probeExtras := perfmetrics.EntityProbeExtras{
-		TtftMs:       extras.ttftMs,
-		HasTtft:      extras.ttftMs > 0,
-		OutputTokens: extras.outputTokens,
-		GenerationMs: generationMs,
-		InputTokens:  extras.inputTokens,
-		CachedTokens: extras.cachedTokens,
-		CacheHit:     extras.cacheHit,
-		CacheSample:  extras.cacheSample,
+		TtftMs:                extras.ttftMs,
+		HasTtft:               extras.ttftMs > 0,
+		OutputTokens:          extras.outputTokens,
+		GenerationMs:          generationMs,
+		InputTokens:           extras.inputTokens,
+		CachedTokens:          extras.cachedTokens,
+		CacheHit:              extras.cacheHit,
+		CacheSample:           extras.cacheSample,
 		CacheCreation5mTokens: extras.cacheCreation5mTokens,
 		CacheCreation1hTokens: extras.cacheCreation1hTokens,
 	}

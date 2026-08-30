@@ -84,6 +84,8 @@ type virtualModelFailureRuleInput struct {
 	TimeoutSeconds int `json:"timeout_seconds"`
 	// RetryCount 规则重试当前候选的最大重试次数，零表示未配置沿用候选 MaxRetries 喵。
 	RetryCount int `json:"retry_count"`
+	// FailureThreshold 连续失败阈值（自动避险），仅模型级全局规则有意义，候选级规则忽略此字段喵。
+	FailureThreshold int `json:"failure_threshold"`
 }
 
 // virtualModelFailureRulesReplaceInput 描述候选失败规则的版本化整体替换请求喵。
@@ -825,7 +827,7 @@ func ReplaceVirtualModelGlobalFailureRules(c *gin.Context) {
 			return deleteError
 		}
 		for ruleOrder, ruleInput := range input.Rules {
-			globalFailureRule := &model.VirtualModelGlobalFailureRule{VirtualModelID: modelID, RuleOrder: ruleOrder, HTTPStatus: ruleInput.HTTPStatus, HTTPStatusMax: ruleInput.HTTPStatusMax, ErrorClass: strings.TrimSpace(ruleInput.ErrorClass), BodyRegex: strings.TrimSpace(ruleInput.BodyRegex), Action: ruleInput.Action, FreezeSeconds: ruleInput.FreezeSeconds, FreezeField: strings.TrimSpace(ruleInput.FreezeField), FreezeUnit: ruleInput.FreezeUnit, StallTimeoutSeconds: ruleInput.StallTimeoutSeconds, MinContentChars: ruleInput.MinContentChars, ProbeTotalTimeoutSeconds: ruleInput.ProbeTotalTimeoutSeconds, TimeoutSeconds: ruleInput.TimeoutSeconds, RetryCount: ruleInput.RetryCount}
+			globalFailureRule := &model.VirtualModelGlobalFailureRule{VirtualModelID: modelID, RuleOrder: ruleOrder, HTTPStatus: ruleInput.HTTPStatus, HTTPStatusMax: ruleInput.HTTPStatusMax, ErrorClass: strings.TrimSpace(ruleInput.ErrorClass), BodyRegex: strings.TrimSpace(ruleInput.BodyRegex), Action: ruleInput.Action, FreezeSeconds: ruleInput.FreezeSeconds, FreezeField: strings.TrimSpace(ruleInput.FreezeField), FreezeUnit: ruleInput.FreezeUnit, StallTimeoutSeconds: ruleInput.StallTimeoutSeconds, MinContentChars: ruleInput.MinContentChars, ProbeTotalTimeoutSeconds: ruleInput.ProbeTotalTimeoutSeconds, TimeoutSeconds: ruleInput.TimeoutSeconds, RetryCount: ruleInput.RetryCount, FailureThreshold: ruleInput.FailureThreshold}
 			if validateError := virtualmodelservice.ValidateGlobalFailureRule(globalFailureRule); validateError != nil {
 				return validateError
 			}
@@ -1173,25 +1175,25 @@ func parseVirtualModelCandidateID(c *gin.Context) (int, bool) {
 // virtualModelStatusPayload 虚拟模型整体状态响应喵。
 // 保留 enabled/candidate_count/enabled_candidates 旧字段，兼容 Overview 既有展示喵。
 type virtualModelStatusPayload struct {
-	Enabled           bool                             `json:"enabled"`
-	CandidateCount    int                              `json:"candidate_count"`
-	EnabledCandidates int                              `json:"enabled_candidates"`
-	Availability      float64                          `json:"availability"`
-	AvgLatencyMs      int64                            `json:"avg_latency_ms"`
-	AvgTtftMs         int64                            `json:"avg_ttft_ms"`
-	CacheHitRate      float64                          `json:"cache_hit_rate"`
-	TotalTokens       int64                            `json:"total_tokens"`
-	RequestCount      int64                            `json:"request_count"`
-	Availability24    []float64                        `json:"availability_24h"`
-	Series            []perfmetrics.EntityProbeBucket  `json:"series"`
-	LastAt            int64                            `json:"last_at"`
-	LastSuccess       bool                             `json:"last_success"`
-	LastLatencyMs     int64                              `json:"last_latency_ms"`
-	LastError         string                             `json:"last_error"`
+	Enabled           bool                            `json:"enabled"`
+	CandidateCount    int                             `json:"candidate_count"`
+	EnabledCandidates int                             `json:"enabled_candidates"`
+	Availability      float64                         `json:"availability"`
+	AvgLatencyMs      int64                           `json:"avg_latency_ms"`
+	AvgTtftMs         int64                           `json:"avg_ttft_ms"`
+	CacheHitRate      float64                         `json:"cache_hit_rate"`
+	TotalTokens       int64                           `json:"total_tokens"`
+	RequestCount      int64                           `json:"request_count"`
+	Availability24    []float64                       `json:"availability_24h"`
+	Series            []perfmetrics.EntityProbeBucket `json:"series"`
+	LastAt            int64                           `json:"last_at"`
+	LastSuccess       bool                            `json:"last_success"`
+	LastLatencyMs     int64                           `json:"last_latency_ms"`
+	LastError         string                          `json:"last_error"`
 	// LastFailureAt 最近一次失败调用时间戳，即使最近一次调用成功也保留喵。
 	LastFailureAt int64 `json:"last_failure_at"`
 	// LastFailureError 最近一次失败调用错误分类，即使最近一次调用成功也保留喵。
-	LastFailureError string                            `json:"last_failure_error"`
+	LastFailureError string                               `json:"last_failure_error"`
 	Candidates       []virtualModelCandidateStatusPayload `json:"candidates"`
 	// CurrentRequests 当前处理中的客户端请求数喵。
 	CurrentRequests int64 `json:"current_requests"`
@@ -1201,18 +1203,18 @@ type virtualModelStatusPayload struct {
 
 // virtualModelCandidateStatusPayload 虚拟模型候选节点状态摘要喵。
 type virtualModelCandidateStatusPayload struct {
-	CandidateID  int                              `json:"candidate_id"`
-	Label        string                           `json:"label"`
-	Availability float64                          `json:"availability"`
-	AvgLatencyMs int64                            `json:"avg_latency_ms"`
-	AvgTtftMs    int64                            `json:"avg_ttft_ms"`
-	CacheHitRate float64                          `json:"cache_hit_rate"`
-	TotalTokens  int64                            `json:"total_tokens"`
-	RequestCount int64                            `json:"request_count"`
-	Series       []perfmetrics.EntityProbeBucket  `json:"series"`
-	LastAt       int64                            `json:"last_at"`
-	LastSuccess  bool                             `json:"last_success"`
-	LastError    string                           `json:"last_error"`
+	CandidateID  int                             `json:"candidate_id"`
+	Label        string                          `json:"label"`
+	Availability float64                         `json:"availability"`
+	AvgLatencyMs int64                           `json:"avg_latency_ms"`
+	AvgTtftMs    int64                           `json:"avg_ttft_ms"`
+	CacheHitRate float64                         `json:"cache_hit_rate"`
+	TotalTokens  int64                           `json:"total_tokens"`
+	RequestCount int64                           `json:"request_count"`
+	Series       []perfmetrics.EntityProbeBucket `json:"series"`
+	LastAt       int64                           `json:"last_at"`
+	LastSuccess  bool                            `json:"last_success"`
+	LastError    string                          `json:"last_error"`
 	// LastFailureAt 最近一次失败调用时间戳，即使最近一次调用成功也保留喵。
 	LastFailureAt int64 `json:"last_failure_at"`
 	// LastFailureError 最近一次失败调用错误分类，即使最近一次调用成功也保留喵。

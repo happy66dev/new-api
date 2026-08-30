@@ -88,7 +88,7 @@ func TestDecideCandidateFailureAction(t *testing.T) {
 	// 逐项确认失败规则不会因后续规则或不匹配条件改变决策喵。
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			action, freezeSeconds, ruleRetryCount := DecideCandidateFailureAction(testCase.rules, testCase.failure)
+			action, freezeSeconds, ruleRetryCount, _ := DecideCandidateFailureAction(testCase.rules, testCase.failure)
 			if action != testCase.expectedAction || freezeSeconds != testCase.expectedFreeze {
 				t.Fatalf("DecideCandidateFailureAction() = (%q, %d), want (%q, %d)", action, freezeSeconds, testCase.expectedAction, testCase.expectedFreeze)
 			}
@@ -114,16 +114,16 @@ func TestDecideVirtualModelFailureActionGlobalFallback(t *testing.T) {
 		},
 	}
 	// 场景一：候选配置了规则时优先按候选规则决策，不受全局规则影响喵。
-	action, _, _ := DecideVirtualModelFailureAction(executionSnapshot, 11, CandidateFailure{HTTPStatus: http.StatusTooManyRequests})
+	action, _, _, _ := DecideVirtualModelFailureAction(executionSnapshot, 11, CandidateFailure{HTTPStatus: http.StatusTooManyRequests})
 	require.Equal(t, model.VirtualModelActionFreeze, action)
 	// 场景二：候选未配置规则时回退到模型级全局兜底规则喵。
-	action, _, _ = DecideVirtualModelFailureAction(executionSnapshot, 22, CandidateFailure{HTTPStatus: http.StatusInternalServerError})
+	action, _, _, _ = DecideVirtualModelFailureAction(executionSnapshot, 22, CandidateFailure{HTTPStatus: http.StatusInternalServerError})
 	require.Equal(t, model.VirtualModelActionPassthrough, action)
 	// 场景三：全局规则也未命中时保持默认切换下一候选喵。
-	action, _, _ = DecideVirtualModelFailureAction(executionSnapshot, 22, CandidateFailure{HTTPStatus: http.StatusBadGateway})
+	action, _, _, _ = DecideVirtualModelFailureAction(executionSnapshot, 22, CandidateFailure{HTTPStatus: http.StatusBadGateway})
 	require.Equal(t, model.VirtualModelActionNext, action)
 	// 场景四：快照为空时保守回退默认切换下一候选喵。
-	action, _, _ = DecideVirtualModelFailureAction(nil, 1, CandidateFailure{HTTPStatus: http.StatusInternalServerError})
+	action, _, _, _ = DecideVirtualModelFailureAction(nil, 1, CandidateFailure{HTTPStatus: http.StatusInternalServerError})
 	require.Equal(t, model.VirtualModelActionNext, action)
 }
 
@@ -428,7 +428,7 @@ func TestDecideCandidateFailureActionErrorClass(t *testing.T) {
 	// 逐项断言错误分类规则不会误命中其它分类或退化为任意状态匹配喵。
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			action, _, _ := DecideCandidateFailureAction([]model.VirtualModelFailureRule{testCase.rule}, testCase.failure)
+			action, _, _, _ := DecideCandidateFailureAction([]model.VirtualModelFailureRule{testCase.rule}, testCase.failure)
 			require.Equal(t, testCase.expectedAction, action)
 		})
 	}
@@ -439,10 +439,10 @@ func TestDecideCandidateFailureActionErrorClassBodyRegex(t *testing.T) {
 	// 超时规则同时限定响应体包含 deadline 字样喵。
 	rule := model.VirtualModelFailureRule{ErrorClass: "timeout", BodyRegex: "deadline", Action: model.VirtualModelActionRetry}
 	// 分类命中且响应体正则命中时按规则动作执行喵。
-	action, _, _ := DecideCandidateFailureAction([]model.VirtualModelFailureRule{rule}, CandidateFailure{HTTPStatus: 0, ErrorClass: "timeout", BodyPreview: "request deadline exceeded"})
+	action, _, _, _ := DecideCandidateFailureAction([]model.VirtualModelFailureRule{rule}, CandidateFailure{HTTPStatus: 0, ErrorClass: "timeout", BodyPreview: "request deadline exceeded"})
 	require.Equal(t, model.VirtualModelActionRetry, action)
 	// 响应体正则不命中时整条规则视为不匹配，回退默认切换下一候选喵。
-	action, _, _ = DecideCandidateFailureAction([]model.VirtualModelFailureRule{rule}, CandidateFailure{HTTPStatus: 0, ErrorClass: "timeout", BodyPreview: "slow but alive"})
+	action, _, _, _ = DecideCandidateFailureAction([]model.VirtualModelFailureRule{rule}, CandidateFailure{HTTPStatus: 0, ErrorClass: "timeout", BodyPreview: "slow but alive"})
 	require.Equal(t, model.VirtualModelActionNext, action)
 }
 
@@ -450,11 +450,11 @@ func TestDecideCandidateFailureActionErrorClassBodyRegex(t *testing.T) {
 func TestDecideCandidateFailureActionRetryCount(t *testing.T) {
 	// 命中 retry 规则时返回规则级重试次数，供调用方覆盖候选 MaxRetries 喵。
 	rule := model.VirtualModelFailureRule{HTTPStatus: http.StatusTooManyRequests, Action: model.VirtualModelActionRetry, RetryCount: 3}
-	action, _, retryCount := DecideCandidateFailureAction([]model.VirtualModelFailureRule{rule}, CandidateFailure{HTTPStatus: http.StatusTooManyRequests})
+	action, _, retryCount, _ := DecideCandidateFailureAction([]model.VirtualModelFailureRule{rule}, CandidateFailure{HTTPStatus: http.StatusTooManyRequests})
 	require.Equal(t, model.VirtualModelActionRetry, action)
 	require.Equal(t, 3, retryCount)
 	// 未命中时回退默认切换下一候选，并返回零重试次数表示沿用候选 MaxRetries 喵。
-	action, _, retryCount = DecideCandidateFailureAction([]model.VirtualModelFailureRule{rule}, CandidateFailure{HTTPStatus: http.StatusBadGateway})
+	action, _, retryCount, _ = DecideCandidateFailureAction([]model.VirtualModelFailureRule{rule}, CandidateFailure{HTTPStatus: http.StatusBadGateway})
 	require.Equal(t, model.VirtualModelActionNext, action)
 	require.Equal(t, 0, retryCount)
 }
@@ -599,4 +599,56 @@ func TestValidateFailureRuleTimeoutSeconds(t *testing.T) {
 	// 模型级全局规则同样校验超时阈值喵。
 	globalRule := &model.VirtualModelGlobalFailureRule{VirtualModelID: 1, RuleOrder: 0, ErrorClass: "timeout", Action: model.VirtualModelActionRetry, TimeoutSeconds: 120}
 	require.NoError(t, ValidateGlobalFailureRule(globalRule))
+}
+
+// TestIsHedgeExemptFailure 验证用户侧 4xx 客户端错误豁免于自动避险计数喵。
+func TestIsHedgeExemptFailure(t *testing.T) {
+	// upstream_client_error（如上下文超限、参数错误）属于用户侧问题，不计入连续失败喵。
+	require.True(t, IsHedgeExemptFailure(CandidateFailure{HTTPStatus: http.StatusBadRequest, ErrorClass: "upstream_client_error"}))
+	// 服务器侧错误（5xx）、限流、网络与超时都必须计入连续失败，重点防护喵。
+	require.False(t, IsHedgeExemptFailure(CandidateFailure{HTTPStatus: http.StatusInternalServerError, ErrorClass: "upstream_server_error"}))
+	require.False(t, IsHedgeExemptFailure(CandidateFailure{HTTPStatus: http.StatusTooManyRequests, ErrorClass: "rate_limited"}))
+	require.False(t, IsHedgeExemptFailure(CandidateFailure{ErrorClass: "network_error"}))
+	require.False(t, IsHedgeExemptFailure(CandidateFailure{ErrorClass: "timeout"}))
+}
+
+// TestDecideFailureActionFailureThreshold 验证决策返回命中规则的连续失败阈值喵。
+func TestDecideFailureActionFailureThreshold(t *testing.T) {
+	// 模型级全局规则配置阈值后，命中时返回阈值供调用方走自动避险累计路径喵。
+	globalRules := []model.VirtualModelFailureRule{{HTTPStatus: http.StatusInternalServerError, Action: model.VirtualModelActionFreeze, FreezeSeconds: 60, FailureThreshold: 5}}
+	action, freezeSeconds, _, threshold := DecideCandidateFailureAction(globalRules, CandidateFailure{HTTPStatus: http.StatusInternalServerError})
+	require.Equal(t, model.VirtualModelActionFreeze, action)
+	require.Equal(t, 60, freezeSeconds)
+	require.Equal(t, 5, threshold)
+	// 候选级规则未配置阈值时返回零，调用方维持单次失败立即冻结喵。
+	action, _, _, threshold = DecideCandidateFailureAction([]model.VirtualModelFailureRule{{HTTPStatus: http.StatusInternalServerError, Action: model.VirtualModelActionFreeze, FreezeSeconds: 30}}, CandidateFailure{HTTPStatus: http.StatusInternalServerError})
+	require.Equal(t, model.VirtualModelActionFreeze, action)
+	require.Equal(t, 0, threshold)
+	// 未命中任何规则时阈值恒为零喵。
+	_, _, _, threshold = DecideCandidateFailureAction(globalRules, CandidateFailure{HTTPStatus: http.StatusBadGateway})
+	require.Equal(t, 0, threshold)
+}
+
+// TestValidateGlobalFailureRuleThreshold 验证模型级全局规则的连续失败阈值边界喵。
+func TestValidateGlobalFailureRuleThreshold(t *testing.T) {
+	baseRule := func() *model.VirtualModelGlobalFailureRule {
+		return &model.VirtualModelGlobalFailureRule{VirtualModelID: 1, RuleOrder: 0, HTTPStatus: http.StatusInternalServerError, Action: model.VirtualModelActionFreeze, FreezeSeconds: 60}
+	}
+	// 零阈值表示未配置自动避险，维持单次失败立即冻结，必须允许保存喵。
+	require.NoError(t, ValidateGlobalFailureRule(baseRule()))
+	// 合法阈值范围允许保存喵。
+	configuredRule := baseRule()
+	configuredRule.FailureThreshold = 1000
+	require.NoError(t, ValidateGlobalFailureRule(configuredRule))
+	// 喵~防御：超过上界的阈值必须拒绝，避免自动避险形同虚设喵。
+	oversizeRule := baseRule()
+	oversizeRule.FailureThreshold = 1001
+	require.Error(t, ValidateGlobalFailureRule(oversizeRule))
+	// 喵~防御：负数阈值必须拒绝喵。
+	negativeRule := baseRule()
+	negativeRule.FailureThreshold = -1
+	require.Error(t, ValidateGlobalFailureRule(negativeRule))
+	// 喵~防御：阈值只在 freeze 动作上有意义，非冻结动作配置阈值必须拒绝喵。
+	nonFreezeRule := &model.VirtualModelGlobalFailureRule{VirtualModelID: 1, RuleOrder: 0, HTTPStatus: http.StatusInternalServerError, Action: model.VirtualModelActionNext, FailureThreshold: 3}
+	require.Error(t, ValidateGlobalFailureRule(nonFreezeRule))
 }

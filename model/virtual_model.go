@@ -38,8 +38,8 @@ type VirtualModelCandidateAttemptRecord struct {
 	// ElapsedMs 本次尝试的总耗时，单位：毫秒喵。
 	ElapsedMs int64 `json:"elapsed_ms"`
 	// ErrorBody 本次尝试的错误返回体（受限摘要），custom 候选填上游真实响应体，internal 填错误消息喵。
-	ErrorBody string `json:"error_body,omitempty"`
-	RetryCount int    `json:"retry_count"`   // 失败规则对该候选的重试次数喵。
+	ErrorBody  string `json:"error_body,omitempty"`
+	RetryCount int    `json:"retry_count"` // 失败规则对该候选的重试次数喵。
 }
 
 // VirtualModelFailureAction 描述候选失败后的编排动作喵。
@@ -94,16 +94,16 @@ type VirtualModel struct {
 	DisplayName    string `json:"display_name" gorm:"type:varchar(128);not null"`
 	// 喵~防御：Enabled 不能带 default 标签，否则 GORM 在 Create 时会跳过 false 值并回落到数据库默认 true，
 	// 导致用户「创建即停用」的模型被静默写成启用状态并可被 API Key 调用喵。
-	Enabled             bool           `json:"enabled"`
-	LoopEnabled         bool           `json:"loop_enabled"`
-	TotalTimeoutSeconds int            `json:"total_timeout_seconds" gorm:"default:120"`
-	MaxLoopRounds       int            `json:"max_loop_rounds" gorm:"default:1"`
+	Enabled             bool `json:"enabled"`
+	LoopEnabled         bool `json:"loop_enabled"`
+	TotalTimeoutSeconds int  `json:"total_timeout_seconds" gorm:"default:120"`
+	MaxLoopRounds       int  `json:"max_loop_rounds" gorm:"default:1"`
 	// FakeStreamEnabled 流转伪流开关：开启后上游流式响应全量缓存到 [DONE] 再一次性伪流发给客户端，抵抗网络波动断流喵。
 	FakeStreamEnabled bool `json:"fake_stream_enabled"`
 	// StreamCutAction 流转伪流断流（上游未完整返回就中断）时的处理措施，与失败规则动作一致，空表示跟随失败规则喵。
 	StreamCutAction VirtualModelFailureAction `json:"stream_cut_action" gorm:"type:varchar(16)"`
 	// StreamCutRetries 流转伪流断流时对当前候选的重试次数，单位：次，零表示不额外重试喵。
-	StreamCutRetries int `json:"stream_cut_retries"`
+	StreamCutRetries int            `json:"stream_cut_retries"`
 	Version          int64          `json:"version" gorm:"default:1"`
 	CreatedTime      int64          `json:"created_time" gorm:"bigint"`
 	UpdatedTime      int64          `json:"updated_time" gorm:"bigint"`
@@ -176,7 +176,10 @@ type VirtualModelFailureRule struct {
 	TimeoutSeconds int `json:"timeout_seconds"`
 	// RetryCount 失败规则重试当前候选的最大重试次数，零表示未配置时沿用候选 MaxRetries 喵。
 	RetryCount int `json:"retry_count"`
-	Version    int64                  `json:"version" gorm:"default:1"`
+	// FailureThreshold 连续失败阈值（自动避险），运行时承载模型级全局规则的累计冻结配置；
+	// 候选级规则持久化时恒为零，零表示单次失败立即冻结喵。
+	FailureThreshold int   `json:"failure_threshold"`
+	Version          int64 `json:"version" gorm:"default:1"`
 }
 
 // VirtualModelGlobalFailureRule 保存模型级全局兜底失败规则喵。
@@ -206,7 +209,10 @@ type VirtualModelGlobalFailureRule struct {
 	TimeoutSeconds int `json:"timeout_seconds"`
 	// RetryCount 失败规则重试当前候选的最大重试次数，零表示未配置时沿用候选 MaxRetries 喵。
 	RetryCount int `json:"retry_count"`
-	Version    int64                  `json:"version" gorm:"default:1"`
+	// FailureThreshold 连续失败达到该次数才触发冻结（自动避险），零表示未配置、维持单次失败立即冻结喵。
+	// 仅对 action=freeze 的模型级全局规则生效，对齐 autoapi 的 auto_hedge_threshold 语义喵。
+	FailureThreshold int   `json:"failure_threshold"`
+	Version          int64 `json:"version" gorm:"default:1"`
 }
 
 // VirtualModelTokenBinding 保存模型和用户 API Key 的显式授权关系喵。
@@ -560,7 +566,7 @@ func GetVirtualModelGlobalFailureRulesWithDB(database *gorm.DB, virtualModelID i
 	// 将模型级规则字段复制到候选规则结构，字段语义与候选规则完全一致，含规则级重试次数喵。
 	globalFailureRules := make([]VirtualModelFailureRule, 0, len(storedGlobalRules))
 	for _, storedRule := range storedGlobalRules {
-		globalFailureRules = append(globalFailureRules, VirtualModelFailureRule{ID: storedRule.ID, RuleOrder: storedRule.RuleOrder, HTTPStatus: storedRule.HTTPStatus, HTTPStatusMax: storedRule.HTTPStatusMax, ErrorClass: storedRule.ErrorClass, BodyRegex: storedRule.BodyRegex, Action: storedRule.Action, FreezeSeconds: storedRule.FreezeSeconds, FreezeField: storedRule.FreezeField, FreezeUnit: storedRule.FreezeUnit, RetryCount: storedRule.RetryCount})
+		globalFailureRules = append(globalFailureRules, VirtualModelFailureRule{ID: storedRule.ID, RuleOrder: storedRule.RuleOrder, HTTPStatus: storedRule.HTTPStatus, HTTPStatusMax: storedRule.HTTPStatusMax, ErrorClass: storedRule.ErrorClass, BodyRegex: storedRule.BodyRegex, Action: storedRule.Action, FreezeSeconds: storedRule.FreezeSeconds, FreezeField: storedRule.FreezeField, FreezeUnit: storedRule.FreezeUnit, RetryCount: storedRule.RetryCount, FailureThreshold: storedRule.FailureThreshold})
 	}
 	return globalFailureRules, nil
 }
@@ -694,6 +700,56 @@ func UpsertVirtualModelCustomFreezeState(ownerUserID int, identityDigest string,
 	return UpsertVirtualModelCustomFreezeStateWithDB(DB, ownerUserID, identityDigest, frozenUntil, failureClass, currentTimestamp)
 }
 
+// RecordVirtualModelCustomFailure 在 owner 范围内原子累计一次自定义候选失败，达到连续失败阈值时设置冻结时间喵。
+// 返回本次失败后是否达到阈值触发了冻结；阈值非正或参数非法时视为无操作并返回 false喵。
+func RecordVirtualModelCustomFailure(ownerUserID int, identityDigest string, threshold int, freezeUntil int64, failureClass string, currentTimestamp int64) (bool, error) {
+	return RecordVirtualModelCustomFailureWithDB(DB, ownerUserID, identityDigest, threshold, freezeUntil, failureClass, currentTimestamp)
+}
+
+// RecordVirtualModelCustomFailureWithDB 使用给定数据库连接累计自定义候选失败并条件冻结喵。
+func RecordVirtualModelCustomFailureWithDB(database *gorm.DB, ownerUserID int, identityDigest string, threshold int, freezeUntil int64, failureClass string, currentTimestamp int64) (bool, error) {
+	// 喵~防御：数据库连接为空时拒绝写入，避免运行时空指针或绕过调用方事务边界喵。
+	if database == nil {
+		return false, errors.New("virtual model database is unavailable")
+	}
+	// 喵~防御：缺少身份、所有者或非正阈值时按无操作处理，调用方按普通失败路径继续喵。
+	if ownerUserID <= 0 || strings.TrimSpace(identityDigest) == "" || threshold <= 0 || currentTimestamp <= 0 {
+		return false, nil
+	}
+	reachedThreshold := false
+	transactionError := database.Transaction(func(tx *gorm.DB) error {
+		var freezeState VirtualModelCustomFreezeState
+		// lockForUpdate 在 MySQL/PostgreSQL 加行锁，SQLite 跳过锁语法（写事务天然串行）喵。
+		queryError := lockForUpdate(tx).Where("owner_user_id = ? AND identity_digest = ?", ownerUserID, identityDigest).First(&freezeState).Error
+		if errors.Is(queryError, gorm.ErrRecordNotFound) {
+			// 首次失败：计数从 1 起，阈值 1 时直接视为触发冻结喵。
+			freezeState = VirtualModelCustomFreezeState{OwnerUserID: ownerUserID, IdentityDigest: identityDigest, ConsecutiveFails: 1, LastFailureClass: strings.TrimSpace(failureClass), UpdatedTime: currentTimestamp}
+			if 1 >= threshold {
+				// 阈值 1 触发：设置冻结时间，计数已从 1 归零需要显式清零喵。
+				freezeState.FrozenUntil = freezeUntil
+				freezeState.ConsecutiveFails = 0
+				reachedThreshold = true
+			}
+			return tx.Create(&freezeState).Error
+		}
+		if queryError != nil {
+			return queryError
+		}
+		// 已有记录：连续失败计数加一，达到阈值时设置冻结时间并清零计数喵。
+		freezeState.ConsecutiveFails++
+		freezeState.LastFailureClass = strings.TrimSpace(failureClass)
+		freezeState.UpdatedTime = currentTimestamp
+		if freezeState.ConsecutiveFails >= threshold {
+			// 达阈值触发冻结：设置冻结时间，计数清零供冻结到期后重新攒满一轮喵。
+			freezeState.FrozenUntil = freezeUntil
+			freezeState.ConsecutiveFails = 0
+			reachedThreshold = true
+		}
+		return tx.Model(&freezeState).Select("frozen_until", "consecutive_fails", "last_failure_class", "updated_time").Updates(freezeState).Error
+	})
+	return reachedThreshold, transactionError
+}
+
 // ClearVirtualModelCustomFreezeState 使用给定数据库连接仅清除本次调用开始前已存在的自动冻结状态喵。
 func ClearVirtualModelCustomFreezeStateWithDB(database *gorm.DB, ownerUserID int, identityDigest string, expectedUpdatedTime int64, currentTimestamp int64) error {
 	// 喵~防御：无效输入无需触发写库，调用方成功路径可安全忽略该空操作喵。
@@ -767,6 +823,57 @@ func UpsertVirtualModelInternalFreezeStateWithDB(database *gorm.DB, ownerUserID 
 // UpsertVirtualModelInternalFreezeState 在 owner 范围内更新内部候选的自动冻结状态喵。
 func UpsertVirtualModelInternalFreezeState(ownerUserID int, candidateID int, frozenUntil int64, failureClass string, currentTimestamp int64) error {
 	return UpsertVirtualModelInternalFreezeStateWithDB(DB, ownerUserID, candidateID, frozenUntil, failureClass, currentTimestamp)
+}
+
+// RecordVirtualModelInternalFailure 在 owner 范围内原子累计一次内部候选失败，达到连续失败阈值时设置冻结时间喵。
+// 返回本次失败后是否达到阈值触发了冻结；阈值非正或参数非法时视为无操作并返回 false，调用方按普通失败处理喵。
+// 达到阈值时冻结时间置为 freezeUntil 且连续失败计数清零，触发后需重新攒满一轮（对齐 autoapi 语义）喵。
+func RecordVirtualModelInternalFailure(ownerUserID int, candidateID int, threshold int, freezeUntil int64, failureClass string, currentTimestamp int64) (bool, error) {
+	return RecordVirtualModelInternalFailureWithDB(DB, ownerUserID, candidateID, threshold, freezeUntil, failureClass, currentTimestamp)
+}
+
+// RecordVirtualModelInternalFailureWithDB 使用给定数据库连接累计内部候选失败并条件冻结喵。
+func RecordVirtualModelInternalFailureWithDB(database *gorm.DB, ownerUserID int, candidateID int, threshold int, freezeUntil int64, failureClass string, currentTimestamp int64) (bool, error) {
+	// 喵~防御：数据库连接为空时拒绝写入，避免运行时空指针或绕过调用方事务边界喵。
+	if database == nil {
+		return false, errors.New("virtual model database is unavailable")
+	}
+	// 喵~防御：非正阈值或非法参数按无操作处理，保持与调用方既有失败路径兼容喵。
+	if ownerUserID <= 0 || candidateID <= 0 || threshold <= 0 || currentTimestamp <= 0 {
+		return false, nil
+	}
+	reachedThreshold := false
+	transactionError := database.Transaction(func(tx *gorm.DB) error {
+		var freezeState VirtualModelInternalFreezeState
+		// lockForUpdate 在 MySQL/PostgreSQL 加行锁，SQLite 跳过锁语法（写事务天然串行）喵。
+		queryError := lockForUpdate(tx).Where("owner_user_id = ? AND candidate_id = ?", ownerUserID, candidateID).First(&freezeState).Error
+		if errors.Is(queryError, gorm.ErrRecordNotFound) {
+			// 首次失败：计数从 1 起，阈值 1 时直接视为触发冻结喵。
+			freezeState = VirtualModelInternalFreezeState{OwnerUserID: ownerUserID, CandidateID: candidateID, ConsecutiveFails: 1, LastFailureClass: strings.TrimSpace(failureClass), UpdatedTime: currentTimestamp}
+			if 1 >= threshold {
+				// 阈值 1 触发：设置冻结时间，计数已从 1 归零需要显式清零喵。
+				freezeState.FrozenUntil = freezeUntil
+				freezeState.ConsecutiveFails = 0
+				reachedThreshold = true
+			}
+			return tx.Create(&freezeState).Error
+		}
+		if queryError != nil {
+			return queryError
+		}
+		// 已有记录：连续失败计数加一，达到阈值时设置冻结时间并清零计数喵。
+		freezeState.ConsecutiveFails++
+		freezeState.LastFailureClass = strings.TrimSpace(failureClass)
+		freezeState.UpdatedTime = currentTimestamp
+		if freezeState.ConsecutiveFails >= threshold {
+			// 达阈值触发冻结：设置冻结时间，计数清零供冻结到期后重新攒满一轮喵。
+			freezeState.FrozenUntil = freezeUntil
+			freezeState.ConsecutiveFails = 0
+			reachedThreshold = true
+		}
+		return tx.Model(&freezeState).Select("frozen_until", "consecutive_fails", "last_failure_class", "updated_time").Updates(freezeState).Error
+	})
+	return reachedThreshold, transactionError
 }
 
 // ClearVirtualModelInternalFreezeStateWithDB 使用给定数据库连接仅清除本次调用开始前已存在的内部候选自动冻结状态喵。
