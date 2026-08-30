@@ -412,6 +412,14 @@ func handleVirtualModelRequest(c *gin.Context, modelRequest *ModelRequest) bool 
 	}
 	// 实体状态检测：首个候选激活即失败且无响应写出，记录虚拟模型整体失败喵。
 	RecordVirtualModelOverallProbe(c, false, "virtual_model_unavailable")
+	// 诊断日志：候选链耗尽时输出各候选失败原因，供定位上游/配置问题喵。
+	if attempts, found := common.GetContextKeyType[*[]model.VirtualModelCandidateAttemptRecord](c, constant.ContextKeyVirtualCandidateAttempts); found && attempts != nil && len(*attempts) > 0 {
+		failureSummaries := make([]string, 0, len(*attempts))
+		for _, attempt := range *attempts {
+			failureSummaries = append(failureSummaries, fmt.Sprintf("seq=%d src=%s status=%d class=%s msg=%s", attempt.Seq, attempt.Source, attempt.StatusCode, attempt.ErrorClass, attempt.ErrorMessage))
+		}
+		common.SysError("virtual model candidate chain exhausted: " + strings.Join(failureSummaries, "; "))
+	}
 	abortWithOpenAiMessage(c, http.StatusBadGateway, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
 	return false
 }
