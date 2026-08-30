@@ -416,7 +416,12 @@ func handleVirtualModelRequest(c *gin.Context, modelRequest *ModelRequest) bool 
 	if attempts, found := common.GetContextKeyType[*[]model.VirtualModelCandidateAttemptRecord](c, constant.ContextKeyVirtualCandidateAttempts); found && attempts != nil && len(*attempts) > 0 {
 		failureSummaries := make([]string, 0, len(*attempts))
 		for _, attempt := range *attempts {
-			failureSummaries = append(failureSummaries, fmt.Sprintf("seq=%d src=%s status=%d class=%s msg=%s", attempt.Seq, attempt.Source, attempt.StatusCode, attempt.ErrorClass, attempt.ErrorMessage))
+			// 喵~防御：错误正文可能很长，只截取前 160 字符避免刷屏喵。
+			errorBodyPreview := attempt.ErrorBody
+			if len(errorBodyPreview) > 160 {
+				errorBodyPreview = errorBodyPreview[:160]
+			}
+			failureSummaries = append(failureSummaries, fmt.Sprintf("seq=%d src=%s status=%d class=%s msg=%s body=%q", attempt.Seq, attempt.Source, attempt.StatusCode, attempt.ErrorClass, attempt.ErrorMessage, errorBodyPreview))
 		}
 		common.SysError("virtual model candidate chain exhausted: " + strings.Join(failureSummaries, "; "))
 	}
