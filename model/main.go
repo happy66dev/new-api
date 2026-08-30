@@ -1,6 +1,7 @@
 package model
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -317,6 +318,10 @@ func migrateDB() error {
 	if err := migrateUserUpstreamAvailableCents(); err != nil {
 		return err
 	}
+	// 计费单位升级：历史「分」余额 ×1000 迁移到 10^-5 元单位，幂等喵。
+	if err := migrateUserUpstreamModelChargeUnit(); err != nil {
+		return err
+	}
 	if err := InitializeUserAuthVersions(); err != nil {
 		return err
 	}
@@ -432,6 +437,10 @@ func migrateDBFast() error {
 		}
 	}
 	if err := normalizeSubscriptionRedemptionQuotas(); err != nil {
+		return err
+	}
+	// 计费单位升级：历史「分」余额 ×1000 迁移到 10^-5 元单位，幂等喵。
+	if err := migrateUserUpstreamModelChargeUnit(); err != nil {
 		return err
 	}
 	common.SysLog("database migrated")
@@ -707,6 +716,49 @@ func migrateUserUpstreamAvailableCents() error {
 		common.SysLog(fmt.Sprintf("migrated available_cents from spend_limit_cents for %d upstream models", result.RowsAffected))
 	}
 	return nil
+}
+
+// migrateUserUpstreamModelChargeUnitKey 记录上游模型计费单位一次性迁移标记的 Option 键喵。
+const migrateUserUpstreamModelChargeUnitKey = "upstream_model_charge_unit_v2_migrated"
+
+// migrateUserUpstreamModelChargeUnit 把历史「分」单位余额迁移到 10^-5 元单位（×1000）喵。
+// 幂等迁移：UPDATE 与标记写入同一事务，任一失败整体回滚；成功后标记存在，重启不会重复放大余额喵。
+func migrateUserUpstreamModelChargeUnit() error {
+	// 喵~防御：表不存在时跳过，避免空库迁移报错喵。
+	if !DB.Migrator().HasTable("user_upstream_models") {
+		return nil
+	}
+	// 事务保证 UPDATE 与标记写入原子性，中途失败整体回滚，绝不留半迁移状态喵。
+	return DB.Transaction(func(tx *gorm.DB) error {
+		// 幂等检查：迁移标记已存在说明已完成，直接跳过喵。
+		var marker Option
+		markerErr := tx.Where(&Option{Key: migrateUserUpstreamModelChargeUnitKey}).First(&marker).Error
+		if markerErr == nil {
+			return nil
+		}
+		// 喵~防御：非「记录不存在」的查询错误直接失败，避免掩盖真实数据库异常喵。
+		if !errors.Is(markerErr, gorm.ErrRecordNotFound) {
+			return markerErr
+		}
+		// 一次性放大全部金额列：分（0.01 元）→ 10^-5 元单位，等价 ×1000 喵。
+		// 除三账户外，spend_limit（available 前身）、upstream_remaining（嗅探快照，同步时会复制进 available）、
+		// total_spent 与 share_spent（历史累计）也一并升级，保证整行单位口径一致喵。
+		// 用 GORM Updates + 表达式跨库安全，balance_cents 等列名非保留字无需特殊引号喵。
+		// 全局更新需显式 WHERE 兜底（GORM 防呆），1 = 1 在三种数据库都恒真喵。
+		if err := tx.Model(&UserUpstreamModel{}).Where("1 = 1").Updates(map[string]interface{}{
+			"balance_cents":         gorm.Expr("balance_cents * 1000"),
+			"available_cents":       gorm.Expr("available_cents * 1000"),
+			"share_limit_cents":     gorm.Expr("share_limit_cents * 1000"),
+			"spend_limit_cents":     gorm.Expr("spend_limit_cents * 1000"),
+			"upstream_remaining_cents": gorm.Expr("upstream_remaining_cents * 1000"),
+			"total_spent_cents":     gorm.Expr("total_spent_cents * 1000"),
+			"share_spent_cents":     gorm.Expr("share_spent_cents * 1000"),
+		}).Error; err != nil {
+			return err
+		}
+		// 写入迁移标记，防止重启后重复放大余额喵。
+		return tx.Create(&Option{Key: migrateUserUpstreamModelChargeUnitKey, Value: "true"}).Error
+	})
 }
 
 // migrateSubscriptionPlanPriceAmount migrates price_amount column from float/double to decimal(10,6)

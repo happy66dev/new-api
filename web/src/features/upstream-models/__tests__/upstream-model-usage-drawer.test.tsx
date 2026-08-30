@@ -97,13 +97,13 @@ afterEach(() => {
 
 describe('UpstreamModelUsageDrawer', () => {
   test('renders per-user usage rows including the user id column', async () => {
-    // 模拟共享模型使用情况接口返回两名用户的聚合数据（费用分 + 总 token）喵。
+    // 模拟共享模型使用情况接口返回两名用户的聚合数据（费用单位 + 总 token）喵。
     apiClient.get = vi.fn().mockResolvedValue({
       data: {
         success: true,
         data: [
-          { user_id: 8, username: 'user8', request_count: 2, total_tokens: 180, cost_cents: 250, last_at: 2000 },
-          { user_id: 9, username: 'user9', request_count: 1, total_tokens: 35, cost_cents: 100, last_at: 1500 },
+          { user_id: 8, username: 'user8', request_count: 2, total_tokens: 180, cost_cents: 250000, last_at: 2000 },
+          { user_id: 9, username: 'user9', request_count: 1, total_tokens: 35, cost_cents: 100000, last_at: 1500 },
         ],
       },
     })
@@ -117,9 +117,9 @@ describe('UpstreamModelUsageDrawer', () => {
     expect(screen.getByText('2')).toBeInTheDocument()
     expect(screen.getByText('180')).toBeInTheDocument()
     expect(screen.getByText('35')).toBeInTheDocument()
-    // 费用金额按分转元展示（¥2.50 与 ¥1.00）喵。
-    expect(screen.getByText('¥2.50')).toBeInTheDocument()
-    expect(screen.getByText('¥1.00')).toBeInTheDocument()
+    // 费用金额按 10^-5 元单位转元展示（¥2.5 与 ¥1）喵。
+    expect(screen.getByText('¥2.5')).toBeInTheDocument()
+    expect(screen.getByText('¥1')).toBeInTheDocument()
   })
 
   test('shows an empty placeholder when there is no shared usage yet', async () => {
@@ -139,7 +139,7 @@ describe('UpstreamModelUsageDrawer', () => {
   test('clears shared usage after a confirmation dialog', async () => {
     // 模拟使用情况返回一行数据，让清空按钮可用喵。
     apiClient.get = vi.fn().mockResolvedValue({
-      data: { success: true, data: [{ user_id: 8, username: 'user8', request_count: 2, total_tokens: 180, cost_cents: 250, last_at: 2000 }] },
+      data: { success: true, data: [{ user_id: 8, username: 'user8', request_count: 2, total_tokens: 180, cost_cents: 250000, last_at: 2000 }] },
     })
     // 模拟清空接口成功喵。
     const deleteMock = vi.fn().mockResolvedValue({ data: { success: true, data: { id: 5 } } })

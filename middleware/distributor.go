@@ -1128,8 +1128,15 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 			if foundRequestState && requestExecutionState != nil && !requestExecutionState.startTime.IsZero() {
 				requestElapsedMs = time.Since(requestExecutionState.startTime).Milliseconds()
 			}
-			requestFirstByteMs := virtualModelFirstByteMs(c)
-			// 喵~防御：未打点（非虚拟上下文或尚未写响应）时回退总耗时近似首字喵。
+			// 首字（TTFT）口径：优先取上游响应头到达时刻（与候选尝试序列的 ttft_ms 一致），
+			// 未测到时回退请求级首次写响应，再回退总耗时近似喵。
+			// 主人注意：流式场景首次写客户端受探测放流影响（长思考模型会把首次写拖到回答开始），
+			// 它不能代表「上游首个响应字节」，因此这里以 executionResult.TtftMs 为准喵。
+			requestFirstByteMs := executionResult.TtftMs
+			if requestFirstByteMs <= 0 {
+				requestFirstByteMs = virtualModelFirstByteMs(c)
+			}
+			// 喵~防御：仍未测到时回退总耗时近似首字喵。
 			if requestFirstByteMs <= 0 {
 				requestFirstByteMs = requestElapsedMs
 			}

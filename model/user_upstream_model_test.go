@@ -110,7 +110,7 @@ func TestDeductUserUpstreamModelCharge(t *testing.T) {
 	require.NoError(t, DB.AutoMigrate(&UserUpstreamModel{}))
 	require.NoError(t, DB.Exec("DELETE FROM user_upstream_models").Error)
 
-	// 创建余额 1000 分、可用额度 800 分、共享额度 600 分的模型喵。
+	// 创建余额 1000 单位、可用额度 800 单位、共享额度 600 单位的模型（单位：10^-5 元）喵。
 	created := &UserUpstreamModel{
 		OwnerUserID:     7,
 		NormalizedName:  "billing",
@@ -335,8 +335,8 @@ func TestGetSharedModelUserUsage(t *testing.T) {
 	require.NoError(t, LOG_DB.Exec("DELETE FROM logs").Error)
 	require.NoError(t, LOG_DB.Exec("DELETE FROM users").Error)
 
-	// 属主 7 的共享模型，用户名 8/9 供日志聚合回填喵。
-	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "usage-model", Enabled: true, ShareEnabled: true, BalanceCents: 100, AvailableCents: 100, ShareLimitCents: 1000}).Error)
+	// 属主 7 的共享模型，用户名 8/9 供日志聚合回填喵。余额单位均为 10^-5 元喵。
+	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "usage-model", Enabled: true, ShareEnabled: true, BalanceCents: 100000, AvailableCents: 100000, ShareLimitCents: 1000000}).Error)
 	var created UserUpstreamModel
 	require.NoError(t, DB.Where("normalized_name = ?", "usage-model").First(&created).Error)
 	require.NoError(t, DB.Create(&User{Id: 8, Username: "user8", AffCode: "u8"}).Error)
@@ -353,7 +353,7 @@ func TestGetSharedModelUserUsage(t *testing.T) {
 	usage, err := GetSharedModelUserUsage(created.ID, 7)
 	require.NoError(t, err)
 	require.Len(t, usage, 2)
-	// 用户 8 聚合两次：请求 2、总 token 180（120+60）、费用 200 分、最近调用 2000，用户名回填 user8 喵。
+	// 用户 8 聚合两次：请求 2、总 token 180（120+60）、费用 200000 单位（2 元）、最近调用 2000，用户名回填 user8 喵。
 	var row8 *SharedModelUserUsage
 	for i := range usage {
 		if usage[i].UserID == 8 {
@@ -364,9 +364,9 @@ func TestGetSharedModelUserUsage(t *testing.T) {
 	assert.Equal(t, "user8", row8.Username)
 	assert.Equal(t, int64(2), row8.RequestCount)
 	assert.Equal(t, int64(180), row8.TotalTokens)
-	assert.Equal(t, int64(200), row8.CostCents)
+	assert.Equal(t, int64(200000), row8.CostCents)
 	assert.Equal(t, int64(2000), row8.LastAt)
-	// 用户 9 只聚合 user-shared 分组那条：总 token 35、费用 10 分，default 分组不纳入喵。
+	// 用户 9 只聚合 user-shared 分组那条：总 token 35、费用 10000 单位（0.1 元），default 分组不纳入喵。
 	var row9 *SharedModelUserUsage
 	for i := range usage {
 		if usage[i].UserID == 9 {
@@ -375,7 +375,7 @@ func TestGetSharedModelUserUsage(t *testing.T) {
 	}
 	require.NotNil(t, row9)
 	assert.Equal(t, int64(35), row9.TotalTokens)
-	assert.Equal(t, int64(10), row9.CostCents)
+	assert.Equal(t, int64(10000), row9.CostCents)
 
 	// 非属主查询被拒，避免越权查看他人模型使用情况喵。
 	_, err = GetSharedModelUserUsage(created.ID, 8)
@@ -445,7 +445,7 @@ func TestSyncUserUpstreamModelAvailable(t *testing.T) {
 	require.NoError(t, DB.AutoMigrate(&UserUpstreamModel{}))
 	require.NoError(t, DB.Exec("DELETE FROM user_upstream_models").Error)
 
-	// 创建可用额度 100 分、嗅探剩余 2500 分的模型喵。
+	// 创建可用额度 100 单位、嗅探剩余 2500 单位的模型（单位：10^-5 元）喵。
 	created := &UserUpstreamModel{
 		OwnerUserID:            7,
 		NormalizedName:         "sync-available",
@@ -504,6 +504,41 @@ func TestMigrateUserUpstreamAvailableCents(t *testing.T) {
 	assert.Equal(t, int64(800), fetchedAgain.AvailableCents)
 }
 
+// TestMigrateUserUpstreamModelChargeUnit 验证历史「分」余额幂等迁移到 10^-5 元单位（×1000）喵。
+func TestMigrateUserUpstreamModelChargeUnit(t *testing.T) {
+	truncateTables(t)
+	require.NoError(t, DB.AutoMigrate(&UserUpstreamModel{}, &Option{}))
+	require.NoError(t, DB.Exec("DELETE FROM user_upstream_models").Error)
+	// 清理迁移标记，保证用例可重复运行喵。
+	require.NoError(t, DB.Where(&Option{Key: migrateUserUpstreamModelChargeUnitKey}).Delete(&Option{}).Error)
+
+	// 旧「分」单位各行字段值各异，便于逐列断言 ×1000 喵。
+	require.NoError(t, DB.Create(&UserUpstreamModel{
+		OwnerUserID: 7, NormalizedName: "migrate-unit", Enabled: true,
+		BalanceCents: 100, AvailableCents: 200, ShareLimitCents: 300,
+		SpendLimitCents: 400, UpstreamRemainingCents: 500, TotalSpentCents: 600, ShareSpentCents: 700,
+	}).Error)
+
+	// 首次迁移：所有金额列统一 ×1000 喵。
+	require.NoError(t, migrateUserUpstreamModelChargeUnit())
+	var migrated UserUpstreamModel
+	require.NoError(t, DB.Where("normalized_name = ?", "migrate-unit").First(&migrated).Error)
+	assert.Equal(t, int64(100000), migrated.BalanceCents)
+	assert.Equal(t, int64(200000), migrated.AvailableCents)
+	assert.Equal(t, int64(300000), migrated.ShareLimitCents)
+	assert.Equal(t, int64(400000), migrated.SpendLimitCents)
+	assert.Equal(t, int64(500000), migrated.UpstreamRemainingCents)
+	assert.Equal(t, int64(600000), migrated.TotalSpentCents)
+	assert.Equal(t, int64(700000), migrated.ShareSpentCents)
+
+	// 幂等：再次运行因迁移标记存在而跳过，绝不重复放大余额喵。
+	require.NoError(t, migrateUserUpstreamModelChargeUnit())
+	var migratedAgain UserUpstreamModel
+	require.NoError(t, DB.Where("normalized_name = ?", "migrate-unit").First(&migratedAgain).Error)
+	assert.Equal(t, int64(100000), migratedAgain.BalanceCents)
+	assert.Equal(t, int64(300000), migratedAgain.ShareLimitCents)
+}
+
 // TestGetSharedModelNamesByOwner 验证返回属主已开启共享的模型对外名（user/<name>）列表喵。
 // 该列表供普通用户日志「全部」范围附带他人调用自己共享模型的日志使用喵。
 func TestGetSharedModelNamesByOwner(t *testing.T) {
@@ -543,7 +578,7 @@ func TestPreConsumeUserUpstreamModelCharge(t *testing.T) {
 	require.NoError(t, DB.AutoMigrate(&UserUpstreamModel{}))
 	require.NoError(t, DB.Exec("DELETE FROM user_upstream_models").Error)
 
-	// 创建余额 1000 分、可用额度 800 分、共享额度 600 分的模型喵。
+	// 创建余额 1000 单位、可用额度 800 单位、共享额度 600 单位的模型（单位：10^-5 元）喵。
 	created := &UserUpstreamModel{
 		OwnerUserID:     7,
 		NormalizedName:  "pre-consume",
@@ -608,7 +643,7 @@ func TestAdjustUserUpstreamModelCharge(t *testing.T) {
 	require.NoError(t, DB.AutoMigrate(&UserUpstreamModel{}))
 	require.NoError(t, DB.Exec("DELETE FROM user_upstream_models").Error)
 
-	// 创建余额 1000 分、可用额度 800 分、共享额度 600 分的模型喵。
+	// 创建余额 1000 单位、可用额度 800 单位、共享额度 600 单位的模型（单位：10^-5 元）喵。
 	created := &UserUpstreamModel{
 		OwnerUserID:     7,
 		NormalizedName:  "adjust",
@@ -622,7 +657,7 @@ func TestAdjustUserUpstreamModelCharge(t *testing.T) {
 	}
 	require.NoError(t, DB.Create(created).Error)
 
-	// 预扣 300 后实际费用 400：补扣差额 100 分，三账户再各减 100 喵。
+	// 预扣 300 后实际费用 400：补扣差额 100 单位，三账户再各减 100（单位：10^-5 元）喵。
 	require.NoError(t, PreConsumeUserUpstreamModelCharge(created.ID, 7, 300, true))
 	require.NoError(t, AdjustUserUpstreamModelCharge(created.ID, 7, 100, true))
 	fetched, err := GetUserUpstreamModelByOwnerID(created.ID, 7)
@@ -631,7 +666,7 @@ func TestAdjustUserUpstreamModelCharge(t *testing.T) {
 	assert.Equal(t, int64(400), fetched.AvailableCents)
 	assert.Equal(t, int64(200), fetched.ShareLimitCents)
 
-	// 预扣 300 后实际费用 200：退还差额 100 分，三账户各加回 100 喵。
+	// 预扣 300 后实际费用 200：退还差额 100 单位，三账户各加回 100（单位：10^-5 元）喵。
 	require.NoError(t, AdjustUserUpstreamModelCharge(created.ID, 7, -100, true))
 	fetched, _ = GetUserUpstreamModelByOwnerID(created.ID, 7)
 	assert.Equal(t, int64(700), fetched.BalanceCents)

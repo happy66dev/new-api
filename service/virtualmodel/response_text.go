@@ -75,6 +75,10 @@ func appendResponseContentFromPayload(builder *strings.Builder, dataPayload []by
 		if deltaText := gjson.GetBytes(dataPayload, "delta.text"); deltaText.Exists() && deltaText.Type == gjson.String {
 			builder.WriteString(deltaText.String())
 		}
+		// Anthropic 思考增量（thinking_delta）：长思考模型的推理文本也计入 completion 估算素材，避免输出被估成 0 喵。
+		if thinkingText := gjson.GetBytes(dataPayload, "delta.thinking"); thinkingText.Exists() && thinkingText.Type == gjson.String {
+			builder.WriteString(thinkingText.String())
+		}
 	}
 }
 

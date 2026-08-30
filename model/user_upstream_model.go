@@ -25,7 +25,7 @@ const (
 )
 
 // UserUpstreamModel 表示用户私有的一个上游模型（一模型一上游）喵。
-// 金额字段一律以"分"存储（RMB），前端展示转元，避免浮点误差喵。
+// 金额字段一律以"10^-5 元单位"存储（RMB），前端展示转元，避免浮点误差喵。
 type UserUpstreamModel struct {
 	ID             int64  `json:"id" gorm:"primaryKey"`
 	OwnerUserID    int    `json:"owner_user_id" gorm:"index"`
@@ -65,7 +65,7 @@ type UserUpstreamModel struct {
 	ImageRatio           string `json:"image_ratio" gorm:"type:varchar(32)"`
 	AudioRatio           string `json:"audio_ratio" gorm:"type:varchar(32)"`
 	AudioCompletionRatio string `json:"audio_completion_ratio" gorm:"type:varchar(32)"`
-	// 余额与额度控制（分）喵。
+	// 余额与额度控制（单位：10^-5 元，1 元 = UpstreamModelUnitsPerYuan 单位）喵。
 	// 余额 = 这个模型理论上还能用那么多（手动预存，递减账户）喵。
 	BalanceCents int64 `json:"balance_cents"`
 	// 可用额度 = 这个模型用户能接受用那么多（递减账户，自用/共享调用都扣）喵。
@@ -78,8 +78,8 @@ type UserUpstreamModel struct {
 	BalanceCheckEnabled    bool   `json:"balance_check_enabled"`
 	BalanceCheckPath       string `json:"balance_check_path" gorm:"type:varchar(256)"`
 	// 共享配置：共享额度是递减账户，共享调用扣「余额+可用+共享」，耗尽后自动停止共享喵。
-	ShareEnabled       bool  `json:"share_enabled"`
-	ShareLimitCents    int64 `json:"share_limit_cents"`
+	ShareEnabled    bool  `json:"share_enabled"`
+	ShareLimitCents int64 `json:"share_limit_cents"`
 	ShareSpentCents    int64 `json:"share_spent_cents"`
 	ShowBalanceEnabled bool  `json:"show_balance_enabled"`
 	// 共享白名单/黑名单：逗号分隔的用户 id，白名单非空时仅白名单用户可见可调用；黑名单用户一律被挡喵。
@@ -396,7 +396,7 @@ type SharedModelUserUsage struct {
 	RequestCount int64  `json:"request_count"`
 	// TotalTokens 该用户累计消耗的总 token 数（输入+输出合计，不细分）喵。
 	TotalTokens int64 `json:"total_tokens"`
-	// CostCents 该用户使用产生的费用金额，单位：分（RMB），前端转元展示喵。
+	// CostCents 该用户使用产生的费用金额，单位：10^-5 元，前端转元展示喵。
 	CostCents int64 `json:"cost_cents"`
 	LastAt    int64 `json:"last_at"`
 }
@@ -439,7 +439,7 @@ func GetSharedModelUserUsage(upstreamModelID int64, ownerUserID int) ([]SharedMo
 	return rows, nil
 }
 
-// fillSharedModelUserCosts 从共享调用日志的 Other 解析 custom_cost_rmb（元字符串）并按用户求和转分为喵。
+// fillSharedModelUserCosts 从共享调用日志的 Other 解析 custom_cost_rmb（元字符串）并按用户求和转 10^-5 元单位喵。
 func fillSharedModelUserCosts(modelName string, rows []SharedModelUserUsage) error {
 	// 喵~防御：空结果直接返回喵。
 	if len(rows) == 0 {
@@ -478,7 +478,8 @@ func fillSharedModelUserCosts(modelName string, rows []SharedModelUserUsage) err
 		if floatError != nil || costRmb < 0 {
 			continue
 		}
-		costCentsByUser[costRow.UserID] += int64(math.Round(costRmb * 100))
+		// 元 → 10^-5 元单位：每元 = UpstreamModelUnitsPerYuan 单位，支持 5 位小数精度喵。
+		costCentsByUser[costRow.UserID] += int64(math.Round(costRmb * float64(constant.UpstreamModelUnitsPerYuan)))
 	}
 	for i := range rows {
 		rows[i].CostCents = costCentsByUser[rows[i].UserID]
@@ -561,7 +562,7 @@ func DeleteSharedModelUserUsage(upstreamModelID int64, ownerUserID int) error {
 	return nil
 }
 
-// DeductUserUpstreamModelCharge 请求后按实际费用扣减三个递减账户，事务加行锁防止并发超扣喵。
+// DeductUserUpstreamModelCharge 请求后按实际费用（10^-5 元单位）扣减三个递减账户，事务加行锁防止并发超扣喵。
 // isShared 为 true 时扣「余额+可用+共享」，为 false 时扣「余额+可用」喵。
 func DeductUserUpstreamModelCharge(upstreamModelID int64, ownerUserID int, costCents int64, isShared bool) error {
 	// 喵~防御：费用必须非负，负数费用是计费缺陷，直接拒绝避免余额被错误增加喵。
@@ -612,7 +613,7 @@ var ErrUserUpstreamModelInsufficientQuota = errors.New("user upstream model quot
 // 钳制本身仍提交部分扣减（绝不产生负账户），仅用错误标记让调用方感知异常喵。
 var ErrUserUpstreamModelSettlementInsufficient = errors.New("user upstream model settlement insufficient")
 
-// PreConsumeUserUpstreamModelCharge 请求前按预估费用原子预扣三个递减账户喵。
+// PreConsumeUserUpstreamModelCharge 请求前按预估费用（10^-5 元单位）原子预扣三个递减账户喵。
 // 任一账户不足时返回 ErrUserUpstreamModelInsufficientQuota 且不扣减任何账户，保证整体性喵。
 func PreConsumeUserUpstreamModelCharge(upstreamModelID int64, ownerUserID int, cents int64, isShared bool) error {
 	// 喵~防御：费用必须非负，负数拒绝避免反向增加余额喵。
@@ -649,7 +650,7 @@ func PreConsumeUserUpstreamModelCharge(upstreamModelID int64, ownerUserID int, c
 	})
 }
 
-// AdjustUserUpstreamModelCharge 请求后按差额结算预扣账户喵。
+// AdjustUserUpstreamModelCharge 请求后按差额（10^-5 元单位）结算预扣账户喵。
 // deltaCents 为实际费用减预扣费用：正数补扣差额（钳制非负）、负数退还差额、零不写库喵。
 // 正数补扣因余额不足被钳制时仍提交部分扣减，但返回 ErrUserUpstreamModelSettlementInsufficient 供结算侧记录异常喵。
 func AdjustUserUpstreamModelCharge(upstreamModelID int64, ownerUserID int, deltaCents int64, isShared bool) error {

@@ -19,8 +19,11 @@ func StreamProbeContentChars(data string) int {
 	// 依次尝试常见格式的文本字段，命中即返回其内容字节数喵。
 	contentFields := []string{
 		"choices.0.delta.content",           // OpenAI 聊天流式增量喵。
+		"choices.0.delta.reasoning_content", // OpenAI 聊天推理增量（DeepSeek R1 风格），长思考模型也视为业务内容喵。
+		"choices.0.delta.reasoning",         // 部分中转站的推理增量字段别名喵。
 		"choices.0.message.content",         // OpenAI 消息体内容喵。
 		"delta.text",                        // Claude 流式增量喵。
+		"delta.thinking",                    // Claude 思考增量（thinking_delta 事件）喵。
 		"candidates.0.content.parts.0.text", // Gemini 流式文本喵。
 		"output.0.content.0.text",           // OpenAI Responses 流式喵。
 		"result",                            // 百度文心流式喵。

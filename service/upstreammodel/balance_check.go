@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	virtualmodelservice "github.com/QuantumNous/new-api/service/virtualmodel"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -40,7 +41,7 @@ type openAIUsage struct {
 	TotalUsage float64 // 单位：0.01 美元喵
 }
 
-// CheckUserUpstreamModelBalanceCents 嗅探上游 key 的剩余额度，返回 RMB 分喵。
+// CheckUserUpstreamModelBalanceCents 嗅探上游 key 的剩余额度，返回 10^-5 元单位喵。
 // 默认走 OpenAI 标准 billing 接口；BalanceCheckPath 非空时走自定义路径喵。
 func CheckUserUpstreamModelBalanceCents(upstreamModel *model.UserUpstreamModel) (int64, error) {
 	// 喵~防御：空对象直接返回错误喵。
@@ -61,7 +62,7 @@ func CheckUserUpstreamModelBalanceCents(upstreamModel *model.UserUpstreamModel) 
 	if fetchError != nil {
 		return 0, fetchError
 	}
-	// 美元余额按配置汇率转 RMB 分；异常值由转换函数钳制为零喵。
+	// 美元余额按配置汇率转 10^-5 元单位；异常值由转换函数钳制为零喵。
 	return usdToCnyCents(balanceUSD), nil
 }
 
@@ -226,7 +227,7 @@ func parseCustomBalanceResponse(body []byte) (float64, error) {
 	return 0, errors.New("balance check response is invalid")
 }
 
-// usdToCnyCents 把美元余额按配置汇率转成 RMB 分，异常值钳制为零喵。
+// usdToCnyCents 把美元余额按配置汇率转成 10^-5 元单位，异常值钳制为零喵。
 func usdToCnyCents(usd float64) int64 {
 	// 喵~防御：非有限值或负数按零处理，避免污染展示或余额喵。
 	if math.IsNaN(usd) || math.IsInf(usd, 0) || usd < 0 {
@@ -237,10 +238,11 @@ func usdToCnyCents(usd float64) int64 {
 	if math.IsNaN(ratio) || math.IsInf(ratio, 0) || ratio <= 0 {
 		return 0
 	}
-	cents := math.Round(usd * ratio * 100)
+	// 美元余额 × 汇率 = RMB 元，再 × 每元单位数得到细粒度计费单位喵。
+	units := math.Round(usd * ratio * float64(constant.UpstreamModelUnitsPerYuan))
 	// 喵~防御：超大结果钳制到 int64 安全范围喵。
-	if cents >= float64(math.MaxInt64) {
+	if units >= float64(math.MaxInt64) {
 		return math.MaxInt64
 	}
-	return int64(cents)
+	return int64(units)
 }

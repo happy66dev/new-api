@@ -397,7 +397,7 @@ func TestHandleUpstreamModelRelayFailure(t *testing.T) {
 	}()
 
 	// 用真实凭据加密生成模型条目，使解密与注入全链路可跑通喵。
-	// ModelRatio=1000：输入按 min 兜底 500 token 估算，预扣 500×1000/1e6×100=50 分，在余额内且非零，验证失败退款路径喵。
+	// ModelRatio=1000：输入按 min 兜底 500 token 估算，预扣 500×1000/1e6×100000=50000 单位（0.5 元），在余额内且非零，验证失败退款路径喵。
 	baseURLCipher, version, encryptError := virtualmodelservice.EncryptCredential("https://upstream.example.com")
 	require.NoError(t, encryptError)
 	apiKeyCipher, _, apiKeyError := virtualmodelservice.EncryptCredential("sk-test")
@@ -411,8 +411,8 @@ func TestHandleUpstreamModelRelayFailure(t *testing.T) {
 		EncryptedAPIKey:      apiKeyCipher,
 		CredentialVersion:    version,
 		RealModelName:        "gpt-4o",
-		BalanceCents:         1000,
-		AvailableCents:       800,
+		BalanceCents:         500000,
+		AvailableCents:       400000,
 		AuthStyle:            "bearer",
 		ModelRatio:           "1000",
 		CompletionRatio:      "1",
@@ -435,7 +435,7 @@ func TestHandleUpstreamModelRelayFailure(t *testing.T) {
 	handled := handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "user/demo"})
 	require.False(t, handled)
 	require.True(t, IsUpstreamModelRelayRequest(ctx))
-	// 预扣已发生：输入按 min 兜底 500 token，ModelRatio=1000 时预扣 50 分喵。
+	// 预扣已发生：输入按 min 兜底 500 token，ModelRatio=1000 时预扣 50000 单位（0.5 元）喵。
 	require.Positive(t, getUserUpstreamModelRelayContext(ctx).preConsumedCents)
 
 	// 模拟 relay 失败：上游 429 限流喵。
@@ -488,7 +488,7 @@ func TestHandleUserUpstreamModelRequestVirtualFailureRefunds(t *testing.T) {
 	require.NoError(t, encryptError)
 	apiKeyCipher, _, apiKeyError := virtualmodelservice.EncryptCredential("sk-test")
 	require.NoError(t, apiKeyError)
-	// ModelRatio=1000：输入按 min 兜底 500 token 估算，预扣 500×1000/1e6×100=50 分，在余额内且非零喵。
+	// ModelRatio=1000：输入按 min 兜底 500 token 估算，预扣 500×1000/1e6×100000=50000 单位（0.5 元），在余额内且非零喵。
 	require.NoError(t, testDB.Create(&model.UserUpstreamModel{
 		OwnerUserID:          7,
 		NormalizedName:       "demo",
@@ -498,9 +498,9 @@ func TestHandleUserUpstreamModelRequestVirtualFailureRefunds(t *testing.T) {
 		EncryptedAPIKey:      apiKeyCipher,
 		CredentialVersion:    version,
 		RealModelName:        "gpt-4o",
-		BalanceCents:         1000,
-		AvailableCents:       800,
-		ShareLimitCents:      2000,
+		BalanceCents:         500000,
+		AvailableCents:       400000,
+		ShareLimitCents:      1000000,
 		AuthStyle:            "bearer",
 		ModelRatio:           "1000",
 		CompletionRatio:      "1",
@@ -540,12 +540,12 @@ func TestHandleUserUpstreamModelRequestVirtualFailureRefunds(t *testing.T) {
 	require.False(t, handled)
 	require.Equal(t, http.StatusTooManyRequests, recorder.Code)
 
-	// 预扣已全额退还：余额 1000、可用 800、共享 2000 与初始值一致，绝不锁死额度喵。
+	// 预扣已全额退还：余额 500000、可用 400000、共享 1000000 与初始值一致，绝不锁死额度喵。
 	var settled model.UserUpstreamModel
 	require.NoError(t, testDB.Where("normalized_name = ?", "demo").First(&settled).Error)
-	require.Equal(t, int64(1000), settled.BalanceCents)
-	require.Equal(t, int64(800), settled.AvailableCents)
-	require.Equal(t, int64(2000), settled.ShareLimitCents)
+	require.Equal(t, int64(500000), settled.BalanceCents)
+	require.Equal(t, int64(400000), settled.AvailableCents)
+	require.Equal(t, int64(1000000), settled.ShareLimitCents)
 	// 活跃计数回到基线：失败透传已退出活跃，本次调用不新增并发占用喵。
 	self, shared := GetUpstreamModelActiveCount(settled.ID)
 	require.Equal(t, selfBefore, self)
@@ -562,8 +562,8 @@ func TestHandleUserUpstreamModelRequestDecryptFailureRefunds(t *testing.T) {
 	defer func() { model.DB = oldDB }()
 
 	// 余额充足但密文无效的模型：解密失败返回 503，且预扣必须全额退还喵。
-	// ModelRatio=1000：输入按 min 兜底 500 token 估算，预扣 50 分喵。
-	require.NoError(t, testDB.Create(&model.UserUpstreamModel{OwnerUserID: 7, NormalizedName: "bad-cred", Enabled: true, BalanceCents: 1000, AvailableCents: 800, EncryptedBaseURL: "bad-enc", EncryptedAPIKey: "bad-enc", CredentialVersion: 1, RealModelName: "gpt-4o", ModelRatio: "1000"}).Error)
+	// ModelRatio=1000：输入按 min 兜底 500 token 估算，预扣 50000 单位（0.5 元）喵。
+	require.NoError(t, testDB.Create(&model.UserUpstreamModel{OwnerUserID: 7, NormalizedName: "bad-cred", Enabled: true, BalanceCents: 500000, AvailableCents: 400000, EncryptedBaseURL: "bad-enc", EncryptedAPIKey: "bad-enc", CredentialVersion: 1, RealModelName: "gpt-4o", ModelRatio: "1000"}).Error)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/bad-cred","messages":[]}`))
@@ -579,8 +579,8 @@ func TestHandleUserUpstreamModelRequestDecryptFailureRefunds(t *testing.T) {
 	// 预扣已全额退还：余额与可用额度回到初始值喵。
 	var settled model.UserUpstreamModel
 	require.NoError(t, testDB.Where("normalized_name = ?", "bad-cred").First(&settled).Error)
-	require.Equal(t, int64(1000), settled.BalanceCents)
-	require.Equal(t, int64(800), settled.AvailableCents)
+	require.Equal(t, int64(500000), settled.BalanceCents)
+	require.Equal(t, int64(400000), settled.AvailableCents)
 	// 活跃计数回到基线：解密失败已退出活跃，本次调用不新增并发占用喵。
 	self, shared := GetUpstreamModelActiveCount(settled.ID)
 	require.Equal(t, selfBefore, self)

@@ -4,13 +4,15 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/shopspring/decimal"
 )
 
-// CalculateUpstreamModelCostCents 按每类型直接价格计算一次请求的 RMB 费用（分）喵。
+// CalculateUpstreamModelCostCents 按每类型直接价格计算一次请求的费用（单位：10^-5 元）喵。
 // 每个价格字段代表"每百万该类型 token 的 RMB 元"，各分类 token 数乘各自价格后求和喵。
+// 返回值单位与三账户（balance/available/share_limit）一致，支持 5 位小数精度喵。
 func CalculateUpstreamModelCostCents(upstreamModel *model.UserUpstreamModel, usage *dto.Usage) (int64, error) {
 	// 喵~防御：空对象或空 usage 直接返回零费用，不产生计费喵。
 	if upstreamModel == nil || usage == nil {
@@ -64,7 +66,7 @@ func CalculateUpstreamModelCostCents(upstreamModel *model.UserUpstreamModel, usa
 		remainingCacheCreationTokens = 0
 	}
 
-	// 各分类 token 数乘各自价格（每百万 token RMB 元）后求和，再 /1e6 转元、×100 转分喵。
+	// 各分类 token 数乘各自价格（每百万 token RMB 元）后求和，再 /1e6 转元、×单位换算 转 10^-5 元喵。
 	costDecimal := decimal.NewFromInt(promptBaseTokens).Mul(modelRatio).
 		Add(decimal.NewFromInt(cachedTokens).Mul(cacheRatio)).
 		Add(decimal.NewFromInt(remainingCacheCreationTokens).Mul(cacheCreationRatio)).
@@ -74,13 +76,13 @@ func CalculateUpstreamModelCostCents(upstreamModel *model.UserUpstreamModel, usa
 		Add(decimal.NewFromInt(audioTokens).Mul(audioRatio)).
 		Add(decimal.NewFromInt(textCompletionTokens).Mul(completionRatio)).
 		Add(decimal.NewFromInt(audioCompletionTokens).Mul(audioCompletionRatio)).
-		Div(decimal.NewFromInt(1_000_000)).Mul(decimal.NewFromInt(100))
-	costCents, clamp := common.QuotaFromDecimalChecked(costDecimal)
-	// 主人注意：费用转分可能因异常上游 token 数触发饱和钳制，超大的 usage 会被钳制到安全上限喵。
+		Div(decimal.NewFromInt(1_000_000)).Mul(decimal.NewFromInt(constant.UpstreamModelUnitsPerYuan))
+	costUnits, clamp := common.QuotaFromDecimalChecked(costDecimal)
+	// 主人注意：费用转 10^-5 元单位可能因异常上游 token 数触发饱和钳制，超大的 usage 会被钳制到安全上限喵。
 	if clamp != nil {
 		common.SysError("user upstream model charge clamped: " + clamp.Error())
 	}
-	return int64(costCents), nil
+	return int64(costUnits), nil
 }
 
 // parseModelRatio 解析输入价格（每百万 token RMB 元）；空值回退为一元，非法值回退为零（不计费）喵。

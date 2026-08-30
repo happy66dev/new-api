@@ -14,6 +14,7 @@ import (
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	upstreammodelservice "github.com/QuantumNous/new-api/service/upstreammodel"
 	virtualmodelservice "github.com/QuantumNous/new-api/service/virtualmodel"
 	"github.com/gin-gonic/gin"
@@ -150,6 +151,24 @@ func getUpstreamModelRelayUsage(c *gin.Context) *dto.Usage {
 	return usage
 }
 
+// readUpstreamModelRelayRequestBody 读取可复用 JSON 请求体，失败返回错误喵。
+func readUpstreamModelRelayRequestBody(c *gin.Context) ([]byte, error) {
+	// 喵~防御：空上下文直接返回错误，避免空指针喵。
+	if c == nil {
+		return nil, errors.New("missing gin context")
+	}
+	bodyStorage, storageError := common.GetBodyStorage(c)
+	// 喵~防御：无法读取请求体存储时返回错误，由调用方回退喵。
+	if storageError != nil {
+		return nil, storageError
+	}
+	requestBody, bodyError := bodyStorage.Bytes()
+	if bodyError != nil {
+		return nil, bodyError
+	}
+	return requestBody, nil
+}
+
 // SettleUpstreamModelRelaySuccess 在自定义上游 relay 成功后完成独立 RMB 结算与状态探测喵。
 // 由 controller.Relay 成功分支调用；ttftMs 为响应头到达耗时（毫秒），零表示未测到喵。
 func SettleUpstreamModelRelaySuccess(c *gin.Context, ttftMs int64) {
@@ -159,11 +178,20 @@ func SettleUpstreamModelRelaySuccess(c *gin.Context, ttftMs int64) {
 		return
 	}
 	usage := getUpstreamModelRelayUsage(c)
-	// 耗时口径：总耗时取请求入口到当前，首字优先取请求级打点，其次上游 TTFT 兜底喵。
+	// relay 成功但未解析出 usage（罕见：格式转换路径未带出计费信息）：
+	// 按请求体估算 prompt 兜底参与结算，completion 因响应流已直传、无文本可估，标记为估算来源喵。
+	if usage == nil {
+		if requestBody, bodyErr := readUpstreamModelRelayRequestBody(c); bodyErr == nil {
+			if estimated := service.EstimateUsageFromTexts(relayCtx.upstreamModel.RealModelName, requestBody, ""); estimated != nil {
+				usage = estimated
+			}
+		}
+	}
+	// 耗时口径：总耗时取请求入口到当前，首字优先取上游首次响应时间，其次请求级打点兜底喵。
 	requestElapsedMs := time.Since(relayCtx.startTime).Milliseconds()
 	requestFirstByteMs := ttftMs
-	if firstByteMs := virtualModelFirstByteMs(c); firstByteMs > 0 {
-		requestFirstByteMs = firstByteMs
+	if requestFirstByteMs <= 0 {
+		requestFirstByteMs = virtualModelFirstByteMs(c)
 	}
 	// 成功结算：上游模型探测成功 + 独立 RMB 结算 + 日志喵。
 	result := &virtualmodelservice.UserUpstreamModelExecutionResult{Usage: usage, TtftMs: ttftMs}
@@ -387,13 +415,19 @@ func executeUserUpstreamModelPassthrough(c *gin.Context, upstreamModel *model.Us
 	}
 	// 耗时口径：虚拟模型上下文取请求级（new-api 接收请求 → 首次写响应 / 请求完成）喵。
 	requestElapsedMs := time.Since(startTime).Milliseconds()
-	requestFirstByteMs := executionResult.TtftMs
 	if executionState, foundState := getVirtualModelExecutionState(c); foundState && executionState != nil && !executionState.startTime.IsZero() {
 		requestElapsedMs = time.Since(executionState.startTime).Milliseconds()
 	}
-	// 请求级首字：首次向客户端写响应时刻减请求入口时刻；未打点时回退上游 TTFT 兜底喵。
-	if firstByteMs := virtualModelFirstByteMs(c); firstByteMs > 0 {
-		requestFirstByteMs = firstByteMs
+	// 首字（TTFT）口径：优先取上游响应头到达时刻（与候选尝试序列的 ttft_ms 一致），
+	// 未测到时回退请求级首次写响应，再回退总耗时近似喵。
+	// 主人注意：流式场景首次写客户端受探测放流影响（长思考模型会把首次写拖到回答开始），
+	// 它不能代表「上游首个响应字节」，因此这里以 executionResult.TtftMs 为准喵。
+	requestFirstByteMs := executionResult.TtftMs
+	if requestFirstByteMs <= 0 {
+		requestFirstByteMs = virtualModelFirstByteMs(c)
+	}
+	if requestFirstByteMs <= 0 {
+		requestFirstByteMs = requestElapsedMs
 	}
 	// 虚拟模型 user/xxx 内部候选成功：先追加成功尝试摘要，确保日志写入时候选序列已包含本次成功喵。
 	if executionState, foundState := getVirtualModelExecutionState(c); foundState && executionState != nil && executionState.currentCandidateIndex >= 0 && executionState.currentCandidateIndex < len(executionState.executionSnapshot.Candidates) {
@@ -771,7 +805,8 @@ func settleUserUpstreamModelCharge(c *gin.Context, ownerUserID int, upstreamMode
 	estimatedTokens := usage != nil && usage.BillingUsage != nil && usage.BillingUsage.Estimated
 	// Other 记录独立 RMB 计费明细，供日志详情与筛选展示喵。
 	other := map[string]interface{}{
-		"custom_cost_rmb":          fmt.Sprintf("%.4f", float64(costCents)/100.0),
+		// 费用按 10^-5 元单位换算成元展示，保留 5 位小数精度喵。
+		"custom_cost_rmb":          fmt.Sprintf("%.5f", float64(costCents)/float64(constant.UpstreamModelUnitsPerYuan)),
 		"pre_consumed_cents":       preConsumedCents,
 		"model_ratio":              upstreamModel.ModelRatio,
 		"completion_ratio":         upstreamModel.CompletionRatio,
@@ -850,7 +885,7 @@ func recordUserUpstreamModelFailureLog(c *gin.Context, upstreamModel *model.User
 		}
 	}
 	other := map[string]interface{}{
-		"custom_cost_rmb": "0.0000",
+		"custom_cost_rmb": "0.00000",
 		"is_shared_call":  isShared,
 		"error_class":     customFailure.Failure.ErrorClass,
 		"http_status":     customFailure.Failure.HTTPStatus,
@@ -919,7 +954,7 @@ const upstreamModelPreConsumeMinPromptTokens = 500
 // 输出 token 直接乘输出单价进入预扣金额，无界 max_tokens 可锁死全部余额，必须钳制到安全上限喵。
 const userUpstreamModelMaxTokensLimit = math.MaxInt32 / 2
 
-// estimateUserUpstreamModelCostCents 请求前按请求体估算一次调用的费用（分），供预扣使用喵。
+// estimateUserUpstreamModelCostCents 请求前按请求体估算一次调用的费用（10^-5 元单位），供预扣使用喵。
 // 输入 token 按请求体字节数/4 保守估算并钳制到最小兜底值；输出 token 取请求的 max_tokens 系列上限喵。
 func estimateUserUpstreamModelCostCents(upstreamModel *model.UserUpstreamModel, requestBody []byte) int64 {
 	// 喵~防御：空模型对象按零费用预估，避免空指针喵。
@@ -959,7 +994,7 @@ func estimateUserUpstreamModelCostCents(upstreamModel *model.UserUpstreamModel, 
 	return estimatedCents
 }
 
-// preConsumeUserUpstreamModelCharge 按请求体预估费用并原子预扣三账户，返回预扣金额（分）喵。
+// preConsumeUserUpstreamModelCharge 按请求体预估费用并原子预扣三账户，返回预扣金额（10^-5 元单位）喵。
 // 模型未定价或预估费用为零时预扣金额为零且视为成功；账户不足时返回 ErrUserUpstreamModelInsufficientQuota 喵。
 func preConsumeUserUpstreamModelCharge(c *gin.Context, upstreamModel *model.UserUpstreamModel, isShared bool) (int64, error) {
 	// 喵~防御：空上下文或空模型对象按零预扣处理，避免空指针喵。

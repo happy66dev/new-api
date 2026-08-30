@@ -22,6 +22,7 @@ import { useTranslation } from 'react-i18next'
 
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { getLobeIcon } from '@/lib/lobe-icon'
+import { unitsToYuan } from '@/lib/upstream-model-units'
 import { cn } from '@/lib/utils'
 
 import { DEFAULT_TOKEN_UNIT } from '../constants'
@@ -303,19 +304,19 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
           <span className='text-muted-foreground/80 inline-flex items-center gap-1 text-xs'>
             {t('Shared remaining')}
             <span className='font-mono font-semibold whitespace-nowrap'>
-              ¥{((props.model.share_remaining_cents ?? 0) / 100).toFixed(2)}
+              ¥{unitsToYuan(props.model.share_remaining_cents ?? 0)}
             </span>
           </span>
           {props.model.share_limit_cents != null && (
             <span className='text-muted-foreground/50 text-xs whitespace-nowrap'>
-              / ¥{(props.model.share_limit_cents / 100).toFixed(2)}
+              / ¥{unitsToYuan(props.model.share_limit_cents)}
             </span>
           )}
           {props.model.balance_cents != null && (
             <span className='text-muted-foreground/80 inline-flex items-center gap-1 text-xs'>
               {t('Balance')}
               <span className='font-mono font-semibold whitespace-nowrap'>
-                ¥{(props.model.balance_cents / 100).toFixed(2)}
+                ¥{unitsToYuan(props.model.balance_cents)}
               </span>
             </span>
           )}

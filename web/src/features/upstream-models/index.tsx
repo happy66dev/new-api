@@ -39,6 +39,7 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { formatTimestampToDate } from '@/lib/format'
 import { getLobeIcon } from '@/lib/lobe-icon'
+import { unitsToYuan, yuanToUnits } from '@/lib/upstream-model-units'
 import { EntityStatusDot, type EntityStatusSummary } from '@/features/status-check/entity-status-dot'
 import { EntityPerformanceDrawer } from '@/features/status-check/entity-performance-drawer'
 
@@ -60,13 +61,7 @@ import type {
   UserUpstreamModelInput,
 } from './api'
 
-// 金额辅助函数：分与元互转，用户以元输入、后端以分存储喵。
-const centsToYuan = (cents: number): string => (cents / 100).toFixed(2)
-const yuanToCents = (yuan: string): number => {
-  // 喵~防御：非法或空输入回退为 0，避免 NaN 写入后端喵。
-  const parsed = Number.parseFloat(yuan)
-  return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed * 100) : 0
-}
+// 金额换算统一走 lib/upstream-model-units：用户以元输入、后端以 10^-5 元单位存储喵。
 
 // isValidRatioText 校验计费比例文本：空串视为未填写跳过，其余必须是有限非负数字喵。
 const isValidRatioText = (text: string): boolean => {
@@ -168,10 +163,10 @@ function UpstreamModelDrawer({
     setImageRatio(model?.image_ratio ?? '1')
     setAudioRatio(model?.audio_ratio ?? '1')
     setAudioCompletionRatio(model?.audio_completion_ratio ?? '1')
-    setBalanceYuan(centsToYuan(model?.balance_cents ?? 0))
-    setAvailableYuan(centsToYuan(model?.available_cents ?? model?.spend_limit_cents ?? 0))
+    setBalanceYuan(unitsToYuan(model?.balance_cents ?? 0))
+    setAvailableYuan(unitsToYuan(model?.available_cents ?? model?.spend_limit_cents ?? 0))
     setShareEnabled(model?.share_enabled ?? false)
-    setShareLimitYuan(centsToYuan(model?.share_limit_cents ?? 0))
+    setShareLimitYuan(unitsToYuan(model?.share_limit_cents ?? 0))
     // 模式回填：显式 share_list_mode 优先，旧数据按非空名单推断喵。
     const listMode = model?.share_list_mode
     if (listMode === 'whitelist' || listMode === 'blacklist') {
@@ -277,10 +272,10 @@ function UpstreamModelDrawer({
       image_ratio: imageRatio,
       audio_ratio: audioRatio,
       audio_completion_ratio: audioCompletionRatio,
-      balance_cents: yuanToCents(balanceYuan),
-      available_cents: yuanToCents(availableYuan),
+      balance_cents: yuanToUnits(balanceYuan),
+      available_cents: yuanToUnits(availableYuan),
       share_enabled: shareEnabled,
-      share_limit_cents: yuanToCents(shareLimitYuan),
+      share_limit_cents: yuanToUnits(shareLimitYuan),
       // 白名单/黑名单模式二选一：只写对应列，另一列清空；all 模式两者都空喵。
       share_whitelist: shareListMode === 'whitelist' ? shareList : '',
       share_blacklist: shareListMode === 'blacklist' ? shareList : '',
@@ -563,7 +558,7 @@ function UpstreamModelDrawer({
             </p>
             {model && model.upstream_remaining_cents > 0 && (
               <p className='text-muted-foreground text-xs'>
-                {t('Upstream remaining')}: {centsToYuan(model.upstream_remaining_cents)} ¥
+                {t('Upstream remaining')}: {unitsToYuan(model.upstream_remaining_cents)} ¥
               </p>
             )}
             <label className='flex items-center justify-between gap-3 text-sm'>
@@ -791,8 +786,8 @@ export function UpstreamModelUsageDrawer({
                       <td className='px-3 py-2'>{row.user_id}</td>
                       <td className='px-3 py-2'>{row.username || '-'}</td>
                       <td className='px-3 py-2'>{row.request_count}</td>
-                      {/* 费用金额（分）转元展示，只统计该用户使用产生的费用喵。 */}
-                      <td className='px-3 py-2'>¥{centsToYuan(row.cost_cents)}</td>
+                      {/* 费用金额（10^-5 元单位）转元展示，只统计该用户使用产生的费用喵。 */}
+                      <td className='px-3 py-2'>¥{unitsToYuan(row.cost_cents)}</td>
                       {/* 总 token = 输入+输出合计，不再细分喵。 */}
                       <td className='px-3 py-2'>{row.total_tokens.toLocaleString()}</td>
                       <td className='px-3 py-2'>{formatTimestampToDate(row.last_at)}</td>
@@ -951,8 +946,8 @@ export function UpstreamModels() {
                   {item.base_url ? ` · ${item.base_url}` : ''}
                 </div>
                 <div className='text-muted-foreground mt-1 text-xs'>
-                  {t('Balance')}: {centsToYuan(item.balance_cents)} ¥ · {t('Available')}: {centsToYuan(item.available_cents)} ¥ ·{' '}
-                  {t('Shared balance')}: {centsToYuan(item.share_limit_cents)} ¥
+                  {t('Balance')}: {unitsToYuan(item.balance_cents)} ¥ · {t('Available')}: {unitsToYuan(item.available_cents)} ¥ ·{' '}
+                  {t('Shared balance')}: {unitsToYuan(item.share_limit_cents)} ¥
                 </div>
               </div>
               <div className='flex shrink-0 items-center gap-2'>

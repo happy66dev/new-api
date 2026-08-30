@@ -12,17 +12,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestUSDToCnyCents 验证美元余额转 RMB 分与异常钳制喵。
+// TestUSDToCnyCents 验证美元余额转 10^-5 元单位与异常钳制喵。
 func TestUSDToCnyCents(t *testing.T) {
 	// 固定汇率 7.0 以便精确断言，结束后恢复喵。
 	oldRate := operation_setting.USDExchangeRate
 	operation_setting.USDExchangeRate = 7.0
 	defer func() { operation_setting.USDExchangeRate = oldRate }()
 
-	// 1 美元 = 7 元 = 700 分喵。
-	assert.Equal(t, int64(700), usdToCnyCents(1.0))
-	// 0.5 美元 = 3.5 元 = 350 分喵。
-	assert.Equal(t, int64(350), usdToCnyCents(0.5))
+	// 1 美元 = 7 元 = 700000 单位（10^-5 元）喵。
+	assert.Equal(t, int64(700000), usdToCnyCents(1.0))
+	// 0.5 美元 = 3.5 元 = 350000 单位喵。
+	assert.Equal(t, int64(350000), usdToCnyCents(0.5))
 	// 负数、NaN、正负无穷一律钳制为零，绝不污染展示或余额喵。
 	assert.Equal(t, int64(0), usdToCnyCents(-1.0))
 	assert.Equal(t, int64(0), usdToCnyCents(math.NaN()))

@@ -427,6 +427,9 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 		// 只有真正解析到 token 计数才返回 usage，否则按请求/响应文本估计参与计费喵。
 		if !usageHasTokens(usage) {
 			usage = service.EstimateUsageFromTexts(input.RealModelName, requestBody, responseTextBuilder.String())
+		} else {
+			// 上游只给了部分 token（如只有 prompt 无 completion）：用响应文本估算缺失侧，避免输出 token 为 0 喵。
+			usage = fillEstimatedUsageIfMissing(input.RealModelName, usage, requestBody, responseTextBuilder.String())
 		}
 		return &CustomCandidateExecutionResult{Usage: usage, TtftMs: ttftMs}
 	}
@@ -454,6 +457,9 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 	// 上游未提供 token 时按响应文本估计 completion，配合请求体估计 prompt 参与计费喵。
 	if !usageHasTokens(usage) {
 		usage = service.EstimateUsageFromTexts(input.RealModelName, requestBody, responseContentFromBody(responseBody))
+	} else {
+		// 上游只给了部分 token：用文本估算缺失侧，避免输出 token 为 0 喵。
+		usage = fillEstimatedUsageIfMissing(input.RealModelName, usage, requestBody, responseContentFromBody(responseBody))
 	}
 	copyCustomResponseHeaders(c.Writer.Header(), response.Header)
 	c.Status(response.StatusCode)

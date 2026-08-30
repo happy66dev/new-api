@@ -25,6 +25,10 @@ func customProbeContentChars(dataPayload string) int {
 			if deltaText := gjson.Get(dataPayload, "delta.text"); deltaText.Exists() && deltaText.Type == gjson.String {
 				return len(strings.TrimSpace(deltaText.String()))
 			}
+			// Anthropic 思考增量（thinking_delta）：长思考模型也视为业务内容，避免探测拖到回答才开始放流喵。
+			if thinkingText := gjson.Get(dataPayload, "delta.thinking"); thinkingText.Exists() && thinkingText.Type == gjson.String {
+				return len(strings.TrimSpace(thinkingText.String()))
+			}
 			// 工具调用等非文本增量不计为内容喵。
 			return 0
 		// OpenAI Responses 文本增量事件喵。

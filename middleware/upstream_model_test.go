@@ -138,7 +138,7 @@ func TestHandleUserUpstreamModelRequestShared(t *testing.T) {
 	model.DB = testDB
 	defer func() { model.DB = oldDB }()
 
-	// 用户 7 拥有一个共享中的模型，余额 100 分、可用 200 分、共享额度 1000 分喵。
+	// 用户 7 拥有一个共享中的模型，余额 100 单位、可用 200 单位、共享额度 1000 单位（单位：10^-5 元）喵。
 	require.NoError(t, testDB.Create(&model.UserUpstreamModel{OwnerUserID: 7, NormalizedName: "shared", Enabled: true, ShareEnabled: true, ShareLimitCents: 1000, BalanceCents: 100, AvailableCents: 200, EncryptedBaseURL: "bad-enc", EncryptedAPIKey: "bad-enc", CredentialVersion: 1, RealModelName: "gpt-4o"}).Error)
 
 	// 用户 8 调用共享模型：授权回退到共享路径并放行，密文无效返回 503 而非 404 喵。
@@ -302,7 +302,7 @@ func TestSettleUserUpstreamModelChargeNegativeCostClamped(t *testing.T) {
 	// 模型配置极大 image_ratio：负数 image_tokens 若不钳制将产生显著负费用、结算时凭空加钱喵。
 	upstreamModel := &model.UserUpstreamModel{OwnerUserID: 7, NormalizedName: "neg-img", Enabled: true, RealModelName: "gpt-4o", ModelRatio: "1", ImageRatio: "100000", BalanceCents: 10000, AvailableCents: 10000}
 	require.NoError(t, testDB.Create(upstreamModel).Error)
-	// 模拟请求前预扣 50 分：余额与可用额度先各减 50 喵。
+	// 模拟请求前预扣 50 单位（10^-5 元，即 0.0005 元）：余额与可用额度先各减 50 喵。
 	require.NoError(t, testDB.Model(&model.UserUpstreamModel{}).Where("normalized_name = ?", "neg-img").Updates(map[string]interface{}{"balance_cents": 9950, "available_cents": 9950}).Error)
 
 	// usage 携带负数 image_tokens，模拟上游异常计费数据喵。
@@ -313,14 +313,15 @@ func TestSettleUserUpstreamModelChargeNegativeCostClamped(t *testing.T) {
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/neg-img"}`))
 	ctx.Set("id", 7)
 
-	// 预扣 50 分后实际费用被钳制为 0：只退还预扣的 50，账户回到初始值，绝不额外加钱喵。
-	// 修复前 deltaCents=-1050 会走退款分支加回 1050 分，凭空给用户多退回 1000 分喵。
+	// 负数 image_tokens 在算费函数内被钳制为 0，不会产生负费用喵。
+	// 100 个 prompt token × 1 元/M 产生 10 单位费用（0.0001 元），预扣 50、实际 10，差额退款 40：账户回落到 9990 喵。
+	// 修复前负数费用会走退款分支加回超额金额，凭空给用户多退钱；现在绝不额外加钱喵。
 	settleUserUpstreamModelCharge(ctx, 7, upstreamModel, usage, "default", false, 1, false, 0, 50)
 
 	var settled model.UserUpstreamModel
 	require.NoError(t, testDB.Where("normalized_name = ?", "neg-img").First(&settled).Error)
-	require.Equal(t, int64(10000), settled.BalanceCents)
-	require.Equal(t, int64(10000), settled.AvailableCents)
+	require.Equal(t, int64(9990), settled.BalanceCents)
+	require.Equal(t, int64(9990), settled.AvailableCents)
 }
 
 // TestEstimateUserUpstreamModelCostCents 验证请求前预估费用：输入按 body 字节/4 估算、输出按 max_tokens 上限喵。
@@ -332,14 +333,14 @@ func TestEstimateUserUpstreamModelCostCents(t *testing.T) {
 	// 带 max_tokens=2000 的请求体：输出按 2000 token 上限预估喵。
 	body := []byte(`{"messages":[{"role":"user","content":"` + longContent + `"}],"max_tokens":2000}`)
 	expectedPromptTokens := len(body) / 4
-	// 输入与输出分别乘各自单价后 /1e6 转元、×100 转分，与结算函数口径一致，四舍五入取整喵。
-	expectedCents := int64(math.Round(float64(expectedPromptTokens*10+2000*20) / 1e4))
+	// 输入与输出分别乘各自单价后 /1e6 转元、×100000 转 10^-5 元单位（÷10），与结算函数口径一致，四舍五入取整喵。
+	expectedCents := int64(math.Round(float64(expectedPromptTokens*10+2000*20) / 10))
 	require.Equal(t, expectedCents, estimateUserUpstreamModelCostCents(upstreamModel, body))
 
 	// 同一请求体去掉 max_tokens：输出部分不参与预估，费用显著更小喵。
 	bodyNoMax := []byte(`{"messages":[{"role":"user","content":"` + longContent + `"}]}`)
 	expectedPromptTokensNoMax := len(bodyNoMax) / 4
-	expectedCentsNoMax := int64(math.Round(float64(expectedPromptTokensNoMax*10) / 1e4))
+	expectedCentsNoMax := int64(math.Round(float64(expectedPromptTokensNoMax*10) / 10))
 	require.Equal(t, expectedCentsNoMax, estimateUserUpstreamModelCostCents(upstreamModel, bodyNoMax))
 	// 输出上限使预扣金额更高，保证预扣覆盖潜在超额喵。
 	require.Greater(t, estimateUserUpstreamModelCostCents(upstreamModel, body), estimateUserUpstreamModelCostCents(upstreamModel, bodyNoMax))
