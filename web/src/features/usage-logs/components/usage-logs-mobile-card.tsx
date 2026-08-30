@@ -193,9 +193,12 @@ function MobileTokensField({ log }: { log: UsageLog }) {
 
   if (!isDisplayableLogType(log.type)) return null
 
+  const other = parseLogOther(log.other)
+  const estimated = isEstimatedLog(other)
   const promptTokens = log.prompt_tokens || 0
   const completionTokens = log.completion_tokens || 0
-  if (promptTokens === 0 && completionTokens === 0) {
+  // 喵~防御：非估计日志且 token 全零时展示占位符；估计日志即使 token 为 0 也要显示「0 / 0 ?」提示喵。
+  if (!estimated && promptTokens === 0 && completionTokens === 0) {
     return (
       <div className='bg-muted/20 min-w-0 rounded-md px-2 py-1.5'>
         <span className='text-muted-foreground text-xs'>-</span>
@@ -203,8 +206,6 @@ function MobileTokensField({ log }: { log: UsageLog }) {
     )
   }
 
-  const other = parseLogOther(log.other)
-  const estimated = isEstimatedLog(other)
   // 自定上游/虚拟模型日志的缓存命中数写在 other.cached_tokens，须一并读取喵。
   const cacheReadTokens = other?.cache_tokens || other?.cached_tokens || 0
   const cacheWrite5m = other?.cache_creation_tokens_5m || 0

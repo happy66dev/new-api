@@ -699,7 +699,8 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
 
         const promptTokens = log.prompt_tokens || 0
         const completionTokens = log.completion_tokens || 0
-        if (promptTokens === 0 && completionTokens === 0) {
+        // 喵~防御：非估计日志且 token 全零时展示占位符；估计日志即使 token 为 0 也要显示「0 / 0 ?」提示喵。
+        if (!estimated && promptTokens === 0 && completionTokens === 0) {
           return <span className='text-muted-foreground text-xs'>-</span>
         }
 

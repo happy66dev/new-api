@@ -81,6 +81,11 @@ export function EntityStatusDot(props: EntityStatusDotProps) {
     ? (activeSummary?.availability ?? Number.NaN)
     : Number.NaN
   // 只有携带 24h 序列时才启用可点击详情弹层喵。
+  // 主人注意：canOpenDetails 依赖当前维度 activeSummary 的 availability_24h 字段；
+  // 若切到 shared 维度而 shared 载荷没有 24h 序列（如共享状态聚合），会从 Popover 分支降级为 Tooltip，
+  // 弹层随之关闭且无法再打开。当前生产路径均走 onOpenPerformance 回调（Tooltip 分支），
+  // shared 维度仅被测试用例触发，故此处保留现状；如需支持无序列的 shared 维度，应改为
+  // 依据「任一维度存在 24h 序列」判定 canOpenDetails，并让 AvailabilityBars 对空序列渲染空柱状图喵。
   const canOpenDetails =
     hasData && (activeSummary?.availability_24h?.length ?? 0) > 0
 

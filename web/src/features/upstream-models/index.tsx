@@ -54,7 +54,6 @@ import {
   updateUserUpstreamModel,
 } from './api'
 import type {
-  UpstreamModelSharedStatus,
   UpstreamModelStatus,
   UpstreamModelUserUsage,
   UserUpstreamModel,
@@ -67,6 +66,14 @@ const yuanToCents = (yuan: string): number => {
   // 喵~防御：非法或空输入回退为 0，避免 NaN 写入后端喵。
   const parsed = Number.parseFloat(yuan)
   return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed * 100) : 0
+}
+
+// isValidRatioText 校验计费比例文本：空串视为未填写跳过，其余必须是有限非负数字喵。
+const isValidRatioText = (text: string): boolean => {
+  const trimmed = text.trim()
+  if (trimmed === '') return true
+  const value = Number(trimmed)
+  return Number.isFinite(value) && value >= 0
 }
 
 // 自定义请求头预设：统一用户标识 UA，防止上游 UA 判断拦截请求喵。
@@ -198,6 +205,27 @@ function UpstreamModelDrawer({
     // 喵~防御：真实模型名必填，避免无模型名的上游请求喵。
     if (!realModelName.trim() || realModelName.trim().length > 128) {
       toast.error(t('Real model name is required'))
+      return
+    }
+    // 喵~防御：显示名不能为空且长度受限，避免保存无意义的空白模型喵。
+    if (!displayName.trim() || displayName.trim().length > 128) {
+      toast.error(t('Upstream model display name is required'))
+      return
+    }
+    // 喵~防御：九个计费比例字段若非空必须是合法非负数字，阻止非法值写入后端造成计费异常喵。
+    const ratioInputs = [
+      modelRatio,
+      completionRatio,
+      cacheRatio,
+      cacheCreationRatio,
+      cacheCreation5mRatio,
+      cacheCreation1hRatio,
+      imageRatio,
+      audioRatio,
+      audioCompletionRatio,
+    ]
+    if (ratioInputs.some((ratioText) => !isValidRatioText(ratioText))) {
+      toast.error(t('Upstream model ratio must be a valid number'))
       return
     }
     // 喵~防御：创建时上游地址与密钥必填，编辑留空表示保留原值喵。
@@ -641,18 +669,6 @@ function mapUpstreamModelStatus(status: UpstreamModelStatus): EntityStatusSummar
   }
 }
 
-// mapUpstreamModelSharedStatus 共享维度载荷字段较少，单独规整为摘要喵。
-function mapUpstreamModelSharedStatus(status: UpstreamModelSharedStatus): EntityStatusSummary {
-  return {
-    availability: status.availability,
-    avg_latency_ms: status.avg_latency_ms,
-    request_count: status.request_count,
-    current_requests: status.current_requests,
-    last_at: status.last_at,
-    last_success: status.last_success,
-  }
-}
-
 // UpstreamModelStatusIndicator 为单个上游模型行拉取状态并渲染健康圆点喵。
 // 点击圆点打开该上游模型的性能抽屉喵。
 function UpstreamModelStatusIndicator({ model }: { model: UserUpstreamModel }) {
@@ -660,9 +676,9 @@ function UpstreamModelStatusIndicator({ model }: { model: UserUpstreamModel }) {
   // isDrawerOpen 记录性能抽屉开关喵。
   const [isDrawerOpen, setIsDrawerOpen] = useState(false)
   const statusQuery = useQuery({
-    // 以模型 id 为键，属主行附带共享维度喵。
+    // 以模型 id 为键拉取自用维度状态喵。
     queryKey: ['upstream-model-status', model.id],
-    queryFn: () => getUpstreamModelStatus(model.id, true),
+    queryFn: () => getUpstreamModelStatus(model.id),
     staleTime: 30 * 1000,
     retry: false,
   })
@@ -673,8 +689,6 @@ function UpstreamModelStatusIndicator({ model }: { model: UserUpstreamModel }) {
         label={model.display_name || model.normalized_name}
         // 喵~防御：接口未返回数据时保持未加载状态喵。
         summary={status ? mapUpstreamModelStatus(status) : undefined}
-        // 共享维度仅在属主请求 include_shared=true 且共享有调用时由后端携带喵。
-        shared={status?.shared ? mapUpstreamModelSharedStatus(status.shared) : undefined}
         loading={statusQuery.isLoading}
         error={Boolean(statusQuery.isError)}
         onOpenPerformance={() => setIsDrawerOpen(true)}

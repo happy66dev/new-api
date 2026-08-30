@@ -17,7 +17,7 @@ import {
 import { HugeiconsIcon } from '@hugeicons/react'
 import { useQuery } from '@tanstack/react-query'
 import { ShieldCheck, Snowflake } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -67,6 +67,7 @@ import {
   type VirtualModelCandidate,
   type VirtualModelCandidateAuthStyle,
   type VirtualModelCandidateInput,
+  type VirtualModelFailureRule,
 } from '../api'
 import { VirtualModelCandidateFailureRulesEditor } from './virtual-model-candidate-failure-rules-editor'
 
@@ -511,6 +512,24 @@ export function VirtualModelCandidatesEditor({
     }
   }
 
+  // 规则抽屉当前选中的候选 id，非空时才从服务端数据中取失败规则喵。
+  const selectedCandidateID =
+    rulesCandidateIndex !== null ? draftCandidates[rulesCandidateIndex]?.id : undefined
+  // 候选无失败规则时统一复用同一空数组，避免父组件每次渲染生成新引用喵。
+  const stableEmptyFailureRules = useMemo<VirtualModelFailureRule[]>(() => [], [])
+  // 用 useMemo 稳定失败规则数组引用：候选无规则时返回共享空数组，
+  // 这样父组件因窗口聚焦 refetch 重渲染也不会触发编辑器草稿重置喵。
+  const selectedCandidateFailureRules = useMemo(
+    () => {
+      if (selectedCandidateID === undefined) return stableEmptyFailureRules
+      return (
+        (model.candidates ?? []).find((candidate) => candidate.id === selectedCandidateID)
+          ?.failure_rules ?? stableEmptyFailureRules
+      )
+    },
+    [selectedCandidateID, model.candidates, stableEmptyFailureRules]
+  )
+
   return (
     <div className='space-y-4'>
       <div className='flex flex-wrap items-center justify-between gap-3'>
@@ -707,7 +726,7 @@ export function VirtualModelCandidatesEditor({
                 model={model}
                 candidateID={draftCandidates[rulesCandidateIndex].id ?? 0}
                 candidateLabel={candidateDisplayName(draftCandidates[rulesCandidateIndex])}
-                rules={(model.candidates ?? []).find((candidate) => candidate.id === draftCandidates[rulesCandidateIndex].id)?.failure_rules ?? []}
+                rules={selectedCandidateFailureRules}
                 hedgeThreshold={(model.candidates ?? []).find((candidate) => candidate.id === draftCandidates[rulesCandidateIndex].id)?.hedge_threshold ?? 0}
                 hedgeFreezeSeconds={(model.candidates ?? []).find((candidate) => candidate.id === draftCandidates[rulesCandidateIndex].id)?.hedge_freeze_seconds ?? 0}
                 onSaved={() => {

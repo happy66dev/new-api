@@ -95,7 +95,6 @@ export function useUsageLogsContext() {
 /**
  * Resolves the effective scope for usage logs. Both admins and regular users
  * can switch between 「全部 / 仅自己」:
- * - `canManageScope` 表示当前页面是否展示范围切换（管理员恒显示；普通用户仅通用日志页显示）。
  * - `isAdminView` 表示当前是否处于「管理员 + 全部」视图，数据拉取与管理员专属筛选以此为准；
  *   普通用户切到「全部」时走 `/api/log/self?scope=all`，视为用户级范围而非管理员全量。
  */
@@ -104,8 +103,6 @@ export function useLogsViewScope() {
   const { viewScope, setViewScope } = useUsageLogsContext()
 
   return {
-    // 管理员与普通用户都可以切换范围，故不再与管理员角色强绑定喵。
-    canManageScope: true,
     isAdminUser,
     viewScope,
     setViewScope,

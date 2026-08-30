@@ -268,17 +268,23 @@ export function validateFailureRuleDraft(
   if (rule.action === 'retry') {
     retryCount = parseProbeNumber(rule.retryCount, MAXIMUM_RULE_RETRY_COUNT, t, index, 'Failure rule {{index}} retry count must be between 0 and 20')
   }
-  // 将冻结秒数文本转换为数值，零表示不追加固定冻结时间喵。
-  const freezeSeconds = Number(rule.freezeSeconds)
-  // 喵~防御：冻结时长必须处于零到一天，防止意外长期冻结候选喵。
-  if (!Number.isInteger(freezeSeconds) || freezeSeconds < 0 || freezeSeconds > MAXIMUM_FREEZE_SECONDS) {
-    throw new Error(t('Failure rule {{index}} freeze duration must be between 0 and 86400 seconds', { index: index + 1 }))
-  }
-  // auto 单位自动扫描响应体全文，字段名无意义，强制置空避免残留旧配置喵。
-  const freezeField = rule.freezeUnit === 'auto' ? '' : rule.freezeField.trim()
-  // 喵~防御：非 auto 模式下响应体字段名过长会超过数据库列宽，必须拒绝保存喵。
-  if (rule.freezeUnit !== 'auto' && freezeField.length > 64) {
-    throw new Error(t('Failure rule {{index}} freeze field is too long', { index: index + 1 }))
+  // 冻结参数仅在 freeze 动作时生效：其他动作（next/retry/passthrough 等）跳过校验并清零，
+  // 避免用户在 freeze 下输入的隐藏越界值阻断无关动作的保存喵。
+  let freezeSeconds = 0
+  let freezeField = ''
+  if (rule.action === 'freeze') {
+    // 将冻结秒数文本转换为数值，零表示不追加固定冻结时间喵。
+    freezeSeconds = Number(rule.freezeSeconds)
+    // 喵~防御：冻结时长必须处于零到一天，防止意外长期冻结候选喵。
+    if (!Number.isInteger(freezeSeconds) || freezeSeconds < 0 || freezeSeconds > MAXIMUM_FREEZE_SECONDS) {
+      throw new Error(t('Failure rule {{index}} freeze duration must be between 0 and 86400 seconds', { index: index + 1 }))
+    }
+    // auto 单位自动扫描响应体全文，字段名无意义，强制置空避免残留旧配置喵。
+    freezeField = rule.freezeUnit === 'auto' ? '' : rule.freezeField.trim()
+    // 喵~防御：非 auto 模式下响应体字段名过长会超过数据库列宽，必须拒绝保存喵。
+    if (rule.freezeUnit !== 'auto' && freezeField.length > 64) {
+      throw new Error(t('Failure rule {{index}} freeze field is too long', { index: index + 1 }))
+    }
   }
   // 根据编辑模式生成最终响应体正则，简易与自定义输入均在此收敛喵。
   const bodyRegex = resolveBodyRegex(rule)

@@ -256,7 +256,8 @@ describe('resolveBodyRegex', () => {
 // describe validateFailureRuleDraft：用户输入到 API 载荷的转换与防御喵。
 describe('validateFailureRuleDraft', () => {
   it('converts a valid HTTP-status draft to API structure trimming text fields', () => {
-    // 合法 HTTP 条件输入应保留 id、去空白并转为数值状态码与冻结秒数，响应体正则按自定义模式生成喵。
+    // 合法 HTTP 条件输入应保留 id、去空白并转为数值状态码；retry 动作不属于 freeze，
+    // 即使草稿残留冻结秒数也被清零，避免无关字段影响保存喵。
     const payload = validateFailureRuleDraft(
       makeDraft({
         httpStatus: '503',
@@ -277,7 +278,7 @@ describe('validateFailureRuleDraft', () => {
       error_class: '',
       body_regex: 'overloaded',
       action: 'retry',
-      freeze_seconds: 5,
+      freeze_seconds: 0,
       freeze_field: '',
       freeze_unit: 'seconds',
       // HTTP 条件不写探测参数，保持默认喵。
@@ -362,9 +363,9 @@ describe('validateFailureRuleDraft', () => {
   })
 
   it('accepts boundary values zero and maximum', () => {
-    // 零状态码表示不限制，599 与一天冻结秒数均为合法上界喵。
+    // 零状态码表示不限制，599 与一天冻结秒数均为合法上界；冻结秒数只在 freeze 动作时写入喵。
     const payload = validateFailureRuleDraft(
-      makeDraft({ httpStatus: String(MAXIMUM_HTTP_STATUS), action: 'passthrough', freezeSeconds: String(MAXIMUM_FREEZE_SECONDS) }),
+      makeDraft({ httpStatus: String(MAXIMUM_HTTP_STATUS), action: 'freeze', freezeSeconds: String(MAXIMUM_FREEZE_SECONDS) }),
       0,
       identityTranslator
     )
@@ -416,13 +417,26 @@ describe('validateFailureRuleDraft', () => {
   })
 
   it('rejects negative freeze seconds', () => {
-    // 喵~防御：负冻结时长无意义，必须拒绝喵。
-    expect(() => validateFailureRuleDraft(makeDraft({ freezeSeconds: '-3' }), 0, identityTranslator)).toThrow()
+    // 喵~防御：负冻结时长无意义，必须拒绝（仅在 freeze 动作下校验）喵。
+    expect(() => validateFailureRuleDraft(makeDraft({ action: 'freeze', freezeSeconds: '-3' }), 0, identityTranslator)).toThrow()
   })
 
   it('rejects freeze seconds beyond one day', () => {
-    // 喵~防御：超过一天冻结时长会长期阻断候选，必须拒绝喵。
-    expect(() => validateFailureRuleDraft(makeDraft({ freezeSeconds: String(MAXIMUM_FREEZE_SECONDS + 1) }), 0, identityTranslator)).toThrow()
+    // 喵~防御：超过一天冻结时长会长期阻断候选，必须拒绝（仅在 freeze 动作下校验）喵。
+    expect(() => validateFailureRuleDraft(makeDraft({ action: 'freeze', freezeSeconds: String(MAXIMUM_FREEZE_SECONDS + 1) }), 0, identityTranslator)).toThrow()
+  })
+
+  it('ignores out-of-range freeze values after switching away from the freeze action', () => {
+    // 喵~防御：用户先选 freeze 输入越界秒数与超长字段名，再切到 next 后不应阻断保存，
+    // 这些隐藏字段应被清零而不是拦截无关动作喵。
+    const payload = validateFailureRuleDraft(
+      makeDraft({ action: 'next', freezeSeconds: '-3', freezeField: 'x'.repeat(65), freezeUnit: 'mixed' }),
+      0,
+      identityTranslator
+    )
+    expect(payload.freeze_seconds).toBe(0)
+    expect(payload.freeze_field).toBe('')
+    expect(payload.action).toBe('next')
   })
 
   it('reports the one-based rule index in the error message', () => {
@@ -443,8 +457,8 @@ describe('validateFailureRuleDraft', () => {
   })
 
   it('rejects an overlong response-body freeze field', () => {
-    // 喵~防御：字段名超过数据库列宽会截断产生歧义，必须拒绝喵。
-    expect(() => validateFailureRuleDraft(makeDraft({ freezeField: 'x'.repeat(65) }), 0, identityTranslator)).toThrow()
+    // 喵~防御：字段名超过数据库列宽会截断产生歧义，必须拒绝（仅在 freeze 动作下校验）喵。
+    expect(() => validateFailureRuleDraft(makeDraft({ action: 'freeze', freezeField: 'x'.repeat(65) }), 0, identityTranslator)).toThrow()
   })
 
   it('round-trips an advanced freeze rule through toFailureRuleDraft', () => {
