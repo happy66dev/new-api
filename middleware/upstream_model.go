@@ -95,6 +95,27 @@ func setupUserUpstreamModelRelay(c *gin.Context, upstreamModel *model.UserUpstre
 		Key:     apiKey,
 		Name:    "user/" + upstreamModel.NormalizedName,
 	}
+	// 解析并注入自定义请求头：与虚拟模型直连路径同源校验，剥除 "*" 语义标记后写入渠道头覆盖喵。
+	// 这样 SetupContextForSelectedChannel 会把它灌入 ContextKeyChannelHeaderOverride，relay 中转链据此覆盖上游请求头喵。
+	if customHeadersJSON := strings.TrimSpace(upstreamModel.CustomHeaders); customHeadersJSON != "" {
+		headerOverrides, parseErr := virtualmodelservice.ParseCustomUpstreamHeaderOverrides(customHeadersJSON)
+		if parseErr != nil {
+			// 喵~防御：非法自定义头属于用户配置错误，以 400 拒绝且不改变健康成功率喵。
+			abortWithOpenAiMessage(c, http.StatusBadRequest, parseErr.Error(), types.ErrorCode("upstream_model_invalid_custom_headers"))
+			return false
+		}
+		if len(headerOverrides) > 0 {
+			headerOverrideJSON, marshalErr := common.Marshal(headerOverrides)
+			if marshalErr != nil {
+				// 喵~防御：序列化失败按配置错误 400 拒绝，避免静默丢失请求头喵。
+				abortWithOpenAiMessage(c, http.StatusBadRequest, "invalid custom headers", types.ErrorCode("upstream_model_invalid_custom_headers"))
+				return false
+			}
+			// 临时渠道头覆盖字段：JSON 字符串形式，GetHeaderOverride 解析后供 relay 读取喵。
+			headerOverrideText := string(headerOverrideJSON)
+			tempChannel.HeaderOverride = &headerOverrideText
+		}
+	}
 	// 注入渠道上下文：original/selected model 与 base_url/key/channel_type 等，供 relay 读取喵。
 	if setupError := SetupContextForSelectedChannel(c, tempChannel, upstreamModel.RealModelName); setupError != nil {
 		// 实体状态检测：渠道注入失败按配置态处理，不改变成功率喵。

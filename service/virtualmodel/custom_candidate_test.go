@@ -10,6 +10,7 @@ import (
 
 	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 )
 
 // TestRewrittenCustomRequestBody 验证仅替换 JSON 顶层模型并拒绝不安全请求体喵。
@@ -203,11 +204,11 @@ func TestNormalizeCustomCandidateExecutionFailure(t *testing.T) {
 func TestRewrittenCustomRequestBodyFieldReplacements(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	testCases := []struct {
-		name               string
-		fieldReplacements  string
-		requestBody        string
-		expectedBody       string
-		expectError        bool
+		name              string
+		fieldReplacements string
+		requestBody       string
+		expectedBody      string
+		expectError       bool
 	}{
 		// 命中映射旧值时替换为新值喵。
 		{name: "replace reasoning_effort max to xhigh", fieldReplacements: `{"reasoning_effort":{"max":"xhigh"}}`, requestBody: `{"model":"m","reasoning_effort":"max"}`, expectedBody: `{"model":"target","reasoning_effort":"xhigh"}`},
@@ -275,6 +276,46 @@ func TestApplyCustomUpstreamHeaders(t *testing.T) {
 	if err := ValidateCustomUpstreamHeadersJSON(`{"host":"evil"}`); err == nil {
 		t.Fatal("validate should reject host header")
 	}
+}
+
+// TestParseCustomUpstreamHeaderOverrides 验证自定义头解析 helper：剥除 "*" 标记并过滤危险头喵。
+// 该 helper 供原生 relay 中转链复用，行为必须与虚拟模型直连路径一致喵。
+func TestParseCustomUpstreamHeaderOverrides(t *testing.T) {
+	// 合法配置：* 标记被剥除（只是“全部请求生效”语义标记），真实请求头保留字符串值喵。
+	overrides, err := ParseCustomUpstreamHeaderOverrides(`{"*":true,"User-Agent":"Kilo-Code/7.3.50"}`)
+	require.NoError(t, err)
+	require.Len(t, overrides, 1)
+	require.Equal(t, "Kilo-Code/7.3.50", overrides["User-Agent"])
+	// 喵~防御：* 绝不能出现在输出映射里，否则 relay 链路会误触发客户端头全量透传喵。
+	_, hasWildcard := overrides["*"]
+	require.False(t, hasWildcard)
+
+	// 空配置返回空映射且不报错，避免无意义解析喵。
+	emptyOverrides, err := ParseCustomUpstreamHeaderOverrides("")
+	require.NoError(t, err)
+	require.Nil(t, emptyOverrides)
+	// 纯空白配置同样视为空喵。
+	blankOverrides, err := ParseCustomUpstreamHeaderOverrides("  ")
+	require.NoError(t, err)
+	require.Nil(t, blankOverrides)
+
+	// 非法 JSON 必须拒绝喵。
+	_, err = ParseCustomUpstreamHeaderOverrides(`{bad`)
+	require.Error(t, err)
+
+	// 认证与 hop-by-hop 危险头必须拒绝，防止伪造凭据或破坏代理语义喵。
+	_, err = ParseCustomUpstreamHeaderOverrides(`{"authorization":"Bearer leak"}`)
+	require.Error(t, err)
+	_, err = ParseCustomUpstreamHeaderOverrides(`{"Connection":"close"}`)
+	require.Error(t, err)
+	_, err = ParseCustomUpstreamHeaderOverrides(`{"host":"evil"}`)
+	require.Error(t, err)
+
+	// 空头名与非字符串头值必须拒绝喵。
+	_, err = ParseCustomUpstreamHeaderOverrides(`{"":"value"}`)
+	require.Error(t, err)
+	_, err = ParseCustomUpstreamHeaderOverrides(`{"X-Trace":123}`)
+	require.Error(t, err)
 }
 
 // TestValidateFieldReplacementsJSON 验证字段替换映射表保存校验规则喵。

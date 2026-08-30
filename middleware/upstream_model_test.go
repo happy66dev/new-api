@@ -6,8 +6,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/gin-gonic/gin"
@@ -314,4 +316,60 @@ func TestEstimateUserUpstreamModelCostCents(t *testing.T) {
 	// 模型未定价（输入价为 0）时预估费用为零，不产生预扣喵。
 	zeroModel := &model.UserUpstreamModel{ModelRatio: "0"}
 	require.Equal(t, int64(0), estimateUserUpstreamModelCostCents(zeroModel, body))
+}
+
+// TestSetupUserUpstreamModelRelayInjectsCustomHeaders 验证 relay 中转链注入用户自定义请求头喵。
+// 曾因临时渠道未携带 CustomHeaders，relay 头覆盖链读到的为空映射，自定义请求头根本没发往上游喵。
+func TestSetupUserUpstreamModelRelayInjectsCustomHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	// 构造带自定义请求头配置的上游模型：* 是“全部请求生效”语义标记，User-Agent 是真实请求头喵。
+	upstreamModel := &model.UserUpstreamModel{
+		OwnerUserID:    7,
+		NormalizedName: "alpha",
+		RealModelName:  "gpt-4o",
+		APIType:        model.UserUpstreamAPITypeOpenAI,
+		CustomHeaders:  `{"*":true,"User-Agent":"Kilo-Code/7.3.50"}`,
+	}
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/alpha"}`))
+	ctx.Set("id", 7)
+
+	// 注入成功应返回 true，渠道上下文正常写入喵。
+	require.True(t, setupUserUpstreamModelRelay(ctx, upstreamModel, "https://example.com", "sk-test", false, "default", 0, time.Now()))
+
+	// relay 中转链从上下文读取头覆盖：User-Agent 必须存在且值正确喵。
+	headerOverride := common.GetContextKeyStringMap(ctx, constant.ContextKeyChannelHeaderOverride)
+	require.Equal(t, "Kilo-Code/7.3.50", headerOverride["User-Agent"])
+	// 喵~防御：* 标记必须被剥除，防止 relay 误把“全部请求生效”当成客户端头全量透传喵。
+	_, hasWildcard := headerOverride["*"]
+	require.False(t, hasWildcard)
+
+	// relay 执行标记与结算上下文仍需正确写入，保证 Distribute 跳过普通渠道选择喵。
+	require.True(t, IsUpstreamModelRelayRequest(ctx))
+	require.NotNil(t, getUserUpstreamModelRelayContext(ctx))
+}
+
+// TestSetupUserUpstreamModelRelayRejectsInvalidHeaders 验证非法自定义头在 relay 注入时被 400 拒绝喵。
+// 保存校验只是第一道防线，运行期仍须防御数据库被篡改或绕过保存的非法配置喵。
+func TestSetupUserUpstreamModelRelayRejectsInvalidHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	// 危险头 authorization 属于用户不可设置项，运行期必须再次拒绝喵。
+	upstreamModel := &model.UserUpstreamModel{
+		OwnerUserID:    7,
+		NormalizedName: "alpha",
+		RealModelName:  "gpt-4o",
+		APIType:        model.UserUpstreamAPITypeOpenAI,
+		CustomHeaders:  `{"authorization":"Bearer leak"}`,
+	}
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/alpha"}`))
+	ctx.Set("id", 7)
+
+	// 注入失败返回 false，且以 400 告知配置错误喵。
+	require.False(t, setupUserUpstreamModelRelay(ctx, upstreamModel, "https://example.com", "sk-test", false, "default", 0, time.Now()))
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	// 喵~防御：失败的注入不得留下 relay 执行标记，避免后续 Distribute 误按 relay 路径结算喵。
+	require.False(t, IsUpstreamModelRelayRequest(ctx))
 }

@@ -17,8 +17,8 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
-	relaykitypes "github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	relaykitypes "github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -539,12 +539,6 @@ func blockedCustomUpstreamHeaderNames() map[string]struct{} {
 	}
 }
 
-// isBlockedCustomUpstreamHeader 判断请求头名是否属于危险头（大小写不敏感）喵。
-func isBlockedCustomUpstreamHeader(headerName string) bool {
-	_, blocked := blockedCustomUpstreamHeaderNames()[strings.ToLower(strings.TrimSpace(headerName))]
-	return blocked
-}
-
 // copyCustomUpstreamHeaders 复制安全请求头并移除客户端可控的认证和 hop-by-hop 字段喵。
 func copyCustomUpstreamHeaders(targetHeaders http.Header, sourceHeaders http.Header) {
 	// 定义固定危险头集合，防止客户端影响代理连接语义或伪造上游认证喵。
@@ -573,34 +567,53 @@ func ValidateCustomUpstreamHeadersJSON(customHeadersJSON string) error {
 	return applyCustomUpstreamHeaders(nil, customHeadersJSON)
 }
 
-// applyCustomUpstreamHeaders 解析结构化自定义请求头 JSON 并覆盖到目标请求头喵。
-// "*" 为语义标记表示对全部请求生效，本身不是请求头；其余键覆盖同名客户端头喵。
-func applyCustomUpstreamHeaders(headers http.Header, customHeadersJSON string) error {
-	// 喵~防御：空配置直接跳过，避免无意义的解析喵。
+// ParseCustomUpstreamHeaderOverrides 解析自定义请求头 JSON 为安全头覆盖映射喵。
+// "*" 语义标记表示该配置对全部请求生效，本身不是真实请求头，返回时会剥除；其余键须满足：
+// 非空头名、非危险头、字符串值，任一不满足即返回错误喵。
+// 供虚拟模型直连与原生 relay 中转链两条注入路径复用，保证行为一致喵。
+func ParseCustomUpstreamHeaderOverrides(customHeadersJSON string) (map[string]string, error) {
+	// 喵~防御：空配置直接返回空映射，避免无意义的解析喵。
 	if strings.TrimSpace(customHeadersJSON) == "" {
-		return nil
+		return nil, nil
 	}
 	var customHeaders map[string]any
 	if err := common.UnmarshalJsonStr(customHeadersJSON, &customHeaders); err != nil {
-		return errors.New("custom upstream headers JSON is invalid")
+		return nil, errors.New("custom upstream headers JSON is invalid")
 	}
+	// 固定危险头集合，防止客户端覆盖认证或破坏代理连接语义喵。
+	blockedHeaders := blockedCustomUpstreamHeaderNames()
+	overrides := make(map[string]string, len(customHeaders))
 	for headerName, headerValue := range customHeaders {
-		// "*" 标记跳过，仅表示对所有请求生效喵。
+		// "*" 标记跳过，仅表示对所有请求生效，不产生真实请求头喵。
 		if headerName == "*" {
 			continue
 		}
 		// 喵~防御：空头名与危险头一律拒绝，防止客户端覆盖认证或破坏代理语义喵。
 		if strings.TrimSpace(headerName) == "" {
-			return errors.New("custom upstream header name is empty")
+			return nil, errors.New("custom upstream header name is empty")
 		}
-		if isBlockedCustomUpstreamHeader(headerName) {
-			return errors.New("custom upstream header is not allowed: " + headerName)
+		if _, blocked := blockedHeaders[strings.ToLower(strings.TrimSpace(headerName))]; blocked {
+			return nil, errors.New("custom upstream header is not allowed: " + headerName)
 		}
 		// 喵~防御：头值必须是字符串，拒绝布尔/数字等不可序列化的值喵。
 		valueText, ok := headerValue.(string)
 		if !ok {
-			return errors.New("custom upstream header value must be a string: " + headerName)
+			return nil, errors.New("custom upstream header value must be a string: " + headerName)
 		}
+		overrides[headerName] = valueText
+	}
+	return overrides, nil
+}
+
+// applyCustomUpstreamHeaders 解析结构化自定义请求头 JSON 并覆盖到目标请求头喵。
+// 校验与过滤逻辑复用 ParseCustomUpstreamHeaderOverrides，保证各注入路径行为一致喵。
+func applyCustomUpstreamHeaders(headers http.Header, customHeadersJSON string) error {
+	// 解析并过滤出安全头覆盖映射喵。
+	overrides, err := ParseCustomUpstreamHeaderOverrides(customHeadersJSON)
+	if err != nil {
+		return err
+	}
+	for headerName, valueText := range overrides {
 		if headers != nil {
 			headers.Set(headerName, valueText)
 		}
