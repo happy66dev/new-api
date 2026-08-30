@@ -18,14 +18,16 @@ import (
 
 // upstreamModelInput 描述用户创建或更新上游模型时可提交的字段喵。
 type upstreamModelInput struct {
-	NormalizedName       string `json:"normalized_name"`
-	DisplayName          string `json:"display_name"`
-	Description          string `json:"description"`
-	Enabled              bool   `json:"enabled"`
-	BaseURL              string `json:"base_url"`
-	APIKey               string `json:"api_key"`
-	RealModelName        string `json:"real_model_name"`
-	AuthStyle            string `json:"auth_style"`
+	NormalizedName string `json:"normalized_name"`
+	DisplayName    string `json:"display_name"`
+	Description    string `json:"description"`
+	// Icon 是模型广场卡片的 @lobehub/icons 图标键名，可选喵。
+	Icon          string `json:"icon"`
+	Enabled       bool   `json:"enabled"`
+	BaseURL       string `json:"base_url"`
+	APIKey        string `json:"api_key"`
+	RealModelName string `json:"real_model_name"`
+	AuthStyle     string `json:"auth_style"`
 	// TimeoutSeconds 自用调用超时，单位：秒；零表示使用默认 60 秒喵。
 	TimeoutSeconds       int    `json:"timeout_seconds"`
 	CustomHeaders        string `json:"custom_headers"`
@@ -168,6 +170,11 @@ func saveUpstreamModelFields(input upstreamModelInput, ownerUserID int, existing
 	existing.NormalizedName = normalizedName
 	existing.DisplayName = input.DisplayName
 	existing.Description = input.Description
+	// 喵~防御：图标键名超过 128 字符直接拒绝保存，避免超长图标污染模型广场展示喵。
+	if len(input.Icon) > 128 {
+		return errors.New("图标键名不能超过 128 个字符")
+	}
+	existing.Icon = input.Icon
 	existing.Enabled = input.Enabled
 	existing.RealModelName = input.RealModelName
 	// 喵~防御：真实模型名必填，避免无模型名的上游请求喵。
@@ -516,18 +523,18 @@ const entityProbeWindowHours = 24
 
 // upstreamModelStatusPayload 属主视角的上游模型状态响应喵。
 type upstreamModelStatusPayload struct {
-	Availability   float64                        `json:"availability"`
-	AvgLatencyMs   int64                          `json:"avg_latency_ms"`
-	AvgTtftMs      int64                          `json:"avg_ttft_ms"`
-	CacheHitRate   float64                        `json:"cache_hit_rate"`
-	TotalTokens    int64                          `json:"total_tokens"`
-	RequestCount   int64                          `json:"request_count"`
-	Availability24 []float64                      `json:"availability_24h"`
+	Availability   float64                         `json:"availability"`
+	AvgLatencyMs   int64                           `json:"avg_latency_ms"`
+	AvgTtftMs      int64                           `json:"avg_ttft_ms"`
+	CacheHitRate   float64                         `json:"cache_hit_rate"`
+	TotalTokens    int64                           `json:"total_tokens"`
+	RequestCount   int64                           `json:"request_count"`
+	Availability24 []float64                       `json:"availability_24h"`
 	Series         []perfmetrics.EntityProbeBucket `json:"series"`
-	LastAt         int64                          `json:"last_at"`
-	LastSuccess    bool                           `json:"last_success"`
-	LastLatencyMs  int64                          `json:"last_latency_ms"`
-	LastError      string                         `json:"last_error"`
+	LastAt         int64                           `json:"last_at"`
+	LastSuccess    bool                            `json:"last_success"`
+	LastLatencyMs  int64                           `json:"last_latency_ms"`
+	LastError      string                          `json:"last_error"`
 	// LastFailureAt 最近一次失败调用时间戳，即使最近一次调用成功也保留喵。
 	LastFailureAt int64 `json:"last_failure_at"`
 	// LastFailureError 最近一次失败调用错误分类，即使最近一次调用成功也保留喵。
@@ -622,16 +629,16 @@ func GetSharedUserUpstreamModelStatus(c *gin.Context) {
 	sharedStatus := buildUpstreamModelStatusPayload(upstreamModel, perfmetrics.EntityProbeGroupShared, model.EntityProbeScopeUpstreamShared)
 	// 共享聚合不暴露错误明细，只提供成功率、平均延迟、请求数、TTFT、缓存命中率与 token 消耗喵。
 	common.ApiSuccess(c, gin.H{
-		"availability":   sharedStatus.Availability,
-		"avg_latency_ms": sharedStatus.AvgLatencyMs,
-		"avg_ttft_ms":    sharedStatus.AvgTtftMs,
-		"cache_hit_rate": sharedStatus.CacheHitRate,
-		"total_tokens":   sharedStatus.TotalTokens,
-		"request_count":  sharedStatus.RequestCount,
+		"availability":     sharedStatus.Availability,
+		"avg_latency_ms":   sharedStatus.AvgLatencyMs,
+		"avg_ttft_ms":      sharedStatus.AvgTtftMs,
+		"cache_hit_rate":   sharedStatus.CacheHitRate,
+		"total_tokens":     sharedStatus.TotalTokens,
+		"request_count":    sharedStatus.RequestCount,
 		"current_requests": sharedStatus.CurrentRequests,
-		"series":         sharedStatus.Series,
-		"last_at":        sharedStatus.LastAt,
-		"last_success":   sharedStatus.LastSuccess,
+		"series":           sharedStatus.Series,
+		"last_at":          sharedStatus.LastAt,
+		"last_success":     sharedStatus.LastSuccess,
 	})
 }
 

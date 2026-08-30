@@ -38,6 +38,7 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { formatTimestampToDate } from '@/lib/format'
+import { getLobeIcon } from '@/lib/lobe-icon'
 import { EntityStatusDot, type EntityStatusSummary } from '@/features/status-check/entity-status-dot'
 import { EntityPerformanceDrawer } from '@/features/status-check/entity-performance-drawer'
 
@@ -103,6 +104,8 @@ function UpstreamModelDrawer({
   const [displayName, setDisplayName] = useState('')
   // 模型简介独立于显示名，用于模型广场卡片展示喵。
   const [description, setDescription] = useState('')
+  // icon 是模型广场卡片的 @lobehub/icons 图标键名；空串表示不设置，展示回退为模型名首字母喵。
+  const [icon, setIcon] = useState('')
   const [enabled, setEnabled] = useState(true)
   const [baseURL, setBaseURL] = useState('')
   const [apiKey, setAPIKey] = useState('')
@@ -141,6 +144,7 @@ function UpstreamModelDrawer({
     setNormalizedName(model?.normalized_name ?? '')
     setDisplayName(model?.display_name ?? '')
     setDescription(model?.description ?? '')
+    setIcon(model?.icon ?? '')
     setEnabled(model?.enabled ?? true)
     // 编辑模式不自动回填密钥，留空表示保留服务端密文喵。
     setBaseURL(model?.base_url ?? '')
@@ -226,6 +230,7 @@ function UpstreamModelDrawer({
       normalized_name: trimmedNormalizedName,
       display_name: displayName.trim(),
       description: description.trim(),
+      icon: icon.trim(),
       enabled,
       base_url: baseURL.trim(),
       api_key: apiKey,
@@ -306,6 +311,27 @@ function UpstreamModelDrawer({
             <label className='grid gap-1 text-sm font-medium'>
               {t('Display name')}
               <Input value={displayName} onChange={(event) => setDisplayName(event.target.value)} disabled={isSaving} />
+            </label>
+            <label className='grid gap-1 text-sm font-medium'>
+              {t('Icon')}
+              <div className='flex items-center gap-2'>
+                <Input
+                  value={icon}
+                  onChange={(event) => setIcon(event.target.value)}
+                  placeholder='OpenAI, Anthropic, etc.'
+                  disabled={isSaving}
+                  maxLength={128}
+                />
+                {/* 实时预览图标：输入 @lobehub/icons 键名即时渲染，空时回退为模型名首字母占位，与模型广场一致喵。 */}
+                <span className='bg-muted/40 flex size-9 shrink-0 items-center justify-center rounded-lg'>
+                  {icon.trim()
+                    ? getLobeIcon(icon.trim(), 20)
+                    : (displayName || normalizedName).charAt(0).toUpperCase() || '?'}
+                </span>
+              </div>
+              <span className='text-muted-foreground text-xs'>
+                {t('@lobehub/icons key')}
+              </span>
             </label>
             <label className='flex items-center justify-between gap-3 text-sm'>
               <span>{t('Enabled')}</span>

@@ -33,7 +33,10 @@ type UserUpstreamModel struct {
 	DisplayName    string `json:"display_name" gorm:"type:varchar(128)"`
 	// Description 是模型简介，展示在模型广场卡片上，独立于显示名喵。
 	Description string `json:"description" gorm:"type:text"`
-	Enabled     bool   `json:"enabled"`
+	// Icon 是模型广场卡片的图标键名（来自 @lobehub/icons），与内部模型 Model.Icon 同源；
+	// 留空时前端回退为模型名首字母占位喵。
+	Icon    string `json:"icon,omitempty" gorm:"type:varchar(128)"`
+	Enabled bool   `json:"enabled"`
 	// 上游连接：凭据一律加密存储，绝不落明文喵。
 	EncryptedBaseURL   string `json:"-" gorm:"type:text"`
 	EncryptedAPIKey    string `json:"-" gorm:"type:text"`
@@ -254,11 +257,13 @@ func SyncUserUpstreamModelAvailable(upstreamModelID int64, ownerUserID int) erro
 
 // SharedUserUpstreamModelView 描述共享模型中可对其他用户展示的公开信息喵。
 type SharedUserUpstreamModelView struct {
-	ID                 int64
-	OwnerUserID        int
-	NormalizedName     string
-	DisplayName        string
-	Description        string
+	ID             int64
+	OwnerUserID    int
+	NormalizedName string
+	DisplayName    string
+	Description    string
+	// Icon 是模型广场展示的 @lobehub/icons 图标键名，随共享模型对外可见喵。
+	Icon               string
 	RealModelName      string
 	ModelRatio         string
 	CompletionRatio    string
@@ -321,7 +326,7 @@ func GetSharedUserUpstreamModels(viewerID int) ([]SharedUserUpstreamModelView, e
 	var views []SharedUserUpstreamModelView
 	// 三账户都是递减账户，任一耗尽即自动停止共享（从共享列表消失）喵。
 	if err := DB.Model(&UserUpstreamModel{}).
-		Select("id", "owner_user_id", "normalized_name", "display_name", "description", "real_model_name", "model_ratio", "completion_ratio", "cache_ratio", "share_limit_cents", "show_balance_enabled", "balance_cents", "available_cents", "share_whitelist", "share_blacklist", "share_list_mode").
+		Select("id", "owner_user_id", "normalized_name", "display_name", "description", "icon", "real_model_name", "model_ratio", "completion_ratio", "cache_ratio", "share_limit_cents", "show_balance_enabled", "balance_cents", "available_cents", "share_whitelist", "share_blacklist", "share_list_mode").
 		Where("share_enabled = ? AND balance_cents > 0 AND available_cents > 0 AND share_limit_cents > 0", true).
 		Find(&views).Error; err != nil {
 		return nil, err

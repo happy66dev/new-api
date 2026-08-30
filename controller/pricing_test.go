@@ -64,3 +64,21 @@ func TestBuildSharedUpstreamPricingRateFallback(t *testing.T) {
 	assert.InDelta(t, 1.0, item.ModelRatio, 1e-9)
 	assert.InDelta(t, 3.0, item.CompletionRatio, 1e-9)
 }
+
+// TestBuildSharedUpstreamPricingIconPassthrough 验证共享模型图标键名透传到模型广场条目喵。
+func TestBuildSharedUpstreamPricingIconPassthrough(t *testing.T) {
+	item := buildSharedUpstreamPricing(model.SharedUserUpstreamModelView{
+		NormalizedName: "demo",
+		// 用户配置的 @lobehub/icons 键名必须原样带出，供前端 getLobeIcon 渲染喵。
+		Icon:       "OpenAI.Color",
+		ModelRatio: "1",
+	}, 0)
+	// 图标键名原样透传，与内部模型 Model.Icon 的展示语义一致喵。
+	assert.Equal(t, "OpenAI.Color", item.Icon)
+	// 未配置图标时保持空串，前端回退为模型名首字母占位喵。
+	emptyItem := buildSharedUpstreamPricing(model.SharedUserUpstreamModelView{
+		NormalizedName: "demo",
+		ModelRatio:     "1",
+	}, 0)
+	assert.Equal(t, "", emptyItem.Icon)
+}

@@ -8,6 +8,8 @@ export type UserUpstreamModel = {
   display_name: string
   // description 是模型简介，展示在模型广场卡片上喵。
   description: string
+  // icon 是模型广场卡片的 @lobehub/icons 图标键名，可选喵。
+  icon?: string
   enabled: boolean
   // api_key_set 标记是否已配置密钥，响应中绝不回显密钥喵。
   api_key_set: boolean
@@ -62,6 +64,8 @@ export type UserUpstreamModelInput = {
   normalized_name: string
   display_name: string
   description: string
+  // icon 是模型广场卡片的 @lobehub/icons 图标键名，创建/编辑时可选喵。
+  icon?: string
   enabled: boolean
   // base_url/api_key 编辑时留空表示保留原有配置喵。
   base_url?: string

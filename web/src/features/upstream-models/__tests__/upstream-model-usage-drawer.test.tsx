@@ -17,6 +17,11 @@ vi.mock('@visactor/react-vchart', () => ({ VChart: () => null }))
 vi.mock('@/lib/use-chart-theme', () => ({
   useChartTheme: () => ({ resolvedTheme: 'light', themeReady: true }),
 }))
+// @lobehub/icons 的 ESM 构建存在目录导入，vitest 原生解析失败；
+// 本用例不渲染图标，mock 图标加载器避免 index.tsx 顶层 import 拖垮整个套件喵。
+vi.mock('@/lib/lobe-icon', () => ({
+  getLobeIcon: () => null,
+}))
 
 import { UpstreamModelUsageDrawer } from '../index'
 import type { UserUpstreamModel } from '../api'

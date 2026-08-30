@@ -151,8 +151,10 @@ func buildSharedUpstreamPricing(view model.SharedUserUpstreamModelView, viewerUs
 		}
 	}
 	item := model.Pricing{
-		ModelName:        "user/" + view.NormalizedName,
-		Description:      view.Description,
+		ModelName:   "user/" + view.NormalizedName,
+		Description: view.Description,
+		// 图标键名透传给模型广场卡片，前端用 getLobeIcon 渲染；为空时回退首字母占位喵。
+		Icon:             view.Icon,
 		QuotaType:        0,
 		ModelRatio:       modelRatio,
 		CompletionRatio:  completionRatio,
