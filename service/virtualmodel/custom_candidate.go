@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -122,6 +123,11 @@ func isStreamingCustomRequest(c *gin.Context) bool {
 	return gjson.GetBytes(requestBody, "stream").Type == gjson.True
 }
 
+// customStreamErrorPayloadPattern 匹配上游 SSE 数据里明确报告错误的事件喵。
+// Anthropic 合法事件常带 "error":null 字段（如 message_start/message_delta），不能用裸 "error" 子串判断；
+// 仅当 type=error 事件、或 error 字段值为非 null（对象/字符串/数组/数字/true/false）时才视为错误喵。
+var customStreamErrorPayloadPattern = regexp.MustCompile(`"type"\s*:\s*"error"|"error"\s*:\s*(\{|"|\[|[0-9tf-])`)
+
 // probeCustomStreamingResponse 在同一响应 reader 上缓冲至内容字符达到门槛喵。
 // 静默超过 stall 秒数判定卡流、探测总预算耗尽判定超时，均不向客户端写任何字节喵。
 func probeCustomStreamingResponse(responseReader *bufio.Reader, params ProbeParameters) ([]byte, error) {
@@ -167,7 +173,8 @@ func probeCustomStreamingResponse(responseReader *bufio.Reader, params ProbePara
 					continue
 				}
 				// 喵~防御：上游明确 error 事件在提交前转为携带错误事件字节的候选失败，供直调透传或失败规则 passthrough 原样回放喵。
-				if strings.Contains(strings.ToLower(dataPayload), "\"error\"") || strings.Contains(strings.ToLower(dataPayload), "\"type\":\"error\"") {
+				// 用非空感知正则而非裸 "error" 子串，避免 Anthropic 合法事件中的 "error":null 被误判为错误喵。
+				if customStreamErrorPayloadPattern.MatchString(strings.ToLower(dataPayload)) {
 					return nil, &UpstreamStreamError{SSEBytes: bufferedBytes, Cause: errors.New("custom upstream stream reported an error before business content")}
 				}
 				// 喵~防御：仅显式心跳不构成业务内容，继续等待有效 data 事件喵。

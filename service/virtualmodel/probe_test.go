@@ -90,6 +90,31 @@ func TestProbeCustomStreamingResponseErrorEvent(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestProbeCustomStreamingResponseAnthropicNullErrorNotError 验证 Anthropic 合法事件中的 "error":null 不误判为错误喵。
+// 曾因裸 "error" 子串匹配把 message_start 的 error:null 当成上游错误，导致所有 Anthropic 流式候选被误杀喵。
+func TestProbeCustomStreamingResponseAnthropicNullErrorNotError(t *testing.T) {
+	// 完整模拟 Anthropic 流式开头：message_start 元数据事件带 error:null，随后 content_block_delta 携带正文喵。
+	sse := "event: message_start\ndata: {\"type\":\"message_start\",\"content_block\":null,\"delta\":null,\"error\":null,\"index\":0,\"message\":{\"content\":[],\"id\":\"242c3b8ae45cd2dc6958c2\"}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello!\"}}\n\n"
+	reader := bufio.NewReader(strings.NewReader(sse))
+	buffer, err := probeCustomStreamingResponse(reader, ProbeParameters{StallTimeoutSeconds: 60, MinContentChars: 3, ProbeTotalTimeoutSeconds: 60})
+	require.NoError(t, err)
+	require.Contains(t, string(buffer), "Hello!")
+}
+
+// TestProbeCustomStreamingResponseAnthropicErrorEvent 验证 Anthropic 显式 type=error 事件仍被识别为上游错误喵。
+func TestProbeCustomStreamingResponseAnthropicErrorEvent(t *testing.T) {
+	// message_start 的 error:null 合法通过后，error 事件必须被捕获并携带 SSE 字节供回放喵。
+	sse := "event: message_start\ndata: {\"type\":\"message_start\",\"error\":null}\n\n" +
+		"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n"
+	reader := bufio.NewReader(strings.NewReader(sse))
+	_, err := probeCustomStreamingResponse(reader, ProbeParameters{StallTimeoutSeconds: 60, MinContentChars: 3, ProbeTotalTimeoutSeconds: 60})
+	require.Error(t, err)
+	// 应返回携带 SSE 字节的 UpstreamStreamError，供直调透传或失败规则 passthrough 原样回放喵。
+	var streamError *UpstreamStreamError
+	require.ErrorAs(t, err, &streamError)
+}
+
 // TestProbeCustomStreamingResponseTotalBudget 验证探测总预算耗尽被识别为卡流喵。
 func TestProbeCustomStreamingResponseTotalBudget(t *testing.T) {
 	// 缓慢心跳持续但不产生业务内容，1 秒总预算耗尽后判定探测失败喵。
