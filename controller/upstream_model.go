@@ -62,6 +62,19 @@ type upstreamModelResponse struct {
 	BaseURL string `json:"base_url"`
 }
 
+// upstreamModelUpdateColumns 是更新上游模型时允许写库的列白名单喵。
+// 新增可编辑字段时必须同步加入此列表，否则 GORM Select 会跳过该列导致修改不落库喵。
+var upstreamModelUpdateColumns = []string{
+	"normalized_name", "display_name", "enabled", "icon",
+	"encrypted_base_url", "encrypted_api_key", "base_url_fingerprint", "api_key_fingerprint", "credential_version",
+	"real_model_name", "auth_style", "custom_headers", "field_replacements",
+	"model_ratio", "completion_ratio", "cache_ratio", "cache_creation_ratio", "cache_creation_5m_ratio", "cache_creation_1h_ratio",
+	"image_ratio", "audio_ratio", "audio_completion_ratio",
+	"balance_cents", "available_cents", "balance_check_enabled", "balance_check_path",
+	"share_enabled", "share_limit_cents", "show_balance_enabled",
+	"version", "updated_time",
+}
+
 // upstreamModelNotFound 使用统一状态码和错误码阻止资源存在性泄露喵。
 func upstreamModelNotFound(c *gin.Context) {
 	// 喵~防御：不存在、越权和未授权资源使用完全相同的响应，避免用户枚举资源喵。
@@ -377,7 +390,7 @@ func UpdateUserUpstreamModel(c *gin.Context) {
 		}
 	}
 	// 更新条件绑定旧版本号，保证并发写只有一个请求成功，其余命中零行更新喵。
-	updateResult := model.DB.Model(upstreamModel).Where("id = ? AND owner_user_id = ? AND version = ?", upstreamModelID, c.GetInt("id"), existingVersion).Select("normalized_name", "display_name", "enabled", "encrypted_base_url", "encrypted_api_key", "base_url_fingerprint", "api_key_fingerprint", "credential_version", "real_model_name", "auth_style", "custom_headers", "field_replacements", "model_ratio", "completion_ratio", "cache_ratio", "cache_creation_ratio", "cache_creation_5m_ratio", "cache_creation_1h_ratio", "image_ratio", "audio_ratio", "audio_completion_ratio", "balance_cents", "available_cents", "balance_check_enabled", "balance_check_path", "share_enabled", "share_limit_cents", "show_balance_enabled", "version", "updated_time").Updates(upstreamModel)
+	updateResult := model.DB.Model(upstreamModel).Where("id = ? AND owner_user_id = ? AND version = ?", upstreamModelID, c.GetInt("id"), existingVersion).Select(upstreamModelUpdateColumns).Updates(upstreamModel)
 	if updateResult.Error != nil {
 		common.ApiError(c, updateResult.Error)
 		return
