@@ -41,11 +41,15 @@ type virtualModelCandidateInput struct {
 	Enabled        bool                         `json:"enabled"`
 	MaxRetries     int                          `json:"max_retries"`
 	TimeoutSeconds int                          `json:"timeout_seconds"`
-	GroupName      string                       `json:"group_name"`
-	RealModelName  string                       `json:"real_model_name"`
-	BaseURL        string                       `json:"base_url"`
-	APIKey         string                       `json:"api_key"`
-	AuthStyle      model.VirtualModelAuthStyle  `json:"auth_style"`
+	// HedgeThreshold 连续失败自动避险阈值，达到该次数才冻结退避；零表示关闭自动避险喵。
+	HedgeThreshold int `json:"hedge_threshold"`
+	// HedgeFreezeSeconds 达到连续失败阈值后的退避冻结秒数；阈值非零时必填且必须为正数喵。
+	HedgeFreezeSeconds int                         `json:"hedge_freeze_seconds"`
+	GroupName          string                      `json:"group_name"`
+	RealModelName      string                      `json:"real_model_name"`
+	BaseURL            string                      `json:"base_url"`
+	APIKey             string                      `json:"api_key"`
+	AuthStyle          model.VirtualModelAuthStyle `json:"auth_style"`
 	// UpstreamModelID 引用用户上游模型条目，非空时凭据与真实模型名以该条目为准喵。
 	UpstreamModelID *int64 `json:"upstream_model_id,omitempty"`
 	// FrozenUntil 当前手动冻结到期时间（Unix 秒），未冻结时为零，供调用链页面展示已冻结状态喵。
@@ -84,14 +88,17 @@ type virtualModelFailureRuleInput struct {
 	TimeoutSeconds int `json:"timeout_seconds"`
 	// RetryCount 规则重试当前候选的最大重试次数，零表示未配置沿用候选 MaxRetries 喵。
 	RetryCount int `json:"retry_count"`
-	// FailureThreshold 连续失败阈值（自动避险），仅模型级全局规则有意义，候选级规则忽略此字段喵。
-	FailureThreshold int `json:"failure_threshold"`
 }
 
 // virtualModelFailureRulesReplaceInput 描述候选失败规则的版本化整体替换请求喵。
+// HedgeThreshold 与 HedgeFreezeSeconds 是候选级自动避险配置，随规则保存一并写入候选表喵。
 type virtualModelFailureRulesReplaceInput struct {
 	Version int64                          `json:"version"`
 	Rules   []virtualModelFailureRuleInput `json:"rules"`
+	// HedgeThreshold 连续失败自动避险阈值，达到该次数才冻结退避；零表示关闭自动避险喵。
+	HedgeThreshold int `json:"hedge_threshold"`
+	// HedgeFreezeSeconds 达到连续失败阈值后的退避冻结秒数；阈值非零时必填且必须为正数喵。
+	HedgeFreezeSeconds int `json:"hedge_freeze_seconds"`
 }
 
 // virtualModelBindingInput 描述当前用户 API Key 的授权关系喵。
@@ -162,6 +169,7 @@ func buildVirtualModelResponse(virtualModel *model.VirtualModel) (*virtualModelR
 		candidateResponse := virtualModelCandidateInput{
 			ID: candidate.ID, StableOrder: candidate.StableOrder, SourceType: candidate.SourceType,
 			Enabled: candidate.Enabled, MaxRetries: candidate.MaxRetries, TimeoutSeconds: candidate.TimeoutSeconds,
+			HedgeThreshold: candidate.HedgeThreshold, HedgeFreezeSeconds: candidate.HedgeFreezeSeconds,
 		}
 		if candidate.SourceType == model.VirtualModelSourceInternal {
 			var internalCandidate model.VirtualModelInternalCandidate
@@ -533,7 +541,7 @@ func createVirtualModelCandidateWithConfig(tx *gorm.DB, virtualModelID int, stab
 	if tx == nil || virtualModelID <= 0 || stableOrder < 0 {
 		return errors.New("虚拟模型候选无效")
 	}
-	candidate := &model.VirtualModelCandidate{VirtualModelID: virtualModelID, StableOrder: stableOrder, SourceType: candidateInput.SourceType, Enabled: candidateInput.Enabled, MaxRetries: candidateInput.MaxRetries, TimeoutSeconds: candidateInput.TimeoutSeconds, Version: 1, CreatedTime: common.GetTimestamp(), UpdatedTime: common.GetTimestamp()}
+	candidate := &model.VirtualModelCandidate{VirtualModelID: virtualModelID, StableOrder: stableOrder, SourceType: candidateInput.SourceType, Enabled: candidateInput.Enabled, MaxRetries: candidateInput.MaxRetries, TimeoutSeconds: candidateInput.TimeoutSeconds, HedgeThreshold: candidateInput.HedgeThreshold, HedgeFreezeSeconds: candidateInput.HedgeFreezeSeconds, Version: 1, CreatedTime: common.GetTimestamp(), UpdatedTime: common.GetTimestamp()}
 	// 喵~防御：在创建主候选行前校验来源专属字段，避免校验失败时留下孤立候选喵。
 	if err := validateVirtualModelCandidateSourceInput(candidate.SourceType, candidateInput, true); err != nil {
 		return err
@@ -561,12 +569,14 @@ func updateVirtualModelCandidateWithConfig(tx *gorm.DB, candidate *model.Virtual
 	candidate.Enabled = candidateInput.Enabled
 	candidate.MaxRetries = candidateInput.MaxRetries
 	candidate.TimeoutSeconds = candidateInput.TimeoutSeconds
+	candidate.HedgeThreshold = candidateInput.HedgeThreshold
+	candidate.HedgeFreezeSeconds = candidateInput.HedgeFreezeSeconds
 	candidate.Version++
 	candidate.UpdatedTime = common.GetTimestamp()
 	if err := model.ValidateVirtualModelCandidate(candidate); err != nil {
 		return err
 	}
-	if err := tx.Model(&model.VirtualModelCandidate{}).Where("id = ? AND virtual_model_id = ?", candidate.ID, candidate.VirtualModelID).Select("stable_order", "enabled", "max_retries", "timeout_seconds", "version", "updated_time").Updates(candidate).Error; err != nil {
+	if err := tx.Model(&model.VirtualModelCandidate{}).Where("id = ? AND virtual_model_id = ?", candidate.ID, candidate.VirtualModelID).Select("stable_order", "enabled", "max_retries", "timeout_seconds", "hedge_threshold", "hedge_freeze_seconds", "version", "updated_time").Updates(candidate).Error; err != nil {
 		return err
 	}
 	return saveVirtualModelCandidateSourceConfig(tx, candidate, candidateInput, false)
@@ -748,6 +758,12 @@ func ReplaceVirtualModelCandidateFailureRules(c *gin.Context) {
 		if candidateError := transactionDatabase.Where("id = ? AND virtual_model_id = ?", candidateID, modelID).First(candidate).Error; candidateError != nil {
 			return gorm.ErrRecordNotFound
 		}
+		// 校验候选级自动避险配置，非法值必须整体回滚，避免持久化不可执行的退避策略喵。
+		candidate.HedgeThreshold = input.HedgeThreshold
+		candidate.HedgeFreezeSeconds = input.HedgeFreezeSeconds
+		if validateError := model.ValidateVirtualModelCandidate(candidate); validateError != nil {
+			return validateError
+		}
 		// 喵~防御：确认候选存在后才推进父模型版本，避免无效候选请求无谓制造版本冲突喵。
 		updateResult := transactionDatabase.Model(&model.VirtualModel{}).Where("id = ? AND owner_user_id = ? AND version = ?", modelID, c.GetInt("id"), input.Version).Updates(map[string]any{"version": input.Version + 1, "updated_time": common.GetTimestamp()})
 		if updateResult.Error != nil {
@@ -755,6 +771,10 @@ func ReplaceVirtualModelCandidateFailureRules(c *gin.Context) {
 		}
 		if updateResult.RowsAffected != 1 {
 			return errors.New("virtual_model_version_conflict")
+		}
+		// 更新候选的自动避险配置，与规则替换保持同一事务边界喵。
+		if hedgeUpdateError := transactionDatabase.Model(candidate).Select("hedge_threshold", "hedge_freeze_seconds", "updated_time").Updates(map[string]any{"hedge_threshold": candidate.HedgeThreshold, "hedge_freeze_seconds": candidate.HedgeFreezeSeconds, "updated_time": common.GetTimestamp()}).Error; hedgeUpdateError != nil {
+			return hedgeUpdateError
 		}
 		// 喵~防御：先硬删除旧规则再按请求顺序创建，避免中间排序唯一约束冲突或遗留失效规则喵。
 		if deleteError := transactionDatabase.Unscoped().Where("candidate_id = ?", candidateID).Delete(&model.VirtualModelFailureRule{}).Error; deleteError != nil {
@@ -827,7 +847,7 @@ func ReplaceVirtualModelGlobalFailureRules(c *gin.Context) {
 			return deleteError
 		}
 		for ruleOrder, ruleInput := range input.Rules {
-			globalFailureRule := &model.VirtualModelGlobalFailureRule{VirtualModelID: modelID, RuleOrder: ruleOrder, HTTPStatus: ruleInput.HTTPStatus, HTTPStatusMax: ruleInput.HTTPStatusMax, ErrorClass: strings.TrimSpace(ruleInput.ErrorClass), BodyRegex: strings.TrimSpace(ruleInput.BodyRegex), Action: ruleInput.Action, FreezeSeconds: ruleInput.FreezeSeconds, FreezeField: strings.TrimSpace(ruleInput.FreezeField), FreezeUnit: ruleInput.FreezeUnit, StallTimeoutSeconds: ruleInput.StallTimeoutSeconds, MinContentChars: ruleInput.MinContentChars, ProbeTotalTimeoutSeconds: ruleInput.ProbeTotalTimeoutSeconds, TimeoutSeconds: ruleInput.TimeoutSeconds, RetryCount: ruleInput.RetryCount, FailureThreshold: ruleInput.FailureThreshold}
+			globalFailureRule := &model.VirtualModelGlobalFailureRule{VirtualModelID: modelID, RuleOrder: ruleOrder, HTTPStatus: ruleInput.HTTPStatus, HTTPStatusMax: ruleInput.HTTPStatusMax, ErrorClass: strings.TrimSpace(ruleInput.ErrorClass), BodyRegex: strings.TrimSpace(ruleInput.BodyRegex), Action: ruleInput.Action, FreezeSeconds: ruleInput.FreezeSeconds, FreezeField: strings.TrimSpace(ruleInput.FreezeField), FreezeUnit: ruleInput.FreezeUnit, StallTimeoutSeconds: ruleInput.StallTimeoutSeconds, MinContentChars: ruleInput.MinContentChars, ProbeTotalTimeoutSeconds: ruleInput.ProbeTotalTimeoutSeconds, TimeoutSeconds: ruleInput.TimeoutSeconds, RetryCount: ruleInput.RetryCount}
 			if validateError := virtualmodelservice.ValidateGlobalFailureRule(globalFailureRule); validateError != nil {
 				return validateError
 			}

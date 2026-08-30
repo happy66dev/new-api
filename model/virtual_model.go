@@ -117,13 +117,17 @@ type VirtualModelCandidate struct {
 	StableOrder    int                    `json:"stable_order" gorm:"not null;uniqueIndex:idx_virtual_model_candidate_order,priority:2"`
 	SourceType     VirtualModelSourceType `json:"source_type" gorm:"type:varchar(16);not null"`
 	// 喵~防御：同上，候选的 Enabled 也不能带 default 标签，否则新建停用候选会被写成启用并参与调用喵。
-	Enabled        bool           `json:"enabled"`
-	MaxRetries     int            `json:"max_retries" gorm:"default:0"`
-	TimeoutSeconds int            `json:"timeout_seconds" gorm:"default:60"`
-	Version        int64          `json:"version" gorm:"default:1"`
-	CreatedTime    int64          `json:"created_time" gorm:"bigint"`
-	UpdatedTime    int64          `json:"updated_time" gorm:"bigint"`
-	DeletedAt      gorm.DeletedAt `json:"-" gorm:"index"`
+	Enabled        bool `json:"enabled"`
+	MaxRetries     int  `json:"max_retries" gorm:"default:0"`
+	TimeoutSeconds int  `json:"timeout_seconds" gorm:"default:60"`
+	// HedgeThreshold 连续失败自动避险阈值，达到该次数才冻结退避；零表示关闭自动避险、维持失效规则既有语义喵。
+	HedgeThreshold int `json:"hedge_threshold"`
+	// HedgeFreezeSeconds 达到连续失败阈值后的退避冻结秒数；阈值非零时必填且必须为正数喵。
+	HedgeFreezeSeconds int            `json:"hedge_freeze_seconds"`
+	Version            int64          `json:"version" gorm:"default:1"`
+	CreatedTime        int64          `json:"created_time" gorm:"bigint"`
+	UpdatedTime        int64          `json:"updated_time" gorm:"bigint"`
+	DeletedAt          gorm.DeletedAt `json:"-" gorm:"index"`
 }
 
 // VirtualModelInternalCandidate 保存 new-api 内部候选的分组和真实模型喵。
@@ -175,11 +179,8 @@ type VirtualModelFailureRule struct {
 	// TimeoutSeconds 超时条件判定阈值，单位：秒；零表示沿用候选级执行超时喵。
 	TimeoutSeconds int `json:"timeout_seconds"`
 	// RetryCount 失败规则重试当前候选的最大重试次数，零表示未配置时沿用候选 MaxRetries 喵。
-	RetryCount int `json:"retry_count"`
-	// FailureThreshold 连续失败阈值（自动避险），运行时承载模型级全局规则的累计冻结配置；
-	// 候选级规则持久化时恒为零，零表示单次失败立即冻结喵。
-	FailureThreshold int   `json:"failure_threshold"`
-	Version          int64 `json:"version" gorm:"default:1"`
+	RetryCount int   `json:"retry_count"`
+	Version    int64 `json:"version" gorm:"default:1"`
 }
 
 // VirtualModelGlobalFailureRule 保存模型级全局兜底失败规则喵。
@@ -208,11 +209,8 @@ type VirtualModelGlobalFailureRule struct {
 	// TimeoutSeconds 超时条件判定阈值，单位：秒；零表示沿用候选级执行超时喵。
 	TimeoutSeconds int `json:"timeout_seconds"`
 	// RetryCount 失败规则重试当前候选的最大重试次数，零表示未配置时沿用候选 MaxRetries 喵。
-	RetryCount int `json:"retry_count"`
-	// FailureThreshold 连续失败达到该次数才触发冻结（自动避险），零表示未配置、维持单次失败立即冻结喵。
-	// 仅对 action=freeze 的模型级全局规则生效，对齐 autoapi 的 auto_hedge_threshold 语义喵。
-	FailureThreshold int   `json:"failure_threshold"`
-	Version          int64 `json:"version" gorm:"default:1"`
+	RetryCount int   `json:"retry_count"`
+	Version    int64 `json:"version" gorm:"default:1"`
 }
 
 // VirtualModelTokenBinding 保存模型和用户 API Key 的显式授权关系喵。
@@ -363,6 +361,14 @@ func ValidateVirtualModelCandidate(candidate *VirtualModelCandidate) error {
 	if candidate.StableOrder < 0 || candidate.MaxRetries < 0 || candidate.MaxRetries > 20 || candidate.TimeoutSeconds < 1 || candidate.TimeoutSeconds > 600 {
 		return errors.New("虚拟模型候选参数超出允许范围")
 	}
+	// 喵~防御：连续失败自动避险阈值必须在零到一千之间，超过该上限时累计计数失去运维意义喵。
+	if candidate.HedgeThreshold < 0 || candidate.HedgeThreshold > 1000 {
+		return errors.New("虚拟模型候选自动避险阈值超出允许范围")
+	}
+	// 喵~防御：配置了自动避险阈值时退避秒数必须为正且不超过一天，否则冻结退避形同虚设喵。
+	if candidate.HedgeThreshold > 0 && (candidate.HedgeFreezeSeconds < 1 || candidate.HedgeFreezeSeconds > 24*60*60) {
+		return errors.New("虚拟模型候选自动避险退避秒数超出允许范围")
+	}
 	if candidate.SourceType != VirtualModelSourceInternal && candidate.SourceType != VirtualModelSourceCustom {
 		return errors.New("虚拟模型候选来源无效")
 	}
@@ -430,6 +436,8 @@ type VirtualModelCandidateSnapshot struct {
 	Enabled            bool                   // 候选是否启用，禁用候选不会进入本请求快照喵。
 	MaxRetries         int                    // 自定义候选的最大附加重试次数，单位：次喵。
 	TimeoutSeconds     int                    // 单次候选执行超时，单位：秒喵。
+	HedgeThreshold     int                    // 连续失败自动避险阈值，达到该次数才冻结退避，零表示关闭喵。
+	HedgeFreezeSeconds int                    // 达到连续失败阈值后的退避冻结秒数喵。
 	GroupName          string                 // 内部候选目标分组，自定义候选为空喵。
 	RealModelName      string                 // 上游或内部实际请求模型名称喵。
 	EncryptedBaseURL   string                 // 自定义候选加密后的上游基址，内部候选为空喵。
@@ -502,7 +510,7 @@ func GetEnabledVirtualModelCandidateSnapshotsWithDB(database *gorm.DB, virtualMo
 	}
 	candidateSnapshots := make([]VirtualModelCandidateSnapshot, 0)
 	queryError := database.Model(&VirtualModelCandidate{}).
-		Select("virtual_model_candidates.id AS candidate_id, virtual_model_candidates.virtual_model_id, virtual_model_candidates.stable_order, virtual_model_candidates.source_type, virtual_model_candidates.enabled, virtual_model_candidates.max_retries, virtual_model_candidates.timeout_seconds, virtual_model_internal_candidates.group_name, CASE WHEN virtual_model_candidates.source_type = ? THEN virtual_model_internal_candidates.real_model_name ELSE virtual_model_custom_candidates.real_model_name END AS real_model_name, virtual_model_custom_candidates.encrypted_base_url, virtual_model_custom_candidates.base_url_summary, virtual_model_custom_candidates.base_url_fingerprint, virtual_model_custom_candidates.encrypted_api_key, virtual_model_custom_candidates.api_key_fingerprint, virtual_model_custom_candidates.credential_version, virtual_model_custom_candidates.auth_style, virtual_model_custom_candidates.upstream_model_id", VirtualModelSourceInternal).
+		Select("virtual_model_candidates.id AS candidate_id, virtual_model_candidates.virtual_model_id, virtual_model_candidates.stable_order, virtual_model_candidates.source_type, virtual_model_candidates.enabled, virtual_model_candidates.max_retries, virtual_model_candidates.timeout_seconds, virtual_model_candidates.hedge_threshold, virtual_model_candidates.hedge_freeze_seconds, virtual_model_internal_candidates.group_name, CASE WHEN virtual_model_candidates.source_type = ? THEN virtual_model_internal_candidates.real_model_name ELSE virtual_model_custom_candidates.real_model_name END AS real_model_name, virtual_model_custom_candidates.encrypted_base_url, virtual_model_custom_candidates.base_url_summary, virtual_model_custom_candidates.base_url_fingerprint, virtual_model_custom_candidates.encrypted_api_key, virtual_model_custom_candidates.api_key_fingerprint, virtual_model_custom_candidates.credential_version, virtual_model_custom_candidates.auth_style, virtual_model_custom_candidates.upstream_model_id", VirtualModelSourceInternal).
 		Joins("LEFT JOIN virtual_model_internal_candidates ON virtual_model_internal_candidates.candidate_id = virtual_model_candidates.id AND virtual_model_candidates.source_type = ?", VirtualModelSourceInternal).
 		Joins("LEFT JOIN virtual_model_custom_candidates ON virtual_model_custom_candidates.candidate_id = virtual_model_candidates.id AND virtual_model_candidates.source_type = ?", VirtualModelSourceCustom).
 		Where("virtual_model_candidates.virtual_model_id = ? AND virtual_model_candidates.enabled = ?", virtualModelID, true).
@@ -566,7 +574,7 @@ func GetVirtualModelGlobalFailureRulesWithDB(database *gorm.DB, virtualModelID i
 	// 将模型级规则字段复制到候选规则结构，字段语义与候选规则完全一致，含规则级重试次数喵。
 	globalFailureRules := make([]VirtualModelFailureRule, 0, len(storedGlobalRules))
 	for _, storedRule := range storedGlobalRules {
-		globalFailureRules = append(globalFailureRules, VirtualModelFailureRule{ID: storedRule.ID, RuleOrder: storedRule.RuleOrder, HTTPStatus: storedRule.HTTPStatus, HTTPStatusMax: storedRule.HTTPStatusMax, ErrorClass: storedRule.ErrorClass, BodyRegex: storedRule.BodyRegex, Action: storedRule.Action, FreezeSeconds: storedRule.FreezeSeconds, FreezeField: storedRule.FreezeField, FreezeUnit: storedRule.FreezeUnit, RetryCount: storedRule.RetryCount, FailureThreshold: storedRule.FailureThreshold})
+		globalFailureRules = append(globalFailureRules, VirtualModelFailureRule{ID: storedRule.ID, RuleOrder: storedRule.RuleOrder, HTTPStatus: storedRule.HTTPStatus, HTTPStatusMax: storedRule.HTTPStatusMax, ErrorClass: storedRule.ErrorClass, BodyRegex: storedRule.BodyRegex, Action: storedRule.Action, FreezeSeconds: storedRule.FreezeSeconds, FreezeField: storedRule.FreezeField, FreezeUnit: storedRule.FreezeUnit, RetryCount: storedRule.RetryCount})
 	}
 	return globalFailureRules, nil
 }

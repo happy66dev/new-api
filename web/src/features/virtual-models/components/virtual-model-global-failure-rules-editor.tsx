@@ -139,7 +139,6 @@ export function VirtualModelGlobalFailureRulesEditor({
           total={draftRules.length}
           rule={rule}
           isSaving={isSaving}
-          allowThreshold
           onChange={(patch) => updateRule(index, patch)}
           onMove={(direction) => moveRule(index, direction)}
           onRemove={() => removeRule(index)}

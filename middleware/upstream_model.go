@@ -424,51 +424,44 @@ func handleVirtualModelUpstreamFailure(c *gin.Context, upstreamModel *model.User
 		ElapsedMs:  time.Since(startTime).Milliseconds(),
 		RetryCount: executionState.ruleRetryCounts[candidateID],
 	})
+	// 自动避险独立于失效规则：候选配置了连续失败阈值时，无论失效规则决策为何都累计连续失败，达阈值即冻结退避喵。
+	hedgeFroze, hedgeError := virtualmodelservice.RecordCandidateAutoHedge(executionState.ownerUserID, currentCandidate, customFailure.Failure, common.GetTimestamp())
+	// 喵~防御：连续失败计数写入失败时保守终结候选链，避免上游故障扩大为循环请求喵。
+	if hedgeError != nil {
+		// 实体状态检测：计数写入失败终结请求，记录候选、上游模型与整体失败喵。
+		recordVirtualModelUpstreamFailureProbe(c, executionState, candidateID, upstreamModel, isShared, errorClass, startTime, true)
+		abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
+		return virtualModelUpstreamFailureEnd
+	}
+	// 同步内存快照：自动避险达阈值冻结后，本次请求后续候选激活立即跳过刚冻结的内部候选喵。
+	if hedgeFroze {
+		executionState.internalFreezeStatesByCandidate[candidateID] = model.VirtualModelInternalFreezeState{CandidateID: candidateID, FrozenUntil: common.GetTimestamp() + int64(currentCandidate.HedgeFreezeSeconds)}
+	}
 	// 按失败规则决策动作；候选未配置规则时回退模型级全局兜底规则喵。
-	action, freezeSeconds, ruleRetryCount, failureThreshold := virtualmodelservice.DecideVirtualModelFailureAction(executionState.executionSnapshot, candidateID, customFailure.Failure)
+	action, freezeSeconds, ruleRetryCount := virtualmodelservice.DecideVirtualModelFailureAction(executionState.executionSnapshot, candidateID, customFailure.Failure)
 	// 失败规则 retry：规则级最大重试次数优先，未配置时回退候选 MaxRetries，在其内重放当前上游请求喵。
+	// 喵~防御：自动避险刚达阈值冻结该候选时不得再重试，直接进入候选切换退避喵。
 	maxUpstreamRetries := currentCandidate.MaxRetries
 	if ruleRetryCount > 0 {
 		maxUpstreamRetries = ruleRetryCount
 	}
-	if action == model.VirtualModelActionRetry && executionState.ruleRetryCounts[candidateID] < maxUpstreamRetries {
+	if action == model.VirtualModelActionRetry && executionState.ruleRetryCounts[candidateID] < maxUpstreamRetries && !hedgeFroze {
 		executionState.ruleRetryCounts[candidateID]++
 		return virtualModelUpstreamFailureRetry
 	}
-	// 失败规则 freeze：在 owner 范围内冻结指定时长，随后跳过该候选喵。
-	// 模型级全局规则配置连续失败阈值时走自动避险累计路径，达到阈值才真正冻结；未配置时维持单次失败立即冻结喵。
+	// 失败规则 freeze：命中规则时单次失败立即在 owner 范围内冻结指定时长，随后跳过该候选喵。
 	if action == model.VirtualModelActionFreeze && freezeSeconds > 0 {
-		if failureThreshold > 0 {
-			// 自动避险累计路径：4xx 用户侧错误豁免不计入连续失败，直接跳过候选不冻结喵。
-			if !virtualmodelservice.IsHedgeExemptFailure(customFailure.Failure) {
-				frozenUntil := common.GetTimestamp() + int64(freezeSeconds)
-				reachedThreshold, freezeError := model.RecordVirtualModelInternalFailure(executionState.ownerUserID, candidateID, failureThreshold, frozenUntil, errorClass, common.GetTimestamp())
-				// 喵~防御：连续失败计数写入失败时保守终结候选链，避免上游故障扩大为循环请求喵。
-				if freezeError != nil {
-					// 实体状态检测：计数写入失败终结请求，记录候选、上游模型与整体失败喵。
-					recordVirtualModelUpstreamFailureProbe(c, executionState, candidateID, upstreamModel, isShared, errorClass, startTime, true)
-					abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
-					return virtualModelUpstreamFailureEnd
-				}
-				// 同步内存快照：达到阈值冻结后，本次请求后续候选激活立即跳过刚冻结的内部候选喵。
-				if reachedThreshold {
-					executionState.internalFreezeStatesByCandidate[candidateID] = model.VirtualModelInternalFreezeState{CandidateID: candidateID, FrozenUntil: frozenUntil}
-				}
-			}
-		} else {
-			// 未配置阈值：维持单次失败立即冻结的既有语义喵。
-			frozenUntil := common.GetTimestamp() + int64(freezeSeconds)
-			freezeError := model.UpsertVirtualModelInternalFreezeState(executionState.ownerUserID, candidateID, frozenUntil, errorClass, common.GetTimestamp())
-			// 喵~防御：冻结状态写入失败时保守终结候选链，避免上游故障扩大为循环请求喵。
-			if freezeError != nil {
-				// 实体状态检测：冻结失败终结请求，记录候选、上游模型与整体失败喵。
-				recordVirtualModelUpstreamFailureProbe(c, executionState, candidateID, upstreamModel, isShared, errorClass, startTime, true)
-				abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
-				return virtualModelUpstreamFailureEnd
-			}
-			// 同步内存快照，使本次请求后续候选激活立即跳过刚冻结的内部候选喵。
-			executionState.internalFreezeStatesByCandidate[candidateID] = model.VirtualModelInternalFreezeState{CandidateID: candidateID, FrozenUntil: frozenUntil}
+		frozenUntil := common.GetTimestamp() + int64(freezeSeconds)
+		freezeError := model.UpsertVirtualModelInternalFreezeState(executionState.ownerUserID, candidateID, frozenUntil, errorClass, common.GetTimestamp())
+		// 喵~防御：冻结状态写入失败时保守终结候选链，避免上游故障扩大为循环请求喵。
+		if freezeError != nil {
+			// 实体状态检测：冻结失败终结请求，记录候选、上游模型与整体失败喵。
+			recordVirtualModelUpstreamFailureProbe(c, executionState, candidateID, upstreamModel, isShared, errorClass, startTime, true)
+			abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
+			return virtualModelUpstreamFailureEnd
 		}
+		// 同步内存快照，使本次请求后续候选激活立即跳过刚冻结的内部候选喵。
+		executionState.internalFreezeStatesByCandidate[candidateID] = model.VirtualModelInternalFreezeState{CandidateID: candidateID, FrozenUntil: frozenUntil}
 	}
 	// 失败规则 passthrough：把受限上游错误正文原样回传客户端喵。
 	if action == model.VirtualModelActionPassthrough {

@@ -708,6 +708,8 @@ export function VirtualModelCandidatesEditor({
                 candidateID={draftCandidates[rulesCandidateIndex].id ?? 0}
                 candidateLabel={candidateDisplayName(draftCandidates[rulesCandidateIndex])}
                 rules={(model.candidates ?? []).find((candidate) => candidate.id === draftCandidates[rulesCandidateIndex].id)?.failure_rules ?? []}
+                hedgeThreshold={(model.candidates ?? []).find((candidate) => candidate.id === draftCandidates[rulesCandidateIndex].id)?.hedge_threshold ?? 0}
+                hedgeFreezeSeconds={(model.candidates ?? []).find((candidate) => candidate.id === draftCandidates[rulesCandidateIndex].id)?.hedge_freeze_seconds ?? 0}
                 onSaved={() => {
                   // 保存成功后刷新父级模型数据并关闭抽屉喵。
                   onSaved()

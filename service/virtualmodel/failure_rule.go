@@ -89,28 +89,26 @@ func ParseRetryAfterSeconds(responseHeaders http.Header) int {
 }
 
 // DecideCandidateFailureAction 按规则顺序决定候选失败后的编排动作喵。
-// 返回命中规则的动作、冻结秒数与规则级最大重试次数（retryCount 仅在动作 retry 时有意义，零表示未配置），
-// 以及规则的连续失败阈值（failureThreshold 仅在模型级全局规则的自动避险路径有意义，零表示单次失败立即冻结）喵。
-func DecideCandidateFailureAction(rules []model.VirtualModelFailureRule, failure CandidateFailure) (model.VirtualModelFailureAction, int, int, int) {
+// 返回命中规则的动作、冻结秒数与规则级最大重试次数（retryCount 仅在动作 retry 时有意义，零表示未配置）喵。
+func DecideCandidateFailureAction(rules []model.VirtualModelFailureRule, failure CandidateFailure) (model.VirtualModelFailureAction, int, int) {
 	// 规则已由查询层稳定排序；第一条命中规则拥有唯一决策权喵。
 	for _, rule := range rules {
 		if !candidateFailureRuleMatches(rule, failure) {
 			continue
 		}
-		return rule.Action, candidateFreezeSeconds(rule, failure), rule.RetryCount, rule.FailureThreshold
+		return rule.Action, candidateFreezeSeconds(rule, failure), rule.RetryCount
 	}
 	// 喵~防御：不存在匹配规则时默认切换下一候选，避免无限重试不可预期故障喵。
-	return model.VirtualModelActionNext, 0, 0, 0
+	return model.VirtualModelActionNext, 0, 0
 }
 
 // DecideVirtualModelFailureAction 决定一次候选失败后的编排动作，并在候选未配置规则时回退到模型级全局兜底规则喵。
-// 返回命中规则的动作、冻结秒数与规则级最大重试次数（retryCount 仅在动作 retry 时有意义，零表示未配置），
-// 以及规则的连续失败阈值（failureThreshold 仅在模型级全局规则的自动避险路径有意义，零表示单次失败立即冻结）喵。
+// 返回命中规则的动作、冻结秒数与规则级最大重试次数（retryCount 仅在动作 retry 时有意义，零表示未配置）喵。
 // 候选配置了自己的失效规则时仍按候选规则决策；候选规则集为空时采用模型级全局兜底规则喵。
-func DecideVirtualModelFailureAction(executionSnapshot *model.VirtualModelExecutionSnapshot, candidateID int, failure CandidateFailure) (model.VirtualModelFailureAction, int, int, int) {
+func DecideVirtualModelFailureAction(executionSnapshot *model.VirtualModelExecutionSnapshot, candidateID int, failure CandidateFailure) (model.VirtualModelFailureAction, int, int) {
 	// 喵~防御：快照为空时按无规则处理，默认切换下一候选喵。
 	if executionSnapshot == nil {
-		return model.VirtualModelActionNext, 0, 0, 0
+		return model.VirtualModelActionNext, 0, 0
 	}
 	// 读取候选自己的规则，候选没有配置任何规则时为空喵。
 	candidateRules := executionSnapshot.FailureRulesByCandidateID[candidateID]
@@ -125,6 +123,26 @@ func DecideVirtualModelFailureAction(executionSnapshot *model.VirtualModelExecut
 // 用户侧 4xx 客户端错误（如上下文超限、参数错误）不属于上游故障，不应触发候选自动避险冻结喵。
 func IsHedgeExemptFailure(failure CandidateFailure) bool {
 	return failure.ErrorClass == "upstream_client_error"
+}
+
+// RecordCandidateAutoHedge 独立于失效规则累计候选自动避险连续失败，达到阈值时冻结退避喵。
+// 候选未配置阈值（HedgeThreshold <= 0）或失败属 4xx 豁免时不累计并返回 false；
+// 达到阈值时按候选来源写入对应冻结状态并返回 true，未达阈值仅累计计数返回 false喵。
+func RecordCandidateAutoHedge(ownerUserID int, candidate model.VirtualModelCandidateSnapshot, failure CandidateFailure, currentTimestamp int64) (bool, error) {
+	// 喵~防御：候选未配置连续失败阈值或参数非法时视为无操作，保持既有失败语义喵。
+	if ownerUserID <= 0 || candidate.CandidateID <= 0 || candidate.HedgeThreshold <= 0 || currentTimestamp <= 0 {
+		return false, nil
+	}
+	// 4xx 客户端错误属于用户侧问题，豁免不计入连续失败喵。
+	if IsHedgeExemptFailure(failure) {
+		return false, nil
+	}
+	frozenUntil := currentTimestamp + int64(candidate.HedgeFreezeSeconds)
+	// 自定义候选按身份摘要共享冻结，内部候选按候选编号隔离冻结喵。
+	if candidate.SourceType == model.VirtualModelSourceCustom {
+		return model.RecordVirtualModelCustomFailure(ownerUserID, CustomCandidateIdentityDigest(candidate), candidate.HedgeThreshold, frozenUntil, failure.ErrorClass, currentTimestamp)
+	}
+	return model.RecordVirtualModelInternalFailure(ownerUserID, candidate.CandidateID, candidate.HedgeThreshold, frozenUntil, failure.ErrorClass, currentTimestamp)
 }
 
 // candidateFailureRuleMatches 判断单条规则是否命中喵。
@@ -470,14 +488,6 @@ func ValidateGlobalFailureRule(rule *model.VirtualModelGlobalFailureRule) error 
 	// 喵~防御：空规则或非法模型编号必须拒绝持久化，防止无主规则污染全局兜底喵。
 	if rule == nil || rule.VirtualModelID <= 0 {
 		return errors.New("virtual model failure rule is invalid")
-	}
-	// 喵~防御：连续失败阈值必须在零到一千之间，零表示未配置维持单次立即冻结，过大阈值会让自动避险形同虚设喵。
-	if rule.FailureThreshold < 0 || rule.FailureThreshold > 1000 {
-		return errors.New("virtual model failure rule threshold is invalid")
-	}
-	// 喵~防御：连续失败阈值只在冻结动作上才有意义，非冻结动作配置阈值会造成混淆，直接拒绝喵。
-	if rule.FailureThreshold > 0 && rule.Action != model.VirtualModelActionFreeze {
-		return errors.New("virtual model failure rule threshold requires freeze action")
 	}
 	// 模型级与候选级规则的字段约束一致，直接复用共享校验喵。
 	return validateFailureRuleFields(rule.RuleOrder, rule.HTTPStatus, rule.HTTPStatusMax, rule.FreezeSeconds, rule.ErrorClass, rule.BodyRegex, rule.Action, rule.FreezeField, rule.FreezeUnit, rule.StallTimeoutSeconds, rule.MinContentChars, rule.ProbeTotalTimeoutSeconds, rule.TimeoutSeconds, rule.RetryCount)

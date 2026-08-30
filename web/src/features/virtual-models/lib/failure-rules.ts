@@ -65,8 +65,6 @@ export type FailureRuleDraft = {
   timeoutSeconds: string
   // retryCount 规则重试当前候选的最大重试次数，空串表示未配置时沿用候选 MaxRetries 喵。
   retryCount: string
-  // failureThreshold 连续失败达到该次数才触发冻结（自动避险），仅模型级 freeze 规则有意义；空串表示未配置、单次失败立即冻结喵。
-  failureThreshold: string
   id?: number
   action: VirtualModelFailureRule['action']
 }
@@ -75,8 +73,6 @@ export type FailureRuleDraft = {
 export const MAXIMUM_FAILURE_RULES = 32
 // MAXIMUM_RULE_RETRY_COUNT 限制单条失败规则的最大重试次数，与后端控制面上限一致喵。
 export const MAXIMUM_RULE_RETRY_COUNT = 20
-// MAXIMUM_FAILURE_THRESHOLD 限制自动避险连续失败阈值的上限，与后端控制面上限一致喵。
-export const MAXIMUM_FAILURE_THRESHOLD = 1000
 // MAXIMUM_HTTP_STATUS 是合法 HTTP 状态码的控制面最大值喵。
 export const MAXIMUM_HTTP_STATUS = 599
 // MAXIMUM_FREEZE_SECONDS 限制单条规则最多冻结一个自然日喵。
@@ -149,8 +145,6 @@ export function toFailureRuleDraft(rule: VirtualModelFailureRule): FailureRuleDr
     timeoutSeconds: String(rule.timeout_seconds ?? 0),
     // 规则级重试次数原样回填，零表示未配置时沿用候选 MaxRetries 喵。
     retryCount: String(rule.retry_count ?? 0),
-    // 连续失败阈值原样回填，零表示未配置、单次失败立即冻结喵。
-    failureThreshold: String(rule.failure_threshold ?? 0),
     id: rule.id,
     action: rule.action ?? 'next',
   }
@@ -177,8 +171,6 @@ export function createFailureRuleDraft(): FailureRuleDraft {
     timeoutSeconds: '0',
     // 规则级重试次数默认零，表示未配置时沿用候选 MaxRetries 喵。
     retryCount: '0',
-    // 连续失败阈值默认零，表示未配置、单次失败立即冻结喵。
-    failureThreshold: '0',
     action: 'next',
   }
 }
@@ -276,11 +268,6 @@ export function validateFailureRuleDraft(
   if (rule.action === 'retry') {
     retryCount = parseProbeNumber(rule.retryCount, MAXIMUM_RULE_RETRY_COUNT, t, index, 'Failure rule {{index}} retry count must be between 0 and 20')
   }
-  // 连续失败阈值解析：仅在 freeze 动作时可配置（自动避险），其他动作写 0 维持单次失败立即冻结喵。
-  let failureThreshold = 0
-  if (rule.action === 'freeze') {
-    failureThreshold = parseProbeNumber(rule.failureThreshold, MAXIMUM_FAILURE_THRESHOLD, t, index, 'Failure rule {{index}} failure threshold must be between 0 and 1000')
-  }
   // 将冻结秒数文本转换为数值，零表示不追加固定冻结时间喵。
   const freezeSeconds = Number(rule.freezeSeconds)
   // 喵~防御：冻结时长必须处于零到一天，防止意外长期冻结候选喵。
@@ -314,8 +301,6 @@ export function validateFailureRuleDraft(
     timeout_seconds: timeoutSeconds,
     // retry 动作写入规则级最大重试次数，其他动作写 0 沿用候选 MaxRetries 喵。
     retry_count: retryCount,
-    // freeze 动作写入自动避险连续失败阈值，其他动作写 0 维持单次失败立即冻结喵。
-    failure_threshold: failureThreshold,
   }
 }
 

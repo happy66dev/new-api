@@ -9,6 +9,10 @@ export type VirtualModelCandidate = {
   enabled: boolean
   max_retries: number
   timeout_seconds: number
+  // hedge_threshold 连续失败自动避险阈值，达到该次数才冻结退避；零表示关闭自动避险喵。
+  hedge_threshold?: number
+  // hedge_freeze_seconds 达到连续失败阈值后的退避冻结秒数；阈值非零时必填且必须为正数喵。
+  hedge_freeze_seconds?: number
   group_name?: string
   real_model_name?: string
   // 喵~防御：候选响应绝不声明或接收可回显的上游 API Key 喵。
@@ -31,6 +35,10 @@ export type VirtualModelCandidateInput = {
   enabled: boolean
   max_retries: number
   timeout_seconds: number
+  // hedge_threshold 连续失败自动避险阈值，达到该次数才冻结退避；零表示关闭自动避险喵。
+  hedge_threshold?: number
+  // hedge_freeze_seconds 达到连续失败阈值后的退避冻结秒数；阈值非零时必填且必须为正数喵。
+  hedge_freeze_seconds?: number
   group_name?: string
   real_model_name?: string
   base_url?: string
@@ -230,13 +238,15 @@ export type VirtualModelFailureRule = {
   timeout_seconds?: number
   // retry_count 规则重试当前候选的最大重试次数，零或省略表示未配置时沿用候选 MaxRetries 喵。
   retry_count?: number
-  // failure_threshold 连续失败达到该次数才触发冻结（自动避险），仅模型级全局规则有意义；零或省略表示单次失败立即冻结喵。
-  failure_threshold?: number
 }
 
 export type VirtualModelFailureRulesReplaceInput = {
   version: number
   rules: VirtualModelFailureRule[]
+  // hedge_threshold 候选级连续失败自动避险阈值，随规则保存一并写入候选表；零表示关闭自动避险喵。
+  hedge_threshold?: number
+  // hedge_freeze_seconds 候选级达到连续失败阈值后的退避冻结秒数；阈值非零时必填且必须为正数喵。
+  hedge_freeze_seconds?: number
 }
 
 export async function replaceVirtualModelCandidateFailureRules(

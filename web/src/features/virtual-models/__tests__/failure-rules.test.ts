@@ -48,8 +48,6 @@ function makeDraft(overrides: Partial<FailureRuleDraft> = {}): FailureRuleDraft 
     timeoutSeconds: '0',
     // 规则级重试次数默认零，表示未配置时沿用候选 MaxRetries 喵。
     retryCount: '0',
-    // 连续失败阈值默认零，表示未配置、单次失败立即冻结喵。
-    failureThreshold: '0',
     action: 'next',
     ...overrides,
   }
@@ -85,7 +83,6 @@ describe('toFailureRuleDraft', () => {
       timeoutSeconds: '0',
       // 规则级重试次数未配置时草稿默认零，表示沿用候选 MaxRetries 喵。
       retryCount: '0',
-      failureThreshold: '0',
       id: 7,
       action: 'freeze',
     })
@@ -125,7 +122,6 @@ describe('toFailureRuleDraft', () => {
       timeoutSeconds: '0',
       // 规则级重试次数未配置时草稿默认零，表示沿用候选 MaxRetries 喵。
       retryCount: '0',
-      failureThreshold: '0',
       id: undefined,
       action: 'next',
     })
@@ -166,7 +162,6 @@ describe('createFailureRuleDraft', () => {
       timeoutSeconds: '0',
       // 规则级重试次数未配置时草稿默认零，表示沿用候选 MaxRetries 喵。
       retryCount: '0',
-      failureThreshold: '0',
       action: 'next',
     })
   })
@@ -293,7 +288,6 @@ describe('validateFailureRuleDraft', () => {
       timeout_seconds: 0,
       // retry 动作未配置规则级重试次数时写零，表示沿用候选 MaxRetries 喵。
       retry_count: 0,
-      failure_threshold: 0,
     })
   })
 
@@ -589,55 +583,5 @@ describe('validateFailureRuleDraft with stalled condition', () => {
   it('rejects a non-integer probe total timeout', () => {
     // 喵~防御：小数探测总预算必须拒绝喵。
     expect(() => validateFailureRuleDraft(makeDraft({ conditionType: 'stalled', probeTotalTimeoutSeconds: '300.5' }), 0, identityTranslator)).toThrow()
-  })
-})
-
-describe('validateFailureRuleDraft with failure threshold', () => {
-  it('writes a configured failure threshold for the freeze action', () => {
-    // 模型级 freeze 规则配置自动避险阈值，校验输出必须透传喵。
-    const result = validateFailureRuleDraft(
-      makeDraft({ action: 'freeze', freezeSeconds: '60', failureThreshold: '5' }),
-      0,
-      identityTranslator
-    )
-    expect(result.failure_threshold).toBe(5)
-    expect(result.freeze_seconds).toBe(60)
-  })
-
-  it('writes zero failure threshold for non-freeze actions', () => {
-    // 非冻结动作不允许配置阈值，统一写零维持单次失败立即冻结喵。
-    const result = validateFailureRuleDraft(
-      makeDraft({ action: 'next', failureThreshold: '5' }),
-      0,
-      identityTranslator
-    )
-    expect(result.failure_threshold).toBe(0)
-  })
-
-  it('rejects a failure threshold above 1000', () => {
-    // 喵~防御：超过后端上界的阈值必须拒绝，避免自动避险形同虚设喵。
-    expect(() =>
-      validateFailureRuleDraft(makeDraft({ action: 'freeze', freezeSeconds: '60', failureThreshold: '1001' }), 0, identityTranslator)
-    ).toThrow()
-  })
-
-  it('rejects a negative failure threshold', () => {
-    // 喵~防御：负数阈值必须拒绝喵。
-    expect(() =>
-      validateFailureRuleDraft(makeDraft({ action: 'freeze', freezeSeconds: '60', failureThreshold: '-1' }), 0, identityTranslator)
-    ).toThrow()
-  })
-
-  it('round-trips a failure threshold through toFailureRuleDraft', () => {
-    // 服务端阈值原样回填草稿，编辑不丢配置喵。
-    const stored: VirtualModelFailureRule = {
-      http_status: 500,
-      error_class: '',
-      body_regex: '',
-      action: 'freeze',
-      freeze_seconds: 60,
-      failure_threshold: 8,
-    }
-    expect(toFailureRuleDraft(stored).failureThreshold).toBe('8')
   })
 })
