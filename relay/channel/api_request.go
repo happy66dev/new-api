@@ -60,6 +60,8 @@ func SetupApiRequestHeader(info *common.RelayInfo, c *gin.Context, req *http.Hea
 			req.Set("Accept", "text/event-stream")
 		}
 	}
+	// 注入回环检测标记：上游请求携带本实例标识，请求若被转回本实例，入口 LoopGuard 会据此识别并拒绝喵。
+	req.Set(common2.LoopGuardHeaderKey, common2.BuildLoopGuardValue(c.GetString(common2.RequestIdKey)))
 }
 
 const clientHeaderPlaceholderPrefix = "{client_header:"
@@ -333,6 +335,8 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		return nil, err
 	}
 	applyHeaderOverrideToRequest(req, headerOverride)
+	// 喵~防御：Header Override 之后强制注入回环检测标记，防止用户配置覆盖该头绕过回环检测喵。
+	req.Header.Set(common2.LoopGuardHeaderKey, common2.BuildLoopGuardValue(c.GetString(common2.RequestIdKey)))
 	resp, err := doRequest(c, req, info)
 	if err != nil {
 		return nil, fmt.Errorf("do request failed: %w", err)
@@ -365,6 +369,8 @@ func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBod
 		return nil, err
 	}
 	applyHeaderOverrideToRequest(req, headerOverride)
+	// 喵~防御：Header Override 之后强制注入回环检测标记，防止用户配置覆盖该头绕过回环检测喵。
+	req.Header.Set(common2.LoopGuardHeaderKey, common2.BuildLoopGuardValue(c.GetString(common2.RequestIdKey)))
 	resp, err := doRequest(c, req, info)
 	if err != nil {
 		return nil, fmt.Errorf("do request failed: %w", err)
@@ -391,6 +397,8 @@ func DoWssRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	for key, value := range headerOverride {
 		targetHeader.Set(key, value)
 	}
+	// 喵~防御：Header Override 之后强制注入回环检测标记，防止用户配置覆盖该头绕过回环检测喵。
+	targetHeader.Set(common2.LoopGuardHeaderKey, common2.BuildLoopGuardValue(c.GetString(common2.RequestIdKey)))
 	targetHeader.Set("Content-Type", c.Request.Header.Get("Content-Type"))
 	targetConn, _, err := websocket.DefaultDialer.Dial(fullRequestURL, targetHeader)
 	if err != nil {

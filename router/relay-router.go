@@ -15,6 +15,7 @@ func SetRelayRouter(router *gin.Engine) {
 	router.Use(middleware.DecompressRequestMiddleware())
 	router.Use(middleware.BodyStorageCleanup()) // 清理请求体存储
 	router.Use(middleware.StatsMiddleware())
+	router.Use(middleware.LoopGuard()) // 回环检测：拦截本实例转发出去又打回自己的请求风暴喵
 	// https://platform.openai.com/docs/api-reference/introduction
 	modelsRouter := router.Group("/v1/models")
 	modelsRouter.Use(middleware.RouteTag("relay"))
