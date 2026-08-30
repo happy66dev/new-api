@@ -28,6 +28,8 @@ type upstreamModelInput struct {
 	APIKey        string `json:"api_key"`
 	RealModelName string `json:"real_model_name"`
 	AuthStyle     string `json:"auth_style"`
+	// APIType 上游 API 类型：openai=OpenAI 兼容（默认）/anthropic=Anthropic 原生，决定 relay 格式转换方向喵。
+	APIType string `json:"api_type"`
 	// TimeoutSeconds 自用调用超时，单位：秒；零表示使用默认 60 秒喵。
 	TimeoutSeconds       int    `json:"timeout_seconds"`
 	CustomHeaders        string `json:"custom_headers"`
@@ -49,8 +51,14 @@ type upstreamModelInput struct {
 	BalanceCheckPath    string `json:"balance_check_path"`
 	ShareEnabled        bool   `json:"share_enabled"`
 	ShareLimitCents     int64  `json:"share_limit_cents"`
-	ShowBalanceEnabled  bool   `json:"show_balance_enabled"`
-	Version             int    `json:"version"`
+	// ShareWhitelist 共享白名单：逗号分隔的用户 id，白名单模式下仅名单内用户可见可调用喵。
+	ShareWhitelist string `json:"share_whitelist"`
+	// ShareBlacklist 共享黑名单：逗号分隔的用户 id，黑名单用户一律被挡喵。
+	ShareBlacklist string `json:"share_blacklist"`
+	// ShareListMode 共享名单模式：空=不限制/whitelist=白名单制/blacklist=黑名单制，显式二选一喵。
+	ShareListMode      string `json:"share_list_mode"`
+	ShowBalanceEnabled bool   `json:"show_balance_enabled"`
+	Version            int    `json:"version"`
 }
 
 // upstreamModelResponse 是控制面读取时可安全展示的脱敏响应喵。
@@ -65,13 +73,13 @@ type upstreamModelResponse struct {
 // upstreamModelUpdateColumns 是更新上游模型时允许写库的列白名单喵。
 // 新增可编辑字段时必须同步加入此列表，否则 GORM Select 会跳过该列导致修改不落库喵。
 var upstreamModelUpdateColumns = []string{
-	"normalized_name", "display_name", "enabled", "icon",
+	"normalized_name", "display_name", "description", "enabled", "icon",
 	"encrypted_base_url", "encrypted_api_key", "base_url_fingerprint", "api_key_fingerprint", "credential_version",
-	"real_model_name", "auth_style", "custom_headers", "field_replacements",
+	"real_model_name", "auth_style", "api_type", "timeout_seconds", "custom_headers", "field_replacements",
 	"model_ratio", "completion_ratio", "cache_ratio", "cache_creation_ratio", "cache_creation_5m_ratio", "cache_creation_1h_ratio",
 	"image_ratio", "audio_ratio", "audio_completion_ratio",
 	"balance_cents", "available_cents", "balance_check_enabled", "balance_check_path",
-	"share_enabled", "share_limit_cents", "show_balance_enabled",
+	"share_enabled", "share_limit_cents", "share_whitelist", "share_blacklist", "share_list_mode", "show_balance_enabled",
 	"version", "updated_time",
 }
 
@@ -215,6 +223,19 @@ func saveUpstreamModelFields(input upstreamModelInput, ownerUserID int, existing
 		return authError
 	}
 	existing.AuthStyle = string(authStyle)
+	// 喵~防御：api_type 只允许 openai/anthropic（不区分大小写归一化），非法值拒绝保存喵。
+	apiType := strings.ToLower(strings.TrimSpace(input.APIType))
+	switch apiType {
+	case "":
+		// 空值编辑时保留原值；创建时空值由模型默认值兜底为 openai 喵。
+		if existing.APIType == "" {
+			existing.APIType = model.UserUpstreamAPITypeOpenAI
+		}
+	case model.UserUpstreamAPITypeOpenAI, model.UserUpstreamAPITypeAnthropic:
+		existing.APIType = apiType
+	default:
+		return errors.New("上游 API 类型只允许 openai 或 anthropic")
+	}
 	// base_url 非空时加密更新；编辑留空表示保留原有配置喵。
 	if input.BaseURL != "" {
 		parsedURL, urlError := virtualmodelservice.ValidateCustomBaseURL(input.BaseURL)
@@ -259,6 +280,33 @@ func saveUpstreamModelFields(input upstreamModelInput, ownerUserID int, existing
 	existing.BalanceCheckPath = input.BalanceCheckPath
 	existing.ShareEnabled = input.ShareEnabled
 	existing.ShareLimitCents = input.ShareLimitCents
+	// 喵~防御：share_list_mode 只允许空/whitelist/blacklist，其余值拒绝保存喵。
+	shareListMode := strings.ToLower(strings.TrimSpace(input.ShareListMode))
+	switch shareListMode {
+	case "", "whitelist", "blacklist":
+	default:
+		return errors.New("共享名单模式只允许 whitelist 或 blacklist")
+	}
+	// 喵~防御：名单内容超过 1000 字符拒绝保存，避免超长文本拖慢查询与放大响应喵。
+	if len(input.ShareWhitelist) > 1000 || len(input.ShareBlacklist) > 1000 {
+		return errors.New("共享名单不能超过 1000 个字符")
+	}
+	// 白名单/黑名单互斥：按模式只保留对应列，另一列清空，与前端发送语义一致喵。
+	switch shareListMode {
+	case "whitelist":
+		existing.ShareListMode = "whitelist"
+		existing.ShareWhitelist = input.ShareWhitelist
+		existing.ShareBlacklist = ""
+	case "blacklist":
+		existing.ShareListMode = "blacklist"
+		existing.ShareBlacklist = input.ShareBlacklist
+		existing.ShareWhitelist = ""
+	default:
+		// 空模式表示解除名单限制，两列都清空喵。
+		existing.ShareListMode = ""
+		existing.ShareWhitelist = ""
+		existing.ShareBlacklist = ""
+	}
 	existing.ShowBalanceEnabled = input.ShowBalanceEnabled
 	if existing.CreatedTime == 0 {
 		existing.CreatedTime = common.GetTimestamp()
