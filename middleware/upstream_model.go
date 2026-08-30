@@ -3,6 +3,7 @@ package middleware
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -276,6 +277,17 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 		abortUpstreamModelQuotaExhausted(c)
 		return false
 	}
+	// 结算状态：预扣成功后注册兜底退款 defer，仅当「未结算 && 未进入 relay 路径」时退还预扣，避免额度被永久锁定喵。
+	// 进入 relay 路径后由 Distribute guard / HandleUpstreamModelRelayFailure 负责退款，此处不得重复退款喵。
+	settled := false
+	defer func() {
+		// 喵~防御：未结算且未进入 relay 路径时退还预扣；退款失败只记日志不阻断请求喵。
+		if !settled && !IsUpstreamModelRelayRequest(c) && preConsumedCents > 0 {
+			if refundError := model.AdjustUserUpstreamModelCharge(upstreamModel.ID, upstreamModel.OwnerUserID, -preConsumedCents, isShared); refundError != nil {
+				common.SysError("user upstream model pre-consume refund failed: " + refundError.Error())
+			}
+		}
+	}()
 	// 活跃请求注册：进入上游模型活跃计数喵。
 	EnterUpstreamModelInflight(upstreamModel.ID, upstreamModel.UserUpstreamModelName(), isShared)
 	baseURL, decryptBaseURLError := virtualmodelservice.DecryptCredential(upstreamModel.EncryptedBaseURL, upstreamModel.CredentialVersion)
@@ -284,13 +296,15 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 	if decryptBaseURLError != nil || decryptAPIKeyError != nil {
 		// 凭据解密失败计入失败（反映配置问题），记录受控错误分类喵。
 		recordUpstreamModelProbeState(upstreamModel, isShared, true, false, "credential_error", startTime, upstreamProbeExtras{})
+		// 活跃计数退出：解密失败直接终结请求，归还活跃名额防止计数泄漏喵。
+		ExitUpstreamModelInflight(upstreamModel.ID, isShared)
 		abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "user upstream model is not available", types.ErrorCode("upstream_model_unavailable"))
 		return false
 	}
 	// 虚拟模型 user/xxx 候选：保持哑代理透传（候选链编排依赖同步执行），请求同步结束后退出活跃计数喵。
 	if _, inVirtualModelContext := getVirtualModelExecutionState(c); inVirtualModelContext {
 		defer ExitUpstreamModelInflight(upstreamModel.ID, isShared)
-		return executeUserUpstreamModelPassthrough(c, upstreamModel, modelRequest, baseURL, apiKey, isShared, preConsumedCents, startTime)
+		return executeUserUpstreamModelPassthrough(c, upstreamModel, modelRequest, baseURL, apiKey, isShared, preConsumedCents, startTime, &settled)
 	}
 	// 非虚拟 user/xxx 直调：注入临时渠道走原生 relay 中转链（自动格式转换与流式处理）喵。
 	requestGroup := modelRequest.Group
@@ -306,7 +320,8 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 // executeUserUpstreamModelPassthrough 虚拟模型 user/xxx 候选的哑代理透传执行喵。
 // 虚拟候选链依赖同步透传做失败规则编排（retry/next/freeze/passthrough），
 // 在虚拟模型候选 relay 化完成前保持此过渡路径，避免破坏候选链行为喵。
-func executeUserUpstreamModelPassthrough(c *gin.Context, upstreamModel *model.UserUpstreamModel, modelRequest *ModelRequest, baseURL string, apiKey string, isShared bool, preConsumedCents int64, startTime time.Time) bool {
+// settled 为结算完成标记指针：成功结算后置 true，供 handle 的兜底退款 defer 判断是否跳过退款喵。
+func executeUserUpstreamModelPassthrough(c *gin.Context, upstreamModel *model.UserUpstreamModel, modelRequest *ModelRequest, baseURL string, apiKey string, isShared bool, preConsumedCents int64, startTime time.Time, settled *bool) bool {
 	// 喵~防御：空上下文或空模型对象直接终止，避免空指针喵。
 	if c == nil || upstreamModel == nil {
 		return false
@@ -398,6 +413,10 @@ func executeUserUpstreamModelPassthrough(c *gin.Context, upstreamModel *model.Us
 	// 成功透传计入成功，随后按独立 RMB 计费系统扣费与写日志；共享调用免费只累计共享消耗喵。
 	recordUpstreamModelProbeState(upstreamModel, isShared, true, true, "", startTime, buildUpstreamProbeExtras(executionResult))
 	settleUserUpstreamModelCharge(c, upstreamModel.OwnerUserID, upstreamModel, executionResult.Usage, modelRequest.Group, isUpstreamModelRequestStreaming(c), int(requestElapsedMs/1000), isShared, requestFirstByteMs, preConsumedCents)
+	// 结算完成标记：预扣已通过差额结算，handle 的兜底退款 defer 必须跳过喵。
+	if settled != nil {
+		*settled = true
+	}
 	// 虚拟模型 user/xxx 内部候选成功：记录候选与整体成功样本，供虚拟模型状态监控展示喵。
 	if executionState, foundState := getVirtualModelExecutionState(c); foundState && executionState != nil && executionState.currentCandidateIndex >= 0 && executionState.currentCandidateIndex < len(executionState.executionSnapshot.Candidates) {
 		currentCandidate := executionState.executionSnapshot.Candidates[executionState.currentCandidateIndex]
@@ -711,15 +730,28 @@ func settleUserUpstreamModelCharge(c *gin.Context, ownerUserID int, upstreamMode
 		common.SysError("user upstream model cost calculation failed: " + costError.Error())
 		costCents = 0
 	}
+	// 喵~防御：最终防线——负数费用置 0 并记日志，任何路径都不允许出现负收费（凭空给用户加钱）喵。
+	if costCents < 0 {
+		common.SysError(fmt.Sprintf("user upstream model cost is negative, clamped to zero: %d", costCents))
+		costCents = 0
+	}
+	// 结算异常标记：差额结算或直接扣费失败时写入日志 other，供管理员定位计费异常喵。
+	settlementException := false
 	// 扣减：有预扣时按实际费用结算差额（多退少补），无预扣时直接按实际费用扣减（兼容未启用预扣的调用点）喵。
 	if preConsumedCents > 0 {
 		deltaCents := costCents - preConsumedCents
+		// 喵~防御：退款金额绝对值不得超过预扣金额，避免异常结算把超出预扣的金额加回账户喵。
+		if deltaCents < 0 && -deltaCents > preConsumedCents {
+			deltaCents = -preConsumedCents
+		}
 		if adjustError := model.AdjustUserUpstreamModelCharge(upstreamModel.ID, ownerUserID, deltaCents, isShared); adjustError != nil {
 			common.SysError("user upstream model charge settlement failed: " + adjustError.Error())
+			settlementException = true
 		}
 	} else {
 		if deductError := model.DeductUserUpstreamModelCharge(upstreamModel.ID, ownerUserID, costCents, isShared); deductError != nil {
 			common.SysError("user upstream model charge deduction failed: " + deductError.Error())
+			settlementException = true
 		}
 	}
 	// 分组：共享调用固定归入 user-shared，自用沿用请求分组并兜底默认值喵。
@@ -767,6 +799,10 @@ func settleUserUpstreamModelCharge(c *gin.Context, ownerUserID int, upstreamMode
 	// 首字延迟写入 other["frt"]（毫秒），与内部日志字段一致，供日志 Timing 展示首字耗时喵。
 	if ttftMs > 0 {
 		other["frt"] = ttftMs
+	}
+	// 结算异常标记：差额结算或扣费失败时写入日志 other，供管理员筛选与定位计费异常喵。
+	if settlementException {
+		other["settlement_exception"] = true
 	}
 	// 虚拟模型上下文下补充模型标识与最终成功标记，保证日志详情始终有可展示内容喵。
 	if virtualModelName := common.GetContextKeyString(c, constant.ContextKeyVirtualModelName); virtualModelName != "" {
@@ -879,6 +915,10 @@ func isUpstreamModelRequestStreaming(c *gin.Context) bool {
 // upstreamModelPreConsumeMinPromptTokens 预估输入 token 的兜底下限，与普通模型最小预扣额度对齐喵。
 const upstreamModelPreConsumeMinPromptTokens = 500
 
+// userUpstreamModelMaxTokensLimit 预扣估算的输出 token 上限，与 relay/helper/valid_request.go 的 maxTokensLimit（math.MaxInt32/2）保持一致喵。
+// 输出 token 直接乘输出单价进入预扣金额，无界 max_tokens 可锁死全部余额，必须钳制到安全上限喵。
+const userUpstreamModelMaxTokensLimit = math.MaxInt32 / 2
+
 // estimateUserUpstreamModelCostCents 请求前按请求体估算一次调用的费用（分），供预扣使用喵。
 // 输入 token 按请求体字节数/4 保守估算并钳制到最小兜底值；输出 token 取请求的 max_tokens 系列上限喵。
 func estimateUserUpstreamModelCostCents(upstreamModel *model.UserUpstreamModel, requestBody []byte) int64 {
@@ -894,11 +934,17 @@ func estimateUserUpstreamModelCostCents(upstreamModel *model.UserUpstreamModel, 
 	// 输出 token 上限：max_completion_tokens / max_tokens / max_output_tokens 任一存在即取最大值，缺失按零（不预扣输出）喵。
 	estimatedCompletionTokens := 0
 	if len(requestBody) > 0 && gjson.ValidBytes(requestBody) {
-		estimatedCompletionTokens = max(
-			int(gjson.GetBytes(requestBody, "max_completion_tokens").Int()),
-			int(gjson.GetBytes(requestBody, "max_tokens").Int()),
-			int(gjson.GetBytes(requestBody, "max_output_tokens").Int()),
+		// 喵~防御：各上限先各自钳非负，再与项目输出 token 安全上限钳制，避免巨大 max_tokens 把预扣推到离谱级别、锁死全部余额喵。
+		rawCompletionTokens := max(
+			clampNonNegative(int(gjson.GetBytes(requestBody, "max_completion_tokens").Int())),
+			clampNonNegative(int(gjson.GetBytes(requestBody, "max_tokens").Int())),
+			clampNonNegative(int(gjson.GetBytes(requestBody, "max_output_tokens").Int())),
 		)
+		// 输出 token 预扣上限与 relay/helper/valid_request.go 的 maxTokensLimit（math.MaxInt32/2）保持一致喵。
+		if rawCompletionTokens > userUpstreamModelMaxTokensLimit {
+			rawCompletionTokens = userUpstreamModelMaxTokensLimit
+		}
+		estimatedCompletionTokens = rawCompletionTokens
 	}
 	// 构造预估 usage 复用统一算费函数，缓存/图片等分类预估时按零处理，保证预扣口径与结算一致喵。
 	estimatedCents, costError := upstreammodelservice.CalculateUpstreamModelCostCents(upstreamModel, &dto.Usage{

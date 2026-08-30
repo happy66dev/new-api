@@ -33,17 +33,18 @@ func CalculateUpstreamModelCostCents(upstreamModel *model.UserUpstreamModel, usa
 
 	// 提取各分类 token 数量，缓存命中与缓存写入从基础输入中扣除喵。
 	// 缓存命中用 CachedTokensTotal 同时覆盖 cached_tokens 与中转站的 cache_read_input_tokens 喵。
-	promptTokens := int64(usage.PromptTokens)
-	cachedTokens := int64(usage.PromptTokensDetails.CachedTokensTotal())
-	cacheCreationTokens := int64(usage.PromptTokensDetails.CacheCreationTokensTotal())
-	imageTokens := int64(usage.PromptTokensDetails.ImageTokens)
-	audioTokens := int64(usage.PromptTokensDetails.AudioTokens)
-	completionTokens := int64(usage.CompletionTokens)
+	// 喵~防御：上游可能返回负数 token 计数（异常计费数据），每个分类一律先钳制非负再参与求和，杜绝负费用凭空给用户加钱喵。
+	promptTokens := clampTokenCount(usage.PromptTokens)
+	cachedTokens := clampTokenCount(usage.PromptTokensDetails.CachedTokensTotal())
+	cacheCreationTokens := clampTokenCount(usage.PromptTokensDetails.CacheCreationTokensTotal())
+	imageTokens := clampTokenCount(usage.PromptTokensDetails.ImageTokens)
+	audioTokens := clampTokenCount(usage.PromptTokensDetails.AudioTokens)
+	completionTokens := clampTokenCount(usage.CompletionTokens)
 	// 音频输出 token 从输出明细中提取，从普通输出扣除后按音频输出价计费喵。
-	audioCompletionTokens := int64(usage.CompletionTokenDetails.AudioTokens)
+	audioCompletionTokens := clampTokenCount(usage.CompletionTokenDetails.AudioTokens)
 	// Claude 语义下缓存写入按 5m/1h 拆分计费喵。
-	cacheCreation5mTokens := int64(usage.ClaudeCacheCreation5mTokens)
-	cacheCreation1hTokens := int64(usage.ClaudeCacheCreation1hTokens)
+	cacheCreation5mTokens := clampTokenCount(usage.ClaudeCacheCreation5mTokens)
+	cacheCreation1hTokens := clampTokenCount(usage.ClaudeCacheCreation1hTokens)
 
 	// 基础输入扣掉缓存/图片/音频后钳制非负，避免分类重叠导致负基础费用喵。
 	promptBaseTokens := promptTokens - cachedTokens - cacheCreationTokens - imageTokens - audioTokens
@@ -110,4 +111,14 @@ func parseRatio(value string) decimal.Decimal {
 		return decimal.NewFromInt(1)
 	}
 	return parsed
+}
+
+// clampTokenCount 把负 token 计数钳制为零，上游异常负数绝不会进入费用求和喵。
+// 返回 int64 直接参与计费算术，避免每个调用点重复强转喵。
+func clampTokenCount(tokenCount int) int64 {
+	// 喵~防御：负值按零处理，正数原样返回喵。
+	if tokenCount < 0 {
+		return 0
+	}
+	return int64(tokenCount)
 }

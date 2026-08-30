@@ -638,8 +638,9 @@ func TestAdjustUserUpstreamModelCharge(t *testing.T) {
 	assert.Equal(t, int64(500), fetched.AvailableCents)
 	assert.Equal(t, int64(300), fetched.ShareLimitCents)
 
-	// 补扣差额超过剩余余额时钳制到 0，绝不产生负账户喵。
-	require.NoError(t, AdjustUserUpstreamModelCharge(created.ID, 7, 900, true))
+	// 补扣差额超过剩余余额时钳制到 0 且返回显式结算异常错误，绝不产生负账户喵。
+	err = AdjustUserUpstreamModelCharge(created.ID, 7, 900, true)
+	require.ErrorIs(t, err, ErrUserUpstreamModelSettlementInsufficient)
 	fetched, _ = GetUserUpstreamModelByOwnerID(created.ID, 7)
 	assert.Equal(t, int64(0), fetched.BalanceCents)
 	assert.Equal(t, int64(0), fetched.AvailableCents)

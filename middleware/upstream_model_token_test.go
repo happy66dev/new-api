@@ -12,8 +12,8 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/dto"
-	virtualmodelservice "github.com/QuantumNous/new-api/service/virtualmodel"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	virtualmodelservice "github.com/QuantumNous/new-api/service/virtualmodel"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/require"
@@ -455,6 +455,136 @@ func TestHandleUpstreamModelRelayFailure(t *testing.T) {
 	relayCtx := getUserUpstreamModelRelayContext(ctx)
 	require.NotNil(t, relayCtx)
 	require.True(t, relayCtx.settled)
+}
+
+// TestHandleUserUpstreamModelRequestVirtualFailureRefunds 验证虚拟模型 user/xxx 候选透传失败时退还预扣、活跃计数归零喵。
+func TestHandleUserUpstreamModelRequestVirtualFailureRefunds(t *testing.T) {
+	// 开发模式允许本地 http mock 上游，测试结束后自动恢复环境变量喵。
+	t.Setenv("VIRTUAL_MODEL_INSECURE_UPSTREAM", "1")
+	// 配置随机测试主密钥，使凭据加解密全链路可跑通喵。
+	t.Setenv(virtualmodelservice.CredentialMasterKeyEnvironmentName, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	gin.SetMode(gin.TestMode)
+	testDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, testDB.AutoMigrate(&model.UserUpstreamModel{}, &model.EntityProbeState{}, &model.Log{}))
+	oldDB := model.DB
+	oldLogDB := model.LOG_DB
+	model.DB = testDB
+	model.LOG_DB = testDB
+	defer func() {
+		model.DB = oldDB
+		model.LOG_DB = oldLogDB
+	}()
+
+	// mock 上游返回 429 限流错误，正文为 OpenAI 风格错误喵。
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limited by upstream","type":"rate_limit_error"}}`))
+	}))
+	defer upstream.Close()
+
+	baseURLCipher, version, encryptError := virtualmodelservice.EncryptCredential(upstream.URL)
+	require.NoError(t, encryptError)
+	apiKeyCipher, _, apiKeyError := virtualmodelservice.EncryptCredential("sk-test")
+	require.NoError(t, apiKeyError)
+	// ModelRatio=1000：输入按 min 兜底 500 token 估算，预扣 500×1000/1e6×100=50 分，在余额内且非零喵。
+	require.NoError(t, testDB.Create(&model.UserUpstreamModel{
+		OwnerUserID:          7,
+		NormalizedName:       "demo",
+		DisplayName:          "Demo",
+		Enabled:              true,
+		EncryptedBaseURL:     baseURLCipher,
+		EncryptedAPIKey:      apiKeyCipher,
+		CredentialVersion:    version,
+		RealModelName:        "gpt-4o",
+		BalanceCents:         1000,
+		AvailableCents:       800,
+		ShareLimitCents:      2000,
+		AuthStyle:            "bearer",
+		ModelRatio:           "1000",
+		CompletionRatio:      "1",
+		CacheRatio:           "1",
+		CacheCreationRatio:   "1",
+		CacheCreation5mRatio: "1",
+		CacheCreation1hRatio: "1",
+		ImageRatio:           "1",
+		AudioRatio:           "1",
+		AudioCompletionRatio: "1",
+		Version:              1,
+	}).Error)
+
+	// 虚拟执行状态：单候选 user/demo，全局兜底规则把限流直接透传喵。
+	executionState := newUpstreamFailureTestState(
+		[]model.VirtualModelCandidateSnapshot{
+			{CandidateID: 71, VirtualModelID: 9, StableOrder: 0, SourceType: model.VirtualModelSourceInternal, Enabled: true, MaxRetries: 0, GroupName: "default", RealModelName: "user/demo"},
+		},
+		nil,
+		[]model.VirtualModelFailureRule{
+			{HTTPStatus: http.StatusTooManyRequests, Action: model.VirtualModelActionPassthrough},
+		},
+	)
+	executionState.startTime = time.Now().Add(-2 * time.Second)
+	ctx, _, recorder := newUpstreamFailureTestContext(executionState)
+	// 标记虚拟模型日志归入 type=9 并注入候选序号，与真实虚拟模型请求链路一致喵。
+	common.SetContextKey(ctx, constant.ContextKeyVirtualModelName, "vm-test")
+	common.SetContextKey(ctx, constant.ContextKeyVirtualLogType, model.LogTypeVirtualModel)
+	common.SetContextKey(ctx, constant.ContextKeyVirtualCandidateSeq, 1)
+
+	// 记录调用前活跃计数基线：全局计数可能被其他 relay 路径测试泄漏，只断言本次调用不新增泄漏喵。
+	var createdModel model.UserUpstreamModel
+	require.NoError(t, testDB.Where("normalized_name = ?", "demo").First(&createdModel).Error)
+	selfBefore, sharedBefore := GetUpstreamModelActiveCount(createdModel.ID)
+
+	handled := handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "user/demo", Group: "default"})
+	require.False(t, handled)
+	require.Equal(t, http.StatusTooManyRequests, recorder.Code)
+
+	// 预扣已全额退还：余额 1000、可用 800、共享 2000 与初始值一致，绝不锁死额度喵。
+	var settled model.UserUpstreamModel
+	require.NoError(t, testDB.Where("normalized_name = ?", "demo").First(&settled).Error)
+	require.Equal(t, int64(1000), settled.BalanceCents)
+	require.Equal(t, int64(800), settled.AvailableCents)
+	require.Equal(t, int64(2000), settled.ShareLimitCents)
+	// 活跃计数回到基线：失败透传已退出活跃，本次调用不新增并发占用喵。
+	self, shared := GetUpstreamModelActiveCount(settled.ID)
+	require.Equal(t, selfBefore, self)
+	require.Equal(t, sharedBefore, shared)
+}
+
+// TestHandleUserUpstreamModelRequestDecryptFailureRefunds 验证凭据解密失败时退还预扣、退出活跃计数喵。
+func TestHandleUserUpstreamModelRequestDecryptFailureRefunds(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	// 构造独立测试库，替换全局 DB 并在结束后恢复喵。
+	testDB := newUpstreamModelTestDB(t)
+	oldDB := model.DB
+	model.DB = testDB
+	defer func() { model.DB = oldDB }()
+
+	// 余额充足但密文无效的模型：解密失败返回 503，且预扣必须全额退还喵。
+	// ModelRatio=1000：输入按 min 兜底 500 token 估算，预扣 50 分喵。
+	require.NoError(t, testDB.Create(&model.UserUpstreamModel{OwnerUserID: 7, NormalizedName: "bad-cred", Enabled: true, BalanceCents: 1000, AvailableCents: 800, EncryptedBaseURL: "bad-enc", EncryptedAPIKey: "bad-enc", CredentialVersion: 1, RealModelName: "gpt-4o", ModelRatio: "1000"}).Error)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/bad-cred","messages":[]}`))
+	ctx.Set("id", 7)
+	// 记录调用前活跃计数基线：全局计数可能被其他 relay 路径测试泄漏，只断言本次调用不新增泄漏喵。
+	var createdModel model.UserUpstreamModel
+	require.NoError(t, testDB.Where("normalized_name = ?", "bad-cred").First(&createdModel).Error)
+	selfBefore, sharedBefore := GetUpstreamModelActiveCount(createdModel.ID)
+
+	require.False(t, handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "user/bad-cred"}))
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+
+	// 预扣已全额退还：余额与可用额度回到初始值喵。
+	var settled model.UserUpstreamModel
+	require.NoError(t, testDB.Where("normalized_name = ?", "bad-cred").First(&settled).Error)
+	require.Equal(t, int64(1000), settled.BalanceCents)
+	require.Equal(t, int64(800), settled.AvailableCents)
+	// 活跃计数回到基线：解密失败已退出活跃，本次调用不新增并发占用喵。
+	self, shared := GetUpstreamModelActiveCount(settled.ID)
+	require.Equal(t, selfBefore, self)
+	require.Equal(t, sharedBefore, shared)
 }
 
 // TestHandleUserUpstreamModelRequestVirtualFailureLog 验证虚拟模型 user/xxx 候选失败（passthrough）写 type=9 日志喵。

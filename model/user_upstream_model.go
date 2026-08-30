@@ -608,6 +608,10 @@ func clampUpstreamModelCents(current int64, costCents int64) int64 {
 // ErrUserUpstreamModelInsufficientQuota 预扣时三账户任一不足，请求应被 403 拒绝喵。
 var ErrUserUpstreamModelInsufficientQuota = errors.New("user upstream model quota insufficient")
 
+// ErrUserUpstreamModelSettlementInsufficient 补扣差额时余额不足被钳制，返回显式错误供结算侧记录结算异常喵。
+// 钳制本身仍提交部分扣减（绝不产生负账户），仅用错误标记让调用方感知异常喵。
+var ErrUserUpstreamModelSettlementInsufficient = errors.New("user upstream model settlement insufficient")
+
 // PreConsumeUserUpstreamModelCharge 请求前按预估费用原子预扣三个递减账户喵。
 // 任一账户不足时返回 ErrUserUpstreamModelInsufficientQuota 且不扣减任何账户，保证整体性喵。
 func PreConsumeUserUpstreamModelCharge(upstreamModelID int64, ownerUserID int, cents int64, isShared bool) error {
@@ -647,6 +651,7 @@ func PreConsumeUserUpstreamModelCharge(upstreamModelID int64, ownerUserID int, c
 
 // AdjustUserUpstreamModelCharge 请求后按差额结算预扣账户喵。
 // deltaCents 为实际费用减预扣费用：正数补扣差额（钳制非负）、负数退还差额、零不写库喵。
+// 正数补扣因余额不足被钳制时仍提交部分扣减，但返回 ErrUserUpstreamModelSettlementInsufficient 供结算侧记录异常喵。
 func AdjustUserUpstreamModelCharge(upstreamModelID int64, ownerUserID int, deltaCents int64, isShared bool) error {
 	// 喵~防御：无效参数直接返回记录不存在，避免空值进入事务喵。
 	if upstreamModelID <= 0 || ownerUserID <= 0 {
@@ -656,8 +661,9 @@ func AdjustUserUpstreamModelCharge(upstreamModelID int64, ownerUserID int, delta
 	if deltaCents == 0 {
 		return nil
 	}
-	// 事务加行锁读取最新余额，保证并发请求下的差额结算不覆盖彼此喵。
-	return DB.Transaction(func(tx *gorm.DB) error {
+	// 补扣被钳制标记：任一账户余额不足时置 true，事务提交后据此返回显式错误喵。
+	clamped := false
+	transactionError := DB.Transaction(func(tx *gorm.DB) error {
 		var upstreamModel UserUpstreamModel
 		// lockForUpdate 在 MySQL/PostgreSQL 加 FOR UPDATE 行锁，SQLite 跳过锁语法喵。
 		if err := lockForUpdate(tx).Where("id = ? AND owner_user_id = ?", upstreamModelID, ownerUserID).First(&upstreamModel).Error; err != nil {
@@ -665,9 +671,19 @@ func AdjustUserUpstreamModelCharge(upstreamModelID int64, ownerUserID int, delta
 		}
 		if deltaCents > 0 {
 			// 补扣差额：与既有结算一致钳制到 0，预扣已保证正常情况下余额足够喵。
+			// 喵~防御：逐个账户检测余额是否不足，不足即标记钳制，绝不静默吞掉结算异常喵。
+			if upstreamModel.BalanceCents < deltaCents {
+				clamped = true
+			}
 			upstreamModel.BalanceCents = clampUpstreamModelCents(upstreamModel.BalanceCents, deltaCents)
+			if upstreamModel.AvailableCents < deltaCents {
+				clamped = true
+			}
 			upstreamModel.AvailableCents = clampUpstreamModelCents(upstreamModel.AvailableCents, deltaCents)
 			if isShared {
+				if upstreamModel.ShareLimitCents < deltaCents {
+					clamped = true
+				}
 				upstreamModel.ShareLimitCents = clampUpstreamModelCents(upstreamModel.ShareLimitCents, deltaCents)
 			}
 		} else {
@@ -683,4 +699,13 @@ func AdjustUserUpstreamModelCharge(upstreamModelID int64, ownerUserID int, delta
 		// 只更新金额相关字段，避免覆盖控制面并发修改的其他配置喵。
 		return tx.Model(&upstreamModel).Select("balance_cents", "available_cents", "share_limit_cents", "updated_time").Updates(upstreamModel).Error
 	})
+	// 喵~防御：事务自身失败返回原错误，优先保证数据一致性喵。
+	if transactionError != nil {
+		return transactionError
+	}
+	// 补扣被余额不足钳制时返回显式错误，供结算侧记录结算异常标记喵。
+	if clamped {
+		return ErrUserUpstreamModelSettlementInsufficient
+	}
+	return nil
 }

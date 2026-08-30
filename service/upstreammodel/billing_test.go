@@ -133,6 +133,33 @@ func TestCalculateUpstreamModelCostCents(t *testing.T) {
 			usage: &dto.Usage{PromptTokens: 0, CompletionTokens: 0, TotalTokens: 0},
 			want:  0,
 		},
+		{
+			name:  "负数 image_tokens 钳制为零不产生负费用",
+			model: &model.UserUpstreamModel{ModelRatio: "1", ImageRatio: "1000"},
+			usage: &dto.Usage{PromptTokens: 100, PromptTokensDetails: dto.InputTokenDetails{ImageTokens: -100}},
+			// 若负数不钳制：promptBase=200 且 image -100×1000 会得到约 -1 分负费用喵。
+			want: 0,
+		},
+		{
+			name:  "负数 audio_tokens 钳制为零不产生负费用",
+			model: &model.UserUpstreamModel{ModelRatio: "1", AudioRatio: "1000"},
+			usage: &dto.Usage{PromptTokens: 100, PromptTokensDetails: dto.InputTokenDetails{AudioTokens: -5}},
+			// 负数不钳制时 audio -5×1000 会显著拉低总费用喵。
+			want: 0,
+		},
+		{
+			name:  "负数音频输出与缓存写入钳制为零",
+			model: &model.UserUpstreamModel{ModelRatio: "1", CompletionRatio: "1", AudioCompletionRatio: "1000", CacheCreation5mRatio: "1000", CacheCreation1hRatio: "1000"},
+			usage: &dto.Usage{
+				PromptTokens:                100,
+				CompletionTokens:            50,
+				CompletionTokenDetails:      dto.OutputTokenDetails{AudioTokens: -10},
+				ClaudeCacheCreation5mTokens: -3,
+				ClaudeCacheCreation1hTokens: -2,
+			},
+			// 负数不钳制时音频输出 -10×1000 会把费用算成负分喵。
+			want: 0,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

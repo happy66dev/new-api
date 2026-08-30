@@ -284,6 +284,45 @@ func TestSettleUserUpstreamModelChargeWritesLog(t *testing.T) {
 	require.Equal(t, float64(123), other["frt"])
 }
 
+// TestSettleUserUpstreamModelChargeNegativeCostClamped 验证负数分类 token（如 image_tokens）不会产生负费用、不会给账户加钱喵。
+func TestSettleUserUpstreamModelChargeNegativeCostClamped(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	// 构造独立测试库，替换全局 DB 与日志库并在结束后恢复喵。
+	testDB := newUpstreamModelTestDB(t)
+	require.NoError(t, testDB.AutoMigrate(&model.Log{}))
+	oldDB := model.DB
+	oldLogDB := model.LOG_DB
+	model.DB = testDB
+	model.LOG_DB = testDB
+	defer func() {
+		model.DB = oldDB
+		model.LOG_DB = oldLogDB
+	}()
+
+	// 模型配置极大 image_ratio：负数 image_tokens 若不钳制将产生显著负费用、结算时凭空加钱喵。
+	upstreamModel := &model.UserUpstreamModel{OwnerUserID: 7, NormalizedName: "neg-img", Enabled: true, RealModelName: "gpt-4o", ModelRatio: "1", ImageRatio: "100000", BalanceCents: 10000, AvailableCents: 10000}
+	require.NoError(t, testDB.Create(upstreamModel).Error)
+	// 模拟请求前预扣 50 分：余额与可用额度先各减 50 喵。
+	require.NoError(t, testDB.Model(&model.UserUpstreamModel{}).Where("normalized_name = ?", "neg-img").Updates(map[string]interface{}{"balance_cents": 9950, "available_cents": 9950}).Error)
+
+	// usage 携带负数 image_tokens，模拟上游异常计费数据喵。
+	usage := &dto.Usage{PromptTokens: 100, PromptTokensDetails: dto.InputTokenDetails{ImageTokens: -100}}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/neg-img"}`))
+	ctx.Set("id", 7)
+
+	// 预扣 50 分后实际费用被钳制为 0：只退还预扣的 50，账户回到初始值，绝不额外加钱喵。
+	// 修复前 deltaCents=-1050 会走退款分支加回 1050 分，凭空给用户多退回 1000 分喵。
+	settleUserUpstreamModelCharge(ctx, 7, upstreamModel, usage, "default", false, 1, false, 0, 50)
+
+	var settled model.UserUpstreamModel
+	require.NoError(t, testDB.Where("normalized_name = ?", "neg-img").First(&settled).Error)
+	require.Equal(t, int64(10000), settled.BalanceCents)
+	require.Equal(t, int64(10000), settled.AvailableCents)
+}
+
 // TestEstimateUserUpstreamModelCostCents 验证请求前预估费用：输入按 body 字节/4 估算、输出按 max_tokens 上限喵。
 func TestEstimateUserUpstreamModelCostCents(t *testing.T) {
 	// 模型输入价 10 元/M、输出价 20 元/M，用于精确计算预期费用喵。
@@ -316,6 +355,16 @@ func TestEstimateUserUpstreamModelCostCents(t *testing.T) {
 	// 模型未定价（输入价为 0）时预估费用为零，不产生预扣喵。
 	zeroModel := &model.UserUpstreamModel{ModelRatio: "0"}
 	require.Equal(t, int64(0), estimateUserUpstreamModelCostCents(zeroModel, body))
+
+	// 巨大 max_tokens 被钳制到项目输出 token 上限，预估费用不会因输出上限离谱而爆炸喵。
+	// 超限值 2147483647 与恰好等于上限值 1073741823 应得到完全相同的预扣金额喵。
+	hugeBody := []byte(`{"max_tokens":2147483647,"messages":[]}`)
+	hugeEstimate := estimateUserUpstreamModelCostCents(&model.UserUpstreamModel{ModelRatio: "1", CompletionRatio: "1"}, hugeBody)
+	cappedBody := []byte(`{"max_tokens":1073741823,"messages":[]}`)
+	cappedEstimate := estimateUserUpstreamModelCostCents(&model.UserUpstreamModel{ModelRatio: "1", CompletionRatio: "1"}, cappedBody)
+	require.Equal(t, cappedEstimate, hugeEstimate)
+	// 输出上限钳制后预扣金额不会超过合理数量级，绝不因单个字段把预扣推到离谱级别喵。
+	require.LessOrEqual(t, hugeEstimate, int64(common.MaxQuota))
 }
 
 // TestSetupUserUpstreamModelRelayInjectsCustomHeaders 验证 relay 中转链注入用户自定义请求头喵。
