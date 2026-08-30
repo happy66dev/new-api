@@ -83,16 +83,16 @@ type Log struct {
 
 // don't use iota, avoid change log type value
 const (
-	LogTypeUnknown         = 0
-	LogTypeTopup           = 1
-	LogTypeConsume         = 2
-	LogTypeManage          = 3
-	LogTypeSystem          = 4
-	LogTypeError           = 5
-	LogTypeRefund          = 6
-	LogTypeLogin           = 7
-	LogTypeCustomUpstream  = 8 // 自定上游：用户上游模型的使用日志（自用与共享都归入此类型）喵。
-	LogTypeVirtualModel    = 9 // 虚拟模型：所有虚拟模型请求（internal 与 custom 候选）都归入此类型喵。
+	LogTypeUnknown        = 0
+	LogTypeTopup          = 1
+	LogTypeConsume        = 2
+	LogTypeManage         = 3
+	LogTypeSystem         = 4
+	LogTypeError          = 5
+	LogTypeRefund         = 6
+	LogTypeLogin          = 7
+	LogTypeCustomUpstream = 8 // 自定上游：用户上游模型的使用日志（自用与共享都归入此类型）喵。
+	LogTypeVirtualModel   = 9 // 虚拟模型：所有虚拟模型请求（internal 与 custom 候选）都归入此类型喵。
 )
 
 func ensureLogRequestId(log *Log) {
@@ -329,22 +329,22 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 }
 
 type RecordConsumeLogParams struct {
-	ChannelId        int                    `json:"channel_id"`
-	PromptTokens     int                    `json:"prompt_tokens"`
-	CompletionTokens int                    `json:"completion_tokens"`
-	ModelName        string                 `json:"model_name"`
-	TokenName        string                 `json:"token_name"`
-	Quota            int                    `json:"quota"`
-	Content          string                 `json:"content"`
-	TokenId          int                    `json:"token_id"`
-	UseTimeSeconds   int                    `json:"use_time_seconds"`
+	ChannelId        int    `json:"channel_id"`
+	PromptTokens     int    `json:"prompt_tokens"`
+	CompletionTokens int    `json:"completion_tokens"`
+	ModelName        string `json:"model_name"`
+	TokenName        string `json:"token_name"`
+	Quota            int    `json:"quota"`
+	Content          string `json:"content"`
+	TokenId          int    `json:"token_id"`
+	UseTimeSeconds   int    `json:"use_time_seconds"`
 	// UseTimeMs 请求级总耗时的毫秒精确值，仅虚拟模型 internal 候选注入候选尝试序列使用，普通请求为零喵。
 	UseTimeMs int64 `json:"-"`
 	// FirstByteMs 请求级首字耗时（毫秒），仅虚拟模型 internal 候选注入候选尝试序列使用，普通请求为零喵。
-	FirstByteMs int64 `json:"-"`
-	IsStream         bool                   `json:"is_stream"`
-	Group            string                 `json:"group"`
-	Other            map[string]interface{} `json:"other"`
+	FirstByteMs int64                  `json:"-"`
+	IsStream    bool                   `json:"is_stream"`
+	Group       string                 `json:"group"`
+	Other       map[string]interface{} `json:"other"`
 }
 
 // InjectVirtualModelAttempts 若请求处于虚拟模型上下文，把候选尝试摘要写入 other 的 candidates 字段喵。
@@ -732,9 +732,15 @@ const logSearchCountLimit = 10000
 
 func GetUserLogs(userId int, sharedModelNames []string, logType int, startTimestamp int64, endTimestamp int64, modelName string, tokenName string, startIdx int, num int, group string, requestId string, upstreamRequestId string) (logs []*Log, total int64, err error) {
 	var tx *gorm.DB
-	// 喵~防御：共享模型名集合非空时按「全部」范围查询：自己的调用 + 别人调用我的共享模型（user-shared 分组、type=8）喵。
+	// 喵~防御：共享模型名集合非空时按「全部」范围查询：自己的调用（按所选类型过滤）+ 别人调用我的共享模型（user-shared 分组、type=8）喵。
 	if len(sharedModelNames) > 0 {
-		tx = LOG_DB.Where("(logs.user_id = ?) OR (logs.model_name IN ? AND logs."+logGroupCol+" = ? AND logs.type = ?)", userId, sharedModelNames, constant.GroupUserShared, LogTypeCustomUpstream)
+		if logType == LogTypeUnknown {
+			// 「全部」类型：自己的任意类型调用与共享被调日志取并集，共享被调恒为 type=8 喵。
+			tx = LOG_DB.Where("(logs.user_id = ?) OR (logs.model_name IN ? AND logs."+logGroupCol+" = ? AND logs.type = ?)", userId, sharedModelNames, constant.GroupUserShared, LogTypeCustomUpstream)
+		} else {
+			// 指定类型：自己的该类型调用 + 共享被调日志（恒为 type=8），保证筛选与统计口径一致喵。
+			tx = LOG_DB.Where("(logs.user_id = ? AND logs.type = ?) OR (logs.model_name IN ? AND logs."+logGroupCol+" = ? AND logs.type = ?)", userId, logType, sharedModelNames, constant.GroupUserShared, LogTypeCustomUpstream)
+		}
 	} else if logType == LogTypeUnknown {
 		tx = LOG_DB.Where("logs.user_id = ?", userId)
 	} else {
@@ -844,9 +850,17 @@ func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelNa
 	// 普通用户「全部」范围：自己的消费日志 + 别人调用自己共享模型的消费日志（user-shared 分组、type=8）取并集喵。
 	if len(sharedModelNames) > 0 {
 		// 喵~防御：type 条件内嵌进 OR 表达式，避免外层的 type=消费 误杀共享被调日志喵。
-		scopeCondition := "(username = ? AND type = ?) OR (model_name IN ? AND " + logGroupCol + " = ? AND type = ?)"
-		quotaQuery = quotaQuery.Where(scopeCondition, username, LogTypeConsume, sharedModelNames, constant.GroupUserShared, LogTypeCustomUpstream)
-		rpmTpmQuery = rpmTpmQuery.Where(scopeCondition, username, LogTypeConsume, sharedModelNames, constant.GroupUserShared, LogTypeCustomUpstream)
+		if logType == LogTypeUnknown {
+			// 「全部」类型：自己的任意类型调用与共享被调日志取并集，与 GetUserLogs 列表口径一致喵。
+			scopeCondition := "(username = ?) OR (model_name IN ? AND " + logGroupCol + " = ? AND type = ?)"
+			quotaQuery = quotaQuery.Where(scopeCondition, username, sharedModelNames, constant.GroupUserShared, LogTypeCustomUpstream)
+			rpmTpmQuery = rpmTpmQuery.Where(scopeCondition, username, sharedModelNames, constant.GroupUserShared, LogTypeCustomUpstream)
+		} else {
+			// 指定类型：自己的该类型调用 + 共享被调日志（恒为 type=8），与 GetUserLogs 列表口径一致喵。
+			scopeCondition := "(username = ? AND type = ?) OR (model_name IN ? AND " + logGroupCol + " = ? AND type = ?)"
+			quotaQuery = quotaQuery.Where(scopeCondition, username, logType, sharedModelNames, constant.GroupUserShared, LogTypeCustomUpstream)
+			rpmTpmQuery = rpmTpmQuery.Where(scopeCondition, username, logType, sharedModelNames, constant.GroupUserShared, LogTypeCustomUpstream)
+		}
 	} else {
 		// 其余范围（管理员全量 / 仅自己）：按用户名过滤喵。
 		if quotaQuery, err = applyExplicitLogTextFilter(quotaQuery, "username", username); err != nil {

@@ -312,7 +312,8 @@ func (virtualModel *VirtualModel) VirtualModelName() string {
 	return "virtual/" + virtualModel.NormalizedName
 }
 
-// VirtualModelFunctionEnabled 读取独立功能开关，默认关闭以保护既有请求链喵。
+// VirtualModelFunctionEnabled 读取独立功能开关，默认开启以支持虚拟模型调用喵。
+// model/option.go 初始化时无条件写入 VirtualModelEnabled=true，因此自用部署开箱即用喵。
 func VirtualModelFunctionEnabled() bool {
 	common.OptionMapRWMutex.RLock()
 	defer common.OptionMapRWMutex.RUnlock()
@@ -523,12 +524,7 @@ func GetEnabledVirtualModelCandidateSnapshotsWithDB(database *gorm.DB, virtualMo
 	return candidateSnapshots, queryError
 }
 
-// GetEnabledVirtualModelCandidateSnapshots 按稳定顺序读取本次请求的所有启用候选快照喵。
-func GetEnabledVirtualModelCandidateSnapshots(virtualModelID int) ([]VirtualModelCandidateSnapshot, error) {
-	return GetEnabledVirtualModelCandidateSnapshotsWithDB(DB, virtualModelID)
-}
-
-// GetVirtualModelFailureRulesByCandidateIDs 使用给定数据库连接按候选和规则顺序读取失败规则快照喵。
+// GetVirtualModelFailureRulesByCandidateIDsWithDB 使用给定数据库连接按候选和规则顺序读取失败规则快照喵。
 func GetVirtualModelFailureRulesByCandidateIDsWithDB(database *gorm.DB, candidateIDs []int) (map[int][]VirtualModelFailureRule, error) {
 	// 喵~防御：空候选集合直接返回空映射，避免生成 IN (NULL) 或无条件查询喵。
 	if len(candidateIDs) == 0 {
@@ -548,11 +544,6 @@ func GetVirtualModelFailureRulesByCandidateIDsWithDB(database *gorm.DB, candidat
 		failureRulesByCandidateID[failureRule.CandidateID] = append(failureRulesByCandidateID[failureRule.CandidateID], failureRule)
 	}
 	return failureRulesByCandidateID, nil
-}
-
-// GetVirtualModelFailureRulesByCandidateIDs 按候选和规则顺序批量读取失败规则快照喵。
-func GetVirtualModelFailureRulesByCandidateIDs(candidateIDs []int) (map[int][]VirtualModelFailureRule, error) {
-	return GetVirtualModelFailureRulesByCandidateIDsWithDB(DB, candidateIDs)
 }
 
 // GetVirtualModelGlobalFailureRulesWithDB 使用给定数据库连接按规则顺序读取模型级全局兜底规则喵。
@@ -577,11 +568,6 @@ func GetVirtualModelGlobalFailureRulesWithDB(database *gorm.DB, virtualModelID i
 		globalFailureRules = append(globalFailureRules, VirtualModelFailureRule{ID: storedRule.ID, RuleOrder: storedRule.RuleOrder, HTTPStatus: storedRule.HTTPStatus, HTTPStatusMax: storedRule.HTTPStatusMax, ErrorClass: storedRule.ErrorClass, BodyRegex: storedRule.BodyRegex, Action: storedRule.Action, FreezeSeconds: storedRule.FreezeSeconds, FreezeField: storedRule.FreezeField, FreezeUnit: storedRule.FreezeUnit, RetryCount: storedRule.RetryCount})
 	}
 	return globalFailureRules, nil
-}
-
-// GetVirtualModelGlobalFailureRules 按规则顺序读取模型级全局兜底规则喵。
-func GetVirtualModelGlobalFailureRules(virtualModelID int) ([]VirtualModelFailureRule, error) {
-	return GetVirtualModelGlobalFailureRulesWithDB(DB, virtualModelID)
 }
 
 // GetActiveVirtualModelManualFreezeCandidateIDs 使用给定数据库连接读取当前仍处于手动冻结期的候选编号集合喵。
@@ -638,19 +624,6 @@ func GetActiveVirtualModelManualFreezesWithDB(database *gorm.DB, candidateIDs []
 // GetActiveVirtualModelManualFreezes 返回当前仍处于手动冻结期的候选到期时间戳映射喵。
 func GetActiveVirtualModelManualFreezes(candidateIDs []int, currentTimestamp int64) (map[int]int64, error) {
 	return GetActiveVirtualModelManualFreezesWithDB(DB, candidateIDs, currentTimestamp)
-}
-
-// GetFirstEnabledVirtualModelCandidate 读取候选链首个启用候选，保持配置顺序的不可变选择语义喵。
-func GetFirstEnabledVirtualModelCandidate(virtualModelID int) (*VirtualModelInternalCandidateSnapshot, error) {
-	candidateSnapshots, queryError := GetEnabledVirtualModelCandidateSnapshots(virtualModelID)
-	if queryError != nil {
-		return nil, queryError
-	}
-	// 喵~防御：候选链为空时返回统一的记录不存在错误，避免调用方误把零值候选当作有效配置喵。
-	if len(candidateSnapshots) == 0 {
-		return nil, gorm.ErrRecordNotFound
-	}
-	return &candidateSnapshots[0], nil
 }
 
 // GetVirtualModelCustomFreezeStates 使用给定数据库连接查询当前用户可见自定义候选身份的自动冻结状态喵。
@@ -934,6 +907,10 @@ func DeleteVirtualModelByOwnerWithVersion(virtualModelID int, ownerUserID int, o
 				return err
 			}
 			if err := tx.Unscoped().Where("candidate_id IN ?", candidateIDs).Delete(&VirtualModelManualFreeze{}).Error; err != nil {
+				return err
+			}
+			// 喵~防御：内部候选自动冻结状态键控 owner+candidate，删除候选时必须硬删除避免残留孤儿冻结喵。
+			if err := tx.Unscoped().Where("owner_user_id = ? AND candidate_id IN ?", ownerUserID, candidateIDs).Delete(&VirtualModelInternalFreezeState{}).Error; err != nil {
 				return err
 			}
 			// 喵~防御：候选使用硬删除，避免软删除记录占用模型候选顺序唯一索引喵。

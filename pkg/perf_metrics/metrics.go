@@ -158,19 +158,19 @@ func Query(params QueryParams) (QueryResult, error) {
 			group:    row.Group,
 			bucketTs: row.BucketTs,
 		}, counters{
-			requestCount:           row.RequestCount,
-			successCount:           row.SuccessCount,
-			totalLatencyMs:         row.TotalLatencyMs,
-			ttftSumMs:              row.TtftSumMs,
-			ttftCount:              row.TtftCount,
-			outputTokens:           row.OutputTokens,
-			generationMs:           row.GenerationMs,
-			cacheHitCount:          row.CacheHitCount,
-			cacheSampleCount:       row.CacheSampleCount,
-			cachedTokens:           row.CachedTokens,
-			inputTokens:            row.InputTokens,
-			cacheCreation5mTokens:  row.CacheCreation5mTokens,
-			cacheCreation1hTokens:  row.CacheCreation1hTokens,
+			requestCount:          row.RequestCount,
+			successCount:          row.SuccessCount,
+			totalLatencyMs:        row.TotalLatencyMs,
+			ttftSumMs:             row.TtftSumMs,
+			ttftCount:             row.TtftCount,
+			outputTokens:          row.OutputTokens,
+			generationMs:          row.GenerationMs,
+			cacheHitCount:         row.CacheHitCount,
+			cacheSampleCount:      row.CacheSampleCount,
+			cachedTokens:          row.CachedTokens,
+			inputTokens:           row.InputTokens,
+			cacheCreation5mTokens: row.CacheCreation5mTokens,
+			cacheCreation1hTokens: row.CacheCreation1hTokens,
 		})
 	}
 
@@ -501,24 +501,6 @@ func recordRedis(key bucketKey, sample Sample) {
 	}
 	pipe.Expire(ctx, redisKey, time.Hour)
 	_, _ = pipe.Exec(ctx)
-}
-
-func mergeRedisActiveBuckets(merged map[bucketKey]counters, params QueryParams, startTs int64, endTs int64) {
-	if !common.RedisEnabled || common.RDB == nil || params.Model == "" || params.Group == "" {
-		return
-	}
-	active := bucketStart(time.Now().Unix())
-	if active < startTs || active > endTs {
-		return
-	}
-	key := bucketKey{model: params.Model, group: params.Group, bucketTs: active}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	values, err := common.RDB.HGetAll(ctx, redisBucketKey(key)).Result()
-	if err != nil || len(values) == 0 {
-		return
-	}
-	mergeCounters(merged, key, redisCounters(values))
 }
 
 func redisBucketKey(key bucketKey) string {

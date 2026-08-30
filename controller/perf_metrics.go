@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/middleware"
+	"github.com/QuantumNous/new-api/model"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
@@ -54,6 +55,14 @@ func GetPerfMetrics(c *gin.Context) {
 		return
 	}
 
+	// 喵~防御：user/<name> 共享模型需要按共享授权校验，黑名单用户不得读取共享维度可用性/延迟喵。
+	trimmedModelName := strings.TrimSpace(modelName)
+	if strings.HasPrefix(trimmedModelName, "user/") && !authorizePerfMetricsUpstreamModel(c, trimmedModelName) {
+		// 喵~防御：未授权、不存在或黑名单命中统一返回 404，避免枚举共享模型存在性喵。
+		c.JSON(http.StatusNotFound, gin.H{"success": false, "code": "model_not_found", "message": "model not found"})
+		return
+	}
+
 	hours := 24
 	if rawHours := c.Query("hours"); rawHours != "" {
 		if parsed, err := strconv.Atoi(rawHours); err == nil {
@@ -82,7 +91,6 @@ func GetPerfMetrics(c *gin.Context) {
 		}
 	}
 	// 实时当前处理请求数：user/ 命名空间按上游模型名聚合，普通内部模型按模型名计数喵。
-	trimmedModelName := strings.TrimSpace(modelName)
 	if strings.HasPrefix(trimmedModelName, "user/") {
 		result.CurrentRequests = middleware.GetUpstreamModelActiveCountByName(trimmedModelName)
 	} else {
@@ -93,6 +101,30 @@ func GetPerfMetrics(c *gin.Context) {
 		"success": true,
 		"data":    result,
 	})
+}
+
+// authorizePerfMetricsUpstreamModel 校验 perf-metrics 接口对 user/<name> 模型的访问授权喵。
+// 自己名下的模型总是放行；非自己名下先确认是真实共享模型，再按共享调用授权（白名单/黑名单）校验喵。
+func authorizePerfMetricsUpstreamModel(c *gin.Context, modelName string) bool {
+	// 喵~防御：非法模型名无法定位资源，按未授权处理喵。
+	normalizedName, normalizeError := model.NormalizeUserUpstreamModelName(modelName)
+	if normalizeError != nil {
+		return false
+	}
+	viewerID := c.GetInt("id")
+	// 自己名下的模型（无论是否共享）总是放行，属主可查看自己的状态维度喵。
+	if _, ownError := model.GetUserUpstreamModelByOwnerName(viewerID, normalizedName); ownError == nil {
+		return true
+	}
+	// 非自己名下：先确认这是否是一个真实开启共享的模型喵。
+	_, sharedLookupError := model.GetSharedUserUpstreamModelByNormalizedName(normalizedName)
+	if sharedLookupError != nil {
+		// 喵~防御：非真实共享模型没有共享维度数据可泄露，按旧行为放行保持模型广场兼容喵。
+		return true
+	}
+	// 真实共享模型：按共享调用授权校验，黑名单命中、白名单外或停用/额度耗尽按未授权处理喵。
+	_, allowedError := model.GetEnabledSharedUserUpstreamModelByName(normalizedName, viewerID)
+	return allowedError == nil
 }
 
 func GetPerfMetricsStatus(c *gin.Context) {

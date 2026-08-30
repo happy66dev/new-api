@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/middleware"
@@ -97,7 +98,7 @@ func TestGetVirtualModelStatusOwnerView(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code)
 
 	var resp struct {
-		Success bool                     `json:"success"`
+		Success bool                      `json:"success"`
 		Data    virtualModelStatusPayload `json:"data"`
 	}
 	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &resp))
@@ -152,8 +153,8 @@ func TestGetVirtualModelCandidateStatus(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code)
 
 	var resp struct {
-		Success bool                                `json:"success"`
-		Data    virtualModelCandidateStatusPayload  `json:"data"`
+		Success bool                               `json:"success"`
+		Data    virtualModelCandidateStatusPayload `json:"data"`
 	}
 	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &resp))
 	require.True(t, resp.Success)
@@ -184,11 +185,11 @@ func TestGetVirtualModelStatusResolvesReferencedUpstreamLabel(t *testing.T) {
 
 	// 属主 7 注册一个被虚拟模型候选引用的上游模型，其用户级名称为 user/ref-upstream 喵。
 	referencedUpstream := &model.UserUpstreamModel{
-		ID:            501,
-		OwnerUserID:   7,
+		ID:             501,
+		OwnerUserID:    7,
 		NormalizedName: "ref-upstream",
-		DisplayName:   "Ref Upstream",
-		Enabled:       true,
+		DisplayName:    "Ref Upstream",
+		Enabled:        true,
 	}
 	require.NoError(t, model.DB.Create(referencedUpstream).Error)
 
@@ -217,7 +218,7 @@ func TestGetVirtualModelStatusResolvesReferencedUpstreamLabel(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code)
 
 	var resp struct {
-		Success bool                     `json:"success"`
+		Success bool                      `json:"success"`
 		Data    virtualModelStatusPayload `json:"data"`
 	}
 	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &resp))
@@ -225,4 +226,57 @@ func TestGetVirtualModelStatusResolvesReferencedUpstreamLabel(t *testing.T) {
 	// 候选标签应回退为引用上游的用户级名称，而非空字符串喵。
 	require.Len(t, resp.Data.Candidates, 1)
 	require.Equal(t, "user/ref-upstream", resp.Data.Candidates[0].Label)
+}
+
+// TestGetPerfMetricsSharedBlacklistDenied 验证黑名单用户查询 user/<name> perf-metrics 被 404 拒绝喵。
+// 回归 P1-⑥：此前 user/ 模型不做共享白/黑名单校验，黑名单用户可直接读共享维度可用性/延迟喵。
+func TestGetPerfMetricsSharedBlacklistDenied(t *testing.T) {
+	setupVirtualModelStatusTestDB(t)
+	now := time.Now().Unix()
+	// 属主 7 开启共享并用黑名单屏蔽用户 9 喵。
+	upstreamModel := &model.UserUpstreamModel{
+		OwnerUserID:     7,
+		NormalizedName:  "perf-blacklist",
+		DisplayName:     "Perf Blacklist",
+		Enabled:         true,
+		ShareEnabled:    true,
+		ShareListMode:   "blacklist",
+		ShareBlacklist:  "9",
+		BalanceCents:    10000,
+		AvailableCents:  10000,
+		ShareLimitCents: 10000,
+		Version:         1,
+		CreatedTime:     now,
+		UpdatedTime:     now,
+	}
+	require.NoError(t, model.DB.Create(upstreamModel).Error)
+	// 共享维度落一条 perf 数据，模拟真实共享模型有可用性数据喵。
+	require.NoError(t, model.DB.Create(&model.PerfMetric{
+		ModelName: "user/perf-blacklist", Group: perfmetrics.EntityProbeGroupShared,
+		BucketTs: now, RequestCount: 3, SuccessCount: 3, TotalLatencyMs: 300,
+	}).Error)
+
+	// 黑名单用户 9 查询共享维度 perf-metrics 必须被拒喵。
+	deniedRecorder := httptest.NewRecorder()
+	deniedCtx, _ := gin.CreateTestContext(deniedRecorder)
+	deniedCtx.Request = httptest.NewRequest(http.MethodGet, "/api/perf-metrics?model=user/perf-blacklist&hours=24", nil)
+	deniedCtx.Set("id", 9)
+	GetPerfMetrics(deniedCtx)
+	require.Equal(t, http.StatusNotFound, deniedRecorder.Code)
+
+	// 非黑名单用户 10 可以正常查看共享维度喵。
+	allowedRecorder := httptest.NewRecorder()
+	allowedCtx, _ := gin.CreateTestContext(allowedRecorder)
+	allowedCtx.Request = httptest.NewRequest(http.MethodGet, "/api/perf-metrics?model=user/perf-blacklist&hours=24", nil)
+	allowedCtx.Set("id", 10)
+	GetPerfMetrics(allowedCtx)
+	require.Equal(t, http.StatusOK, allowedRecorder.Code)
+
+	// 属主 7 总是可以查看自己的模型状态喵。
+	ownerRecorder := httptest.NewRecorder()
+	ownerCtx, _ := gin.CreateTestContext(ownerRecorder)
+	ownerCtx.Request = httptest.NewRequest(http.MethodGet, "/api/perf-metrics?model=user/perf-blacklist&hours=24", nil)
+	ownerCtx.Set("id", 7)
+	GetPerfMetrics(ownerCtx)
+	require.Equal(t, http.StatusOK, ownerRecorder.Code)
 }

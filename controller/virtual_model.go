@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -165,6 +164,9 @@ func buildVirtualModelResponse(virtualModel *model.VirtualModel) (*virtualModelR
 		return nil, err
 	}
 	candidateResponses := make([]virtualModelCandidateInput, 0, len(candidates))
+	// 主人注意：这里逐候选查询来源配置与失败规则，单个模型候选数上限 32，整体是 O(N) 次小查询喵。
+	// 模型列表接口会对每个模型重复此操作，模型数较多时可能放大为 N×候选数 次查询，建议后续改为
+	// 按 candidate_id IN ? 批量查询后用 map 回填，把复杂度降到常量级喵。
 	for _, candidate := range candidates {
 		candidateResponse := virtualModelCandidateInput{
 			ID: candidate.ID, StableOrder: candidate.StableOrder, SourceType: candidate.SourceType,
@@ -1354,11 +1356,4 @@ func countEnabledVirtualCandidates(candidates []model.VirtualModelCandidate) int
 		}
 	}
 	return count
-}
-
-// sortVirtualModelCandidates 保证后续状态和响应的候选顺序稳定喵。
-func sortVirtualModelCandidates(candidates []model.VirtualModelCandidate) {
-	sort.SliceStable(candidates, func(leftIndex, rightIndex int) bool {
-		return candidates[leftIndex].StableOrder < candidates[rightIndex].StableOrder
-	})
 }

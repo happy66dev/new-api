@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -116,4 +117,67 @@ func TestInjectVirtualModelAttempts(t *testing.T) {
 	injected, hasCandidates := other["candidates"]
 	assert.True(t, hasCandidates)
 	assert.Len(t, injected, 1)
+}
+
+// TestGetUserLogsSharedScopeTypeFilter 验证「全部」范围指定 type 时，自己的日志按 type 过滤而共享被调日志恒为 type=8 喵。
+func TestGetUserLogsSharedScopeTypeFilter(t *testing.T) {
+	// 清空日志表保证断言独立喵。
+	require.NoError(t, LOG_DB.Exec("DELETE FROM logs").Error)
+	now := time.Now().Unix()
+
+	// 自己的消费日志（type=2）：应被 type=2 筛选命中喵。
+	require.NoError(t, LOG_DB.Create(&Log{UserId: 7, Username: "me", Type: LogTypeConsume, ModelName: "gpt-4o", Quota: 100, CreatedAt: now}).Error)
+	// 自己的虚拟模型日志（type=9）：指定 type=2 时不应出现在结果中喵。
+	require.NoError(t, LOG_DB.Create(&Log{UserId: 7, Username: "me", Type: LogTypeVirtualModel, ModelName: "virtual/demo", Quota: 50, CreatedAt: now}).Error)
+	// 别人调用我的共享模型（type=8、user-shared 分组）：恒被返回喵。
+	require.NoError(t, LOG_DB.Create(&Log{UserId: 8, Username: "other", Type: LogTypeCustomUpstream, ModelName: "user/shared-a", Group: constant.GroupUserShared, Quota: 200, CreatedAt: now}).Error)
+	// 共享名集合外的 type=8 日志：即使分组正确也不应返回喵。
+	require.NoError(t, LOG_DB.Create(&Log{UserId: 8, Username: "other", Type: LogTypeCustomUpstream, ModelName: "user/not-shared", Group: constant.GroupUserShared, Quota: 999, CreatedAt: now}).Error)
+
+	// 按 type=2 查询「全部」范围：只应返回自己的 type=2 与共享的 type=8 喵。
+	logs, total, err := GetUserLogs(7, []string{"user/shared-a"}, LogTypeConsume, 0, 0, "", "", 0, 100, "", "", "")
+	require.NoError(t, err)
+	require.Equal(t, int64(2), total)
+	require.Len(t, logs, 2)
+	ownConsumeFound := false
+	sharedCustomFound := false
+	for _, log := range logs {
+		if log.Type == LogTypeConsume && log.ModelName == "gpt-4o" {
+			ownConsumeFound = true
+		}
+		if log.Type == LogTypeCustomUpstream && log.ModelName == "user/shared-a" {
+			sharedCustomFound = true
+		}
+	}
+	require.True(t, ownConsumeFound, "自己的 type=2 日志应被返回")
+	require.True(t, sharedCustomFound, "共享 type=8 日志应被返回")
+}
+
+// TestSumUsedQuotaMatchesGetUserLogsSharedScope 验证「全部」范围下统计与列表口径一致喵。
+func TestSumUsedQuotaMatchesGetUserLogsSharedScope(t *testing.T) {
+	// 清空日志表保证断言独立喵。
+	require.NoError(t, LOG_DB.Exec("DELETE FROM logs").Error)
+	now := time.Now().Unix()
+
+	// 自己的消费日志（type=2）：列表与统计都按 type=2 计入喵。
+	require.NoError(t, LOG_DB.Create(&Log{UserId: 7, Username: "me", Type: LogTypeConsume, ModelName: "gpt-4o", PromptTokens: 10, CompletionTokens: 20, Quota: 100, CreatedAt: now}).Error)
+	// 自己的虚拟模型日志（type=9）：指定 type=2 时列表与统计都不应计入喵。
+	require.NoError(t, LOG_DB.Create(&Log{UserId: 7, Username: "me", Type: LogTypeVirtualModel, ModelName: "virtual/demo", PromptTokens: 5, CompletionTokens: 5, Quota: 60, CreatedAt: now}).Error)
+	// 别人调用我的共享模型（type=8、user-shared 分组）：列表与统计都计入喵。
+	require.NoError(t, LOG_DB.Create(&Log{UserId: 8, Username: "other", Type: LogTypeCustomUpstream, ModelName: "user/shared-a", Group: constant.GroupUserShared, PromptTokens: 30, CompletionTokens: 40, Quota: 200, CreatedAt: now}).Error)
+
+	// 列表口径：自己的 type=2 + 共享 type=8，共两条喵。
+	logs, total, err := GetUserLogs(7, []string{"user/shared-a"}, LogTypeConsume, 0, 0, "", "", 0, 100, "", "", "")
+	require.NoError(t, err)
+	require.Equal(t, int64(2), total)
+
+	// 统计口径：quota 必须等于列表两条日志 quota 之和（100 + 200 = 300）喵。
+	stat, statErr := SumUsedQuota(LogTypeConsume, 0, 0, "", "me", "", 0, "", "user/shared-a")
+	require.NoError(t, statErr)
+	listQuota := int64(0)
+	for _, log := range logs {
+		listQuota += int64(log.Quota)
+	}
+	require.Equal(t, listQuota, int64(stat.Quota))
+	require.Equal(t, 300, stat.Quota)
 }

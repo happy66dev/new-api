@@ -57,13 +57,44 @@ func QueryStatus(hours int, groups []string, cacheExcludedModels []string) (Stat
 			cachedTokens:     row.CachedTokens,
 			inputTokens:      row.InputTokens,
 		}
-		if len(excludedModels) > 0 {
-			value.cacheHitCount = 0
-			value.cacheSampleCount = 0
-			value.cachedTokens = 0
-			value.inputTokens = 0
-		}
 		buckets[row.Group][row.BucketTs] = value
+	}
+	// 被排除模型的缓存样本/命中计数在 Go 侧按模型行扣除，只影响被排除模型自己，不再清零整个聚合窗口喵。
+	if len(excludedModels) > 0 {
+		var excludedRows []model.PerfMetric
+		if err := model.DB.Model(&model.PerfMetric{}).
+			Where("bucket_ts >= ? AND bucket_ts <= ? AND model_name IN ?", startTs, endTs, cacheExcludedModels).
+			Find(&excludedRows).Error; err != nil {
+			return StatusResult{}, err
+		}
+		for _, excludedRow := range excludedRows {
+			// 喵~防御：被排除模型行不在可见分组内时跳过，避免越权影响其他分组统计喵。
+			if allowed != nil {
+				if _, ok := allowed[excludedRow.Group]; !ok {
+					continue
+				}
+			}
+			groupBuckets, groupExists := buckets[excludedRow.Group]
+			// 喵~防御：聚合窗口没有该分组/桶时无需扣除，避免凭空造出零请求桶喵。
+			if !groupExists {
+				continue
+			}
+			value, bucketExists := groupBuckets[excludedRow.BucketTs]
+			if !bucketExists {
+				continue
+			}
+			// 喵~防御：扣除后不得为负，避免被排除模型行多于聚合值时出现负数缓存统计喵。
+			value.cacheSampleCount -= excludedRow.CacheSampleCount
+			if value.cacheSampleCount < 0 {
+				value.cacheSampleCount = 0
+			}
+			value.cacheHitCount -= excludedRow.CacheHitCount
+			if value.cacheHitCount < 0 {
+				value.cacheHitCount = 0
+			}
+			groupBuckets[excludedRow.BucketTs] = value
+			buckets[excludedRow.Group] = groupBuckets
+		}
 	}
 	for _, row := range cacheRows {
 		if _, ok := buckets[row.Group]; !ok {
