@@ -14,8 +14,11 @@ func applyUsagePostProcessing(info *relaycommon.RelayInfo, usage *dto.Usage, res
 
 	// 通用归一化：中转站风格的 cache_read_input_tokens 与标准 cached_tokens 语义等价，
 	// 并入 CachedTokens 以便只读该字段的展示/计费路径同样正确喵。
+	// 注意：CachedTokensTotal() 返回两者之和，复制后必须清零 CacheReadInputTokens，
+	// 否则同一批命中 token 会被双重计费（计费少收）喵。
 	if usage.PromptTokensDetails.CachedTokens == 0 && usage.PromptTokensDetails.CacheReadInputTokens > 0 {
 		usage.PromptTokensDetails.CachedTokens = usage.PromptTokensDetails.CacheReadInputTokens
+		usage.PromptTokensDetails.CacheReadInputTokens = 0
 	}
 
 	switch info.ChannelType {
@@ -64,7 +67,7 @@ func extractCachedTokensFromBody(body []byte) (int, bool) {
 	var payload struct {
 		Usage struct {
 			PromptTokensDetails struct {
-				CachedTokens        *int `json:"cached_tokens"`
+				CachedTokens         *int `json:"cached_tokens"`
 				CacheReadInputTokens *int `json:"cache_read_input_tokens"`
 			} `json:"prompt_tokens_details"`
 			CachedTokens         *int `json:"cached_tokens"`

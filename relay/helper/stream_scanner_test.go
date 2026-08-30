@@ -691,3 +691,105 @@ func TestStreamScannerHandler_NoProbeForRegularRequests(t *testing.T) {
 	require.Nil(t, probeErr)
 	require.Equal(t, 3, receivedCount)
 }
+
+// contentThenBlockStreamBody 先返回一段达到放流门槛的内容，随后阻塞直到 Close 触发，供"放流后静默"测试使用喵。
+type contentThenBlockStreamBody struct {
+	content []byte        // 前置内容字节喵。
+	offset  int           // 已消费的前置内容偏移喵。
+	release chan struct{} // Close 时关闭，解除 Read 阻塞喵。
+	once    sync.Once     // 保证只关闭一次 release 喵。
+}
+
+func (body *contentThenBlockStreamBody) Read(buffer []byte) (int, error) {
+	// 前置内容未消费完则继续返回，模拟上游先吐业务内容喵。
+	if body.offset < len(body.content) {
+		n := copy(buffer, body.content[body.offset:])
+		body.offset += n
+		return n, nil
+	}
+	// 内容消费完后静默阻塞，直到 cleanup 关闭 body 喵。
+	<-body.release
+	return 0, io.EOF
+}
+
+func (body *contentThenBlockStreamBody) Close() error {
+	body.once.Do(func() { close(body.release) })
+	return nil
+}
+
+// TestStreamScannerHandler_ProbePassedThenSilentIsNormalTimeout 验证放流后主循环能正确读到 passed=true，
+// 后续静默超过普通流式超时只按正常超时结束，不会误判为探测卡流喵。
+// 这是 passed 字段数据竞争的并发回归测试（放流由 scanner goroutine 写入、主循环读取，需 happens-before）喵。
+func TestStreamScannerHandler_ProbePassedThenSilentIsNormalTimeout(t *testing.T) {
+	// Not parallel: 修改全局常量 StreamingTimeout 喵。
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 1
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	params := virtualmodelservice.ProbeParameters{StallTimeoutSeconds: 60, MinContentChars: 5, ProbeTotalTimeoutSeconds: 60}
+	// 首行内容 "Hello" 达 5 字节门槛即放流，随后静默阻塞直到 cleanup 关闭喵。
+	body := &contentThenBlockStreamBody{
+		content: []byte("data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n"),
+		release: make(chan struct{}),
+	}
+	c, resp, info, _ := setupProbeStreamTest(t, body, params)
+	probeErr := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
+	require.Nil(t, probeErr, "放流后静默不得判定为探测卡流")
+	require.NotNil(t, info.StreamStatus)
+	assert.Equal(t, relaycommon.StreamEndReasonTimeout, info.StreamStatus.EndReason)
+	assert.False(t, errors.Is(probeErr, types.ErrStalledStream))
+}
+
+// TestStreamScannerHandler_FakeStreamBufferLimit 验证伪流全量缓存超过上限即终止并返回结构化错误喵。
+func TestStreamScannerHandler_FakeStreamBufferLimit(t *testing.T) {
+	params := virtualmodelservice.ProbeParameters{StallTimeoutSeconds: 60, MinContentChars: 10, ProbeTotalTimeoutSeconds: 60}
+	// 单行数据超过 2MB 缓存上限，触发伪流断流错误喵。
+	oversizedLine := "data: " + strings.Repeat("x", probeBufferLimit+64) + "\n"
+	c, resp, info, recorder := setupProbeStreamTest(t, io.NopCloser(strings.NewReader(oversizedLine)), params)
+	common.SetContextKey(c, constant.ContextKeyVirtualModelFakeStream, true)
+	probeErr := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
+	require.NotNil(t, probeErr)
+	require.True(t, errors.Is(probeErr, types.ErrStreamCut), "伪流缓存超限应按断流分类")
+	assert.Empty(t, recorder.Body.String())
+}
+
+// TestStreamScannerHandler_ProbeBufferLimit 验证普通探测模式下缓存同样受上限保护，超限按卡流分类喵。
+func TestStreamScannerHandler_ProbeBufferLimit(t *testing.T) {
+	params := virtualmodelservice.ProbeParameters{StallTimeoutSeconds: 60, MinContentChars: 10, ProbeTotalTimeoutSeconds: 60}
+	// 单行数据超过 2MB 缓存上限，内容门槛远未达到即先触发超限喵。
+	oversizedLine := "data: " + strings.Repeat("x", probeBufferLimit+64) + "\n"
+	c, resp, info, recorder := setupProbeStreamTest(t, io.NopCloser(strings.NewReader(oversizedLine)), params)
+	probeErr := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
+	require.NotNil(t, probeErr)
+	require.True(t, errors.Is(probeErr, types.ErrStalledStream), "普通探测缓存超限应按卡流分类")
+	assert.Empty(t, recorder.Body.String())
+}
+
+// TestStreamProbeEnabledFromContext 验证探测启用判定函数对普通/探测/伪流上下文返回正确结果喵。
+func TestStreamProbeEnabledFromContext(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	// 无任何探测参数：未启用喵。
+	assert.False(t, StreamProbeEnabledFromContext(c))
+	// 空上下文：未启用喵。
+	assert.False(t, StreamProbeEnabledFromContext(nil))
+
+	// 写入有效探测参数：启用喵。
+	common.SetContextKey(c, constant.ContextKeyVirtualModelProbeParameters, virtualmodelservice.ProbeParameters{StallTimeoutSeconds: 60, MinContentChars: 5, ProbeTotalTimeoutSeconds: 60})
+	assert.True(t, StreamProbeEnabledFromContext(c))
+
+	// 参数全零：视为未启用（streamProbeConfigFromContext 内部校验）喵。
+	c2, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c2.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	common.SetContextKey(c2, constant.ContextKeyVirtualModelProbeParameters, virtualmodelservice.ProbeParameters{})
+	assert.False(t, StreamProbeEnabledFromContext(c2))
+
+	// 仅开伪流开关：视为启用喵。
+	c3, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c3.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	common.SetContextKey(c3, constant.ContextKeyVirtualModelFakeStream, true)
+	assert.True(t, StreamProbeEnabledFromContext(c3))
+}

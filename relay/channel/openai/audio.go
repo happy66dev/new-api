@@ -35,9 +35,13 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 		}
 		c.Writer.Header().Set(k, v[0])
 	}
-	c.Writer.WriteHeader(resp.StatusCode)
 
 	if info.IsStream {
+		// 流式音频输出：探测阶段禁止提前写响应头，放流后 dataHandler 首次写入才隐式提交状态喵。
+		// 非 200 状态在入口已判定、正常不会走到这里；保守起见对非 200 仍显式写头，避免状态丢失喵。
+		if resp.StatusCode != http.StatusOK {
+			c.Writer.WriteHeader(resp.StatusCode)
+		}
 		streamProbeErr := helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 			if service.SundaySearch(data, "usage") {
 				var simpleResponse dto.SimpleResponse
@@ -59,6 +63,8 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 			return nil, streamProbeErr
 		}
 	} else {
+		// 非流式 TTS：在写入正文前提交响应状态，与原有行为一致喵。
+		c.Writer.WriteHeader(resp.StatusCode)
 		common.SetContextKey(c, constant.ContextKeyLocalCountTokens, true)
 		// 读取响应体到缓冲区
 		bodyBytes, err := io.ReadAll(resp.Body)

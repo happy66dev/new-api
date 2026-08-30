@@ -586,7 +586,9 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		helper.SetEventStreamHeaders(c)
 		// 处理流式请求的 ping 保活
 		generalSettings := operation_setting.GetGeneralSetting()
-		if firstResponseTimeout == 0 && generalSettings.PingIntervalEnabled && !info.DisablePing {
+		// 喵~防御：探测/伪流阶段禁止 doRequest 级 ping，避免提前向客户端写字节提交 200，
+		// 导致卡流探测失败后无法回 502/切换候选喵。
+		if firstResponseTimeout == 0 && generalSettings.PingIntervalEnabled && !info.DisablePing && !helper.StreamProbeEnabledFromContext(c) {
 			pingInterval := time.Duration(generalSettings.PingIntervalSeconds) * time.Second
 			stopPinger, pingerDone = startPingKeepAlive(c, pingInterval)
 			// 使用defer确保在任何情况下都能停止ping goroutine

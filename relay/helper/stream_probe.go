@@ -54,7 +54,6 @@ func streamProbeConfigFromContext(c *gin.Context) *StreamProbeConfig {
 // streamProbeState 记录一次流式探测的运行状态喵。
 type streamProbeState struct {
 	config               *StreamProbeConfig // 探测参数喵。
-	passed               bool               // 是否已放流（探测成功）喵。
 	buffer               []string           // 探测阶段缓存的 SSE data 行喵。
 	bufferedContentChars int                // 累积内容字符数喵。
 	failedChan           chan error         // 探测失败错误通道，带缓冲防阻塞喵。
