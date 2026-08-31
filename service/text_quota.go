@@ -509,16 +509,6 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	}
 
 	logContent := strings.Join(extraContent, ", ")
-	// 虚拟模型 internal 候选成功日志补充请求体内容预览，满足「无论哪种路径日志都带请求内容」喵。
-	if common.GetContextKeyInt(ctx, constant.ContextKeyVirtualLogType) > 0 {
-		if requestContentPreview := VirtualModelRequestContentPreview(ctx); requestContentPreview != "" {
-			// 喵~防御：既有计费摘要非空时用分隔符拼接，避免丢失计费信息喵。
-			if logContent != "" {
-				logContent += " | "
-			}
-			logContent += "请求内容: " + requestContentPreview
-		}
-	}
 	var other map[string]interface{}
 	if summary.IsClaudeUsageSemantic {
 		other = GenerateClaudeOtherInfo(ctx, relayInfo,

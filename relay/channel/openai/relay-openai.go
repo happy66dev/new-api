@@ -186,6 +186,10 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	if !containStreamUsage {
 		usage = service.ResponseText2Usage(c, responseTextBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
 		usage.CompletionTokens += toolCount * 7
+	} else if usage.CompletionTokens <= 0 {
+		// 降级方案：上游成功返回但输出 token 为 0（流式只报 prompt 或推理 token 未并入 completion），
+		// 用真实推理 token 或响应文本（content + 思考 content）估算补全，避免输出显示/计费为 0 喵。
+		service.DegradeZeroCompletionUsage(usage, info.UpstreamModelName, responseTextBuilder.String())
 	}
 
 	applyUsagePostProcessing(info, usage, common.StringToByteSlice(lastStreamData))

@@ -803,12 +803,10 @@ func recordVirtualModelCustomSuccess(c *gin.Context, useTimeSeconds int, usage *
 		ModelName:        executionState.virtualModelName,
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
-		// 成功日志也携带请求体内容预览，供日志页「Content」区块直接展示本次请求喵。
-		Content:        service.VirtualModelRequestContentPreview(c),
-		UseTimeSeconds: useTimeSeconds,
-		IsStream:       isUpstreamModelRequestStreaming(c),
-		Group:          group,
-		Other:          other,
+		UseTimeSeconds:   useTimeSeconds,
+		IsStream:         isUpstreamModelRequestStreaming(c),
+		Group:            group,
+		Other:            other,
 	})
 }
 
@@ -856,7 +854,6 @@ func RecordVirtualModelOverallFailure(c *gin.Context, errorClass string, httpSta
 	model.InjectVirtualModelAttempts(c, other)
 	model.RecordVirtualModelLog(c, c.GetInt("id"), model.RecordVirtualModelLogParams{
 		ModelName:      virtualModelName,
-		Content:        service.VirtualModelRequestContentPreview(c),
 		UseTimeSeconds: useTimeSeconds,
 		IsStream:       isUpstreamModelRequestStreaming(c),
 		Group:          group,

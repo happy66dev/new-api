@@ -49,12 +49,10 @@ func TestRecordVirtualModelOverallFailure(t *testing.T) {
 	require.NoError(t, testLogDB.Model(&model.Log{}).Count(&count).Error)
 	require.Equal(t, int64(1), count)
 
-	// 校验日志字段：模型名、请求内容预览与失败标记喵。
+	// 校验日志字段：模型名、失败标记与错误分类喵。
 	var logRecord model.Log
 	require.NoError(t, testLogDB.Model(&model.Log{}).First(&logRecord).Error)
 	require.Equal(t, "virtual/test", logRecord.ModelName)
-	require.Contains(t, logRecord.Content, `"model":"deepseek"`)
-	require.Contains(t, logRecord.Content, "你好")
 	require.Contains(t, logRecord.Other, "final_success")
 	require.Contains(t, logRecord.Other, "virtual_model_unavailable")
 }

@@ -152,6 +152,9 @@ func OaiBufferedStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 		usage = service.ResponseText2Usage(c, responseText.String(), model, info.GetEstimatePromptTokens())
 		usage.CompletionTokens += toolCount * 7
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	} else if usage.CompletionTokens <= 0 {
+		// 降级方案：与主流式路径一致，上游返回 0 输出 token 时用推理 token 或响应文本（content+思考）估算补全喵。
+		service.DegradeZeroCompletionUsage(usage, model, responseText.String())
 	}
 	applyUsagePostProcessing(info, usage, lastStreamPayload)
 
