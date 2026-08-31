@@ -395,7 +395,7 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 		return
 	}
 	logger.LogInfo(c, fmt.Sprintf("record consume log: userId=%d, params=%s", userId, common.GetJsonString(params)))
-	// 虚拟模型请求写 type=9 日志，并用候选链序号作为渠道字段展示「候选n」喵。
+	// 虚拟模型请求写 type=9 日志；渠道字段保留真实服务渠道 id，供前端据此解析渠道名喵。
 	logType := LogTypeConsume
 	if virtualLogType := common.GetContextKeyInt(c, constant.ContextKeyVirtualLogType); virtualLogType > 0 {
 		logType = virtualLogType
@@ -403,10 +403,8 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 		appendVirtualModelSuccessAttempt(c, params.ModelName, params.UseTimeMs, params.FirstByteMs)
 		InjectVirtualModelAttempts(c, params.Other)
 	}
+	// 渠道字段恒为真实服务渠道 id（internal 候选即实际 relay 的 new-api 渠道），候选链序号由 candidates 序列承载喵。
 	channelId := params.ChannelId
-	if virtualCandidateSeq := common.GetContextKeyInt(c, constant.ContextKeyVirtualCandidateSeq); virtualCandidateSeq > 0 {
-		channelId = virtualCandidateSeq
-	}
 	username := c.GetString("username")
 	requestId := c.GetString(common.RequestIdKey)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)

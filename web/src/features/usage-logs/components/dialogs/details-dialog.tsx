@@ -67,6 +67,7 @@ import type { UsageLog } from '../../data/schema'
 import {
   parseLogOther,
   getParamOverrideActionLabel,
+  getVirtualModelCandidateLabel,
   parseAuditLine,
   decodeBillingExprB64,
   getTieredBillingSummary,
@@ -636,6 +637,27 @@ export function DetailsDialog(props: DetailsDialogProps) {
   const useChannel = other?.admin_info?.use_channel
   const channelChain =
     useChannel && useChannel.length > 0 ? useChannel.join(' → ') : undefined
+  // 虚拟模型 custom 候选（type=9 且无真实渠道）在 Channel 行展示候选尝试序列的成功候选标识喵。
+  const virtualModelCandidateLabel =
+    props.log.type === 9 && props.log.channel <= 0
+      ? getVirtualModelCandidateLabel(other?.candidates)
+      : undefined
+  // Channel 行的展示值：普通日志与虚拟模型 internal 候选显示真实渠道 #id (渠道名)，
+  // 虚拟模型 custom 候选（无 new-api 渠道）显示成功候选的标识喵。
+  const channelValueNode =
+    props.log.type === 9 && props.log.channel <= 0 ? (
+      virtualModelCandidateLabel
+    ) : (
+      <span>
+        {props.log.channel}
+        {props.log.channel_name && (
+          <span className='text-muted-foreground'>
+            {' '}
+            ({props.log.channel_name})
+          </span>
+        )}
+      </span>
+    )
   const reasoningEffortVariant = getReasoningEffortVariant(
     other?.reasoning_effort
   )
@@ -685,22 +707,10 @@ export function DetailsDialog(props: DetailsDialogProps) {
             />
           )}
 
-          {props.isAdmin && props.log.channel > 0 && (
+          {props.isAdmin && (props.log.channel > 0 || virtualModelCandidateLabel) && (
             <DetailRow
               label={t('Channel')}
-              value={
-                <span>
-                  {props.log.type === 9
-                    ? t('Candidate {{n}}', { n: props.log.channel })
-                    : props.log.channel}
-                  {props.log.channel_name && (
-                    <span className='text-muted-foreground'>
-                      {' '}
-                      ({props.log.channel_name})
-                    </span>
-                  )}
-                </span>
-              }
+              value={channelValueNode}
               mono
             />
           )}

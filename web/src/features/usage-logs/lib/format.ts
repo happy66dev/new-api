@@ -177,6 +177,25 @@ export function parseLogOther(other: string): LogOtherData | null {
   }
 }
 
+/**
+ * 取虚拟模型日志（type=9）custom 候选在渠道列的展示标识喵。
+ * custom 候选没有 new-api 渠道（channel=0），用候选尝试序列里成功候选的 label（模型名/显示名）；
+ * 失败日志无成功候选时回退最后一个尝试候选的标识喵。
+ */
+export function getVirtualModelCandidateLabel(
+  candidates: LogOtherData['candidates']
+): string | null {
+  // 喵~防御：候选序列缺失或为空时返回 null，调用方回退兜底展示喵。
+  if (!Array.isArray(candidates) || candidates.length === 0) return null
+  // 优先取成功候选的标识，表示真正响应客户端的候选喵。
+  const successful = candidates.find((candidate) => candidate.success)
+  if (successful?.label) return successful.label
+  // 喵~防御：失败日志无成功候选时回退最后一个尝试候选的标识，避免渠道列显示空白喵。
+  const last = candidates[candidates.length - 1]
+  if (last?.label) return last.label
+  return null
+}
+
 export function getReasoningEffortVariant(
   effort: string | undefined
 ): StatusBadgeProps['variant'] {

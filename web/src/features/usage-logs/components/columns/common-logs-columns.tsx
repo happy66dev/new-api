@@ -45,6 +45,7 @@ import type { UsageLog } from '../../data/schema'
 import {
   formatModelName,
   getTieredBillingSummary,
+  getVirtualModelCandidateLabel,
   hasAnyCacheTokens,
   isEstimatedLog,
   parseLogOther,
@@ -377,21 +378,44 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
           const useChannel = Array.isArray(rawUseChannel)
             ? rawUseChannel.map(String).filter(Boolean)
             : []
-          // 虚拟模型日志（type=9）的渠道字段存候选链序号，展示「候选n」而非渠道 id 喵。
+          // 虚拟模型日志（type=9）渠道字段语义：internal 候选保留真实服务渠道 id（前端据此解析渠道名），
+          // custom 候选没有 new-api 渠道，改用候选尝试序列里成功候选的标识（模型名/显示名）喵。
           const isVirtualModelLog = log.type === 9
+          // 渠道 id 大于 0 即存在真实服务渠道，普通日志与 type=9 internal 候选都适用喵。
+          const hasRealChannel = log.channel > 0
+          // custom 候选才需要候选标识，internal 候选直接走真实渠道展示喵。
+          const virtualModelCandidateLabel =
+            isVirtualModelLog && !hasRealChannel
+              ? getVirtualModelCandidateLabel(other?.candidates)
+              : undefined
           const hasRetryChain = !isVirtualModelLog && useChannel.length > 1
           const channelChain = hasRetryChain
             ? useChannel.join(' → ')
             : undefined
           const channelDisplay = isVirtualModelLog
-            ? t('Candidate {{n}}', { n: log.channel })
+            ? hasRealChannel
+              ? log.channel_name
+                ? `${log.channel_name} #${log.channel}`
+                : `#${log.channel}`
+              : virtualModelCandidateLabel || `#${log.channel}`
             : log.channel_name
               ? `${log.channel_name} #${log.channel}`
               : `#${log.channel}`
           const channelIdDisplay = isVirtualModelLog
-            ? t('Candidate {{n}}', { n: log.channel })
+            ? hasRealChannel
+              ? `#${log.channel}`
+              : virtualModelCandidateLabel || `#${log.channel}`
             : `#${log.channel}`
-          const channelName = sensitiveVisible ? log.channel_name : '••••'
+          // custom 候选把标识放在徽章上，徽章下方不再重复展示喵。
+          const channelName = sensitiveVisible
+            ? hasRealChannel
+              ? log.channel_name
+              : ''
+            : '••••'
+          const channelCopyText =
+            isVirtualModelLog && !hasRealChannel
+              ? virtualModelCandidateLabel || String(log.channel)
+              : String(log.channel)
           const multiKeyIndex = other?.admin_info?.multi_key_index
           const showMultiKeyIndex =
             other?.admin_info?.is_multi_key === true &&
@@ -410,7 +434,7 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
                     <StatusBadge
                       label={channelIdDisplay}
                       autoColor={String(log.channel)}
-                      copyText={String(log.channel)}
+                      copyText={channelCopyText}
                       size='sm'
                       showDot={false}
                       className='font-mono'

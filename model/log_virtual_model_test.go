@@ -28,7 +28,7 @@ func newVirtualLogTestContext(t *testing.T) *gin.Context {
 	return ctx
 }
 
-// TestRecordConsumeLogVirtualModelType 验证虚拟模型 internal 候选走消费日志时覆盖为 type=9 并写候选序号渠道喵。
+// TestRecordConsumeLogVirtualModelType 验证虚拟模型 internal 候选走消费日志时覆盖为 type=9 且渠道字段保留真实服务渠道 id 喵。
 func TestRecordConsumeLogVirtualModelType(t *testing.T) {
 	// 清空日志表保证断言独立喵。
 	require.NoError(t, LOG_DB.Exec("DELETE FROM logs").Error)
@@ -40,7 +40,7 @@ func TestRecordConsumeLogVirtualModelType(t *testing.T) {
 	}
 	common.SetContextKey(ctx, constant.ContextKeyVirtualCandidateAttempts, &attempts)
 
-	// 记录一条消费日志，期望被虚拟模型上下文覆盖为 type=9、渠道字段为候选序号 2 喵。
+	// 记录一条消费日志，期望被虚拟模型上下文覆盖为 type=9、渠道字段保留真实服务渠道 id 99（不再被候选序号 2 覆盖）喵。
 	RecordConsumeLog(ctx, 7, RecordConsumeLogParams{
 		ChannelId:        99,
 		PromptTokens:     10,
@@ -56,9 +56,9 @@ func TestRecordConsumeLogVirtualModelType(t *testing.T) {
 
 	var log Log
 	require.NoError(t, LOG_DB.Last(&log).Error)
-	// 日志类型必须为虚拟模型，渠道字段为候选序号而非真实渠道 id 喵。
+	// 日志类型必须为虚拟模型，渠道字段保留真实服务渠道 id（候选链序号改由 candidates 序列承载）喵。
 	assert.Equal(t, LogTypeVirtualModel, log.Type)
-	assert.Equal(t, 2, log.ChannelId)
+	assert.Equal(t, 99, log.ChannelId)
 	// 候选尝试序列应注入 Other，且 internal 成功尝试被追加到末尾喵。
 	var parsedOther map[string]interface{}
 	require.NoError(t, common.UnmarshalJsonStr(log.Other, &parsedOther))
