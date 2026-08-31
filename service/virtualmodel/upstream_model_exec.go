@@ -362,7 +362,7 @@ func extractUsageFromSSEBytes(buffered []byte, target *dto.Usage) {
 	}
 }
 
-// extractUsageFromSSELine 从单条 SSE data 行提取 usage 事件，非空时覆盖目标喵。
+// extractUsageFromSSELine 从单条 SSE data 行提取 usage 事件，逐侧合并进目标喵。
 func extractUsageFromSSELine(lineBytes []byte, target *dto.Usage) {
 	// 喵~防御：空目标或非 data 行直接返回喵。
 	if target == nil {
@@ -380,21 +380,69 @@ func extractUsageFromSSELine(lineBytes []byte, target *dto.Usage) {
 	if !gjson.ValidBytes(dataPayload) {
 		return
 	}
-	usageRaw := gjson.GetBytes(dataPayload, "usage")
-	// 喵~防御：无 usage 字段的事件直接跳过喵。
-	if !usageRaw.Exists() {
+	// 顶层 usage：OpenAI 流式末尾 + Anthropic message_delta 的用法喵。
+	if usageRaw := gjson.GetBytes(dataPayload, "usage"); usageRaw.Exists() {
+		var usage dto.Usage
+		// 喵~防御：解析失败只丢弃该事件，不影响后续事件喵。
+		if err := common.Unmarshal([]byte(usageRaw.Raw), &usage); err == nil {
+			mergeUpstreamModelUsage(target, &usage)
+		}
+	}
+	// Anthropic message_start 的 input_tokens 嵌在 message.usage 里，单独解析合并，避免输入被漏掉喵。
+	if nestedUsageRaw := gjson.GetBytes(dataPayload, "message.usage"); nestedUsageRaw.Exists() {
+		var usage dto.Usage
+		if err := common.Unmarshal([]byte(nestedUsageRaw.Raw), &usage); err == nil {
+			mergeUpstreamModelUsage(target, &usage)
+		}
+	}
+}
+
+// mergeUpstreamModelUsage 把候选 usage 合并进目标：候选非零字段覆盖目标，全零候选不改动任何字段喵。
+// 覆盖语义：Anthropic 流式里 message_start 的 output_tokens 是占位 1，message_delta 才是最终累计值，
+// 所以后到的非零值应覆盖；而 message_start 的 input_tokens 与 message_delta 的 output_tokens 是互补事件，
+// 逐字段合并保证 input/output 都能拿到。全零 usage（上游每块都带的占位对象）绝不清空已有计数喵。
+func mergeUpstreamModelUsage(target *dto.Usage, candidate *dto.Usage) {
+	// 喵~防御：空指针直接返回喵。
+	if target == nil || candidate == nil {
 		return
 	}
-	var usage dto.Usage
-	// 喵~防御：解析失败只丢弃该事件，不影响后续事件喵。
-	if err := common.Unmarshal([]byte(usageRaw.Raw), &usage); err != nil {
-		return
+	if candidate.PromptTokens > 0 {
+		target.PromptTokens = candidate.PromptTokens
 	}
-	if !usageHasTokens(&usage) {
-		return
+	if candidate.CompletionTokens > 0 {
+		target.CompletionTokens = candidate.CompletionTokens
 	}
-	// 流式事件里的 usage 取最后一次出现的非空值，符合 OpenAI 流式末尾 usage 语义喵。
-	*target = usage
+	if candidate.TotalTokens > 0 {
+		target.TotalTokens = candidate.TotalTokens
+	}
+	if candidate.InputTokens > 0 {
+		target.InputTokens = candidate.InputTokens
+	}
+	if candidate.OutputTokens > 0 {
+		target.OutputTokens = candidate.OutputTokens
+	}
+	if candidate.PromptCacheHitTokens > 0 {
+		target.PromptCacheHitTokens = candidate.PromptCacheHitTokens
+	}
+	// 缓存/推理细节字段：候选非零同样覆盖，保证后到的完整值生效喵。
+	if candidate.PromptTokensDetails.CachedTokens > 0 {
+		target.PromptTokensDetails.CachedTokens = candidate.PromptTokensDetails.CachedTokens
+	}
+	if candidate.PromptTokensDetails.CacheCreationInputTokens > 0 {
+		target.PromptTokensDetails.CacheCreationInputTokens = candidate.PromptTokensDetails.CacheCreationInputTokens
+	}
+	if candidate.PromptTokensDetails.CacheReadInputTokens > 0 {
+		target.PromptTokensDetails.CacheReadInputTokens = candidate.PromptTokensDetails.CacheReadInputTokens
+	}
+	if candidate.CompletionTokenDetails.ReasoningTokens > 0 {
+		target.CompletionTokenDetails.ReasoningTokens = candidate.CompletionTokenDetails.ReasoningTokens
+	}
+	if candidate.ClaudeCacheCreation5mTokens > 0 {
+		target.ClaudeCacheCreation5mTokens = candidate.ClaudeCacheCreation5mTokens
+	}
+	if candidate.ClaudeCacheCreation1hTokens > 0 {
+		target.ClaudeCacheCreation1hTokens = candidate.ClaudeCacheCreation1hTokens
+	}
 }
 
 // usageHasTokens 判断 usage 是否携带任何 token 计数（含 input/output 风格字段与推理 token）喵。

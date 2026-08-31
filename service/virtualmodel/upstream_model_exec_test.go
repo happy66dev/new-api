@@ -51,11 +51,12 @@ func TestExtractUsageFromSSELine(t *testing.T) {
 	extractUsageFromSSELine([]byte(`data: {"choices":[]}`), usage)
 	assert.Equal(t, 30, usage.PromptTokens)
 
-	// 最后的非空 usage 覆盖之前值，符合流式末尾 usage 语义喵。
-	extractUsageFromSSELine([]byte(`data: {"usage":{"prompt_tokens":90,"completion_tokens":20,"total_tokens":110}}`), usage)
-	assert.Equal(t, 90, usage.PromptTokens)
+	// 后续 usage 只回填缺失侧，不覆盖已有计数（同一流内的 usage 是互补事件）喵。
+	extractUsageFromSSELine([]byte(`data: {"usage":{"completion_tokens":20}}`), usage)
+	assert.Equal(t, 30, usage.PromptTokens)
+	assert.Equal(t, 20, usage.CompletionTokens)
 
-	// [DONE]、空 data、非 data 行、全零 usage 均被跳过喵。
+	// [DONE]、空 data、非 data 行、全零 usage 均不改动目标喵。
 	usage = &dto.Usage{}
 	extractUsageFromSSELine([]byte(`data: [DONE]`), usage)
 	extractUsageFromSSELine([]byte(`data:`), usage)
@@ -65,6 +66,23 @@ func TestExtractUsageFromSSELine(t *testing.T) {
 
 	// 空目标不崩溃喵。
 	extractUsageFromSSELine([]byte(`data: {"usage":{"prompt_tokens":1}}`), nil)
+}
+
+// TestExtractUsageFromSSELineAnthropicMerge 验证 Anthropic 流式 usage 跨事件合并喵。
+// message_start 的 input_tokens 嵌在 message.usage，message_delta 的 output_tokens 在顶层 usage，
+// 两者互补必须都能拿到；后到的全零 usage 不得清空已计数喵。
+func TestExtractUsageFromSSELineAnthropicMerge(t *testing.T) {
+	usage := &dto.Usage{}
+	// message_start：嵌套 message.usage 提供 input_tokens，顶层 usage 全零不覆盖喵。
+	extractUsageFromSSELine([]byte(`data: {"type":"message_start","message":{"usage":{"input_tokens":91,"output_tokens":1}},"usage":{"input_tokens":0,"output_tokens":0}}`), usage)
+	assert.Equal(t, 91, usage.InputTokens)
+	// 中间块带全零顶层 usage 不得清空已有计数喵。
+	extractUsageFromSSELine([]byte(`data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"},"usage":{"input_tokens":0,"output_tokens":0}}`), usage)
+	assert.Equal(t, 91, usage.InputTokens)
+	// message_delta：顶层 usage 提供真实 output_tokens，输入仍保留 message_start 的值喵。
+	extractUsageFromSSELine([]byte(`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":91,"output_tokens":35}}`), usage)
+	assert.Equal(t, 91, usage.InputTokens)
+	assert.Equal(t, 35, usage.OutputTokens)
 }
 
 // TestExtractUsageFromSSEBytes 验证已缓冲 SSE 文本的批量提取喵。
