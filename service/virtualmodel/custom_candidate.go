@@ -424,12 +424,12 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 			}
 		}
 		usage = normalizeUpstreamModelUsage(usage)
-		// 只有真正解析到 token 计数才返回 usage，否则按请求/响应文本估计参与计费喵。
+		// 只有真正解析到 token 计数才返回 usage，否则按请求/响应文本估计参与计费（流式口径）喵。
 		if !usageHasTokens(usage) {
-			usage = service.EstimateUsageFromTexts(input.RealModelName, requestBody, responseTextBuilder.String())
+			usage = service.EstimateUsageFromTexts(c, input.RealModelName, requestBody, responseTextBuilder.String(), true)
 		} else {
 			// 上游只给了部分 token（如只有 prompt 无 completion）：用响应文本估算缺失侧，避免输出 token 为 0 喵。
-			usage = fillEstimatedUsageIfMissing(input.RealModelName, usage, requestBody, responseTextBuilder.String())
+			usage = fillEstimatedUsageIfMissing(c, input.RealModelName, usage, requestBody, responseTextBuilder.String(), true)
 		}
 		return &CustomCandidateExecutionResult{Usage: usage, TtftMs: ttftMs}
 	}
@@ -454,12 +454,12 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 		return &CustomCandidateExecutionResult{Err: customCandidatePrecommitFailure(errors.New("custom upstream returned an empty success response")), TtftMs: ttftMs}
 	}
 	usage := normalizeUpstreamModelUsage(extractUsageFromOpenAIBody(responseBody))
-	// 上游未提供 token 时按响应文本估计 completion，配合请求体估计 prompt 参与计费喵。
+	// 上游未提供 token 时按响应文本估计 completion，配合请求体估计 prompt 参与计费（非流式走 tiktoken 口径）喵。
 	if !usageHasTokens(usage) {
-		usage = service.EstimateUsageFromTexts(input.RealModelName, requestBody, responseContentFromBody(responseBody))
+		usage = service.EstimateUsageFromTexts(c, input.RealModelName, requestBody, responseContentFromBody(responseBody), false)
 	} else {
 		// 上游只给了部分 token：用文本估算缺失侧，避免输出 token 为 0 喵。
-		usage = fillEstimatedUsageIfMissing(input.RealModelName, usage, requestBody, responseContentFromBody(responseBody))
+		usage = fillEstimatedUsageIfMissing(c, input.RealModelName, usage, requestBody, responseContentFromBody(responseBody), false)
 	}
 	copyCustomResponseHeaders(c.Writer.Header(), response.Header)
 	c.Status(response.StatusCode)

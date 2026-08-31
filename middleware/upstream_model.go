@@ -178,13 +178,25 @@ func SettleUpstreamModelRelaySuccess(c *gin.Context, ttftMs int64) {
 		return
 	}
 	usage := getUpstreamModelRelayUsage(c)
+	requestBody, bodyReadErr := readUpstreamModelRelayRequestBody(c)
+	relayIsStream := isUpstreamModelRequestStreaming(c)
 	// relay 成功但未解析出 usage（罕见：格式转换路径未带出计费信息）：
-	// 按请求体估算 prompt 兜底参与结算，completion 因响应流已直传、无文本可估，标记为估算来源喵。
+	// 按请求体原生口径估算 prompt 兜底参与结算，completion 因响应流已直传、无文本可估，标记为估算来源喵。
 	if usage == nil {
-		if requestBody, bodyErr := readUpstreamModelRelayRequestBody(c); bodyErr == nil {
-			if estimated := service.EstimateUsageFromTexts(relayCtx.upstreamModel.RealModelName, requestBody, ""); estimated != nil {
+		if bodyReadErr == nil {
+			if estimated := service.EstimateUsageFromTexts(c, relayCtx.upstreamModel.RealModelName, requestBody, "", relayIsStream); estimated != nil {
 				usage = estimated
 			}
+		}
+	} else if usage.PromptTokens <= 0 && bodyReadErr == nil {
+		// relay 渠道拿到了 usage 但输入侧缺失（relay 路径跳过 EstimateRequestToken，本地预估恒为 0）：
+		// 用原生口径按请求体补全输入 token，避免结算输入侧显示/计费为 0，同时标记为估算来源喵。
+		usage.PromptTokens = service.EstimatePromptTokensFromBody(c, requestBody, relayCtx.upstreamModel.RealModelName, relayIsStream)
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+		if usage.BillingUsage == nil {
+			usage.BillingUsage = &dto.BillingUsage{Estimated: true}
+		} else {
+			usage.BillingUsage.Estimated = true
 		}
 	}
 	// 耗时口径：总耗时取请求入口到当前，首字取代理首次向客户端写字节的时刻，

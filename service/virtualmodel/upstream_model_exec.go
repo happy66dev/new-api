@@ -85,11 +85,12 @@ func fakeStreamCommitResponse(c *gin.Context, responseReader *bufio.Reader, resp
 	var responseTextBuilder strings.Builder
 	if !usageHasTokens(usage) {
 		appendResponseContentFromSSEBytes(&responseTextBuilder, fakeStreamBuffer)
-		return service.EstimateUsageFromTexts(input.RealModelName, requestBody, responseTextBuilder.String()), nil
+		// 伪流按流式口径估计（prompt 原生计数、completion 启发式）喵。
+		return service.EstimateUsageFromTexts(c, input.RealModelName, requestBody, responseTextBuilder.String(), true), nil
 	}
 	// 上游只给了部分 token：用全量缓存响应文本估算缺失侧，避免输出 token 为 0 喵。
 	appendResponseContentFromSSEBytes(&responseTextBuilder, fakeStreamBuffer)
-	usage = fillEstimatedUsageIfMissing(input.RealModelName, usage, requestBody, responseTextBuilder.String())
+	usage = fillEstimatedUsageIfMissing(c, input.RealModelName, usage, requestBody, responseTextBuilder.String(), true)
 	return usage, nil
 }
 
@@ -276,10 +277,10 @@ func ExecuteUserUpstreamModel(c *gin.Context, input CustomCandidateExecutionInpu
 		// 只有真正解析到 token 计数才返回 usage，否则按请求/响应文本估计参与计费喵。
 		usage = normalizeUpstreamModelUsage(usage)
 		if !usageHasTokens(usage) {
-			usage = service.EstimateUsageFromTexts(input.RealModelName, requestBody, responseTextBuilder.String())
+			usage = service.EstimateUsageFromTexts(c, input.RealModelName, requestBody, responseTextBuilder.String(), true)
 		} else {
 			// 上游只给了部分 token（如只有 prompt 无 completion）：用响应文本估算缺失侧，避免输出 token 为 0 喵。
-			usage = fillEstimatedUsageIfMissing(input.RealModelName, usage, requestBody, responseTextBuilder.String())
+			usage = fillEstimatedUsageIfMissing(c, input.RealModelName, usage, requestBody, responseTextBuilder.String(), true)
 		}
 		return &UserUpstreamModelExecutionResult{Usage: usage, TtftMs: ttftMs}
 	}
@@ -297,12 +298,12 @@ func ExecuteUserUpstreamModel(c *gin.Context, input CustomCandidateExecutionInpu
 		return &UserUpstreamModelExecutionResult{Err: customCandidatePrecommitFailure(errors.New("user upstream returned an empty success response")), TtftMs: ttftMs}
 	}
 	usage := normalizeUpstreamModelUsage(extractUsageFromOpenAIBody(responseBody))
-	// 上游未提供 token 时按响应文本估计 completion，配合请求体估计 prompt 参与计费喵。
+	// 上游未提供 token 时按响应文本估计 completion，配合请求体估计 prompt 参与计费（非流式走 tiktoken 口径）喵。
 	if !usageHasTokens(usage) {
-		usage = service.EstimateUsageFromTexts(input.RealModelName, requestBody, responseContentFromBody(responseBody))
+		usage = service.EstimateUsageFromTexts(c, input.RealModelName, requestBody, responseContentFromBody(responseBody), false)
 	} else {
 		// 上游只给了部分 token：用文本估算缺失侧，避免输出 token 为 0 喵。
-		usage = fillEstimatedUsageIfMissing(input.RealModelName, usage, requestBody, responseContentFromBody(responseBody))
+		usage = fillEstimatedUsageIfMissing(c, input.RealModelName, usage, requestBody, responseContentFromBody(responseBody), false)
 	}
 	copyCustomResponseHeaders(c.Writer.Header(), response.Header)
 	c.Status(response.StatusCode)
@@ -461,7 +462,8 @@ func usageHasTokens(usage *dto.Usage) bool {
 // 语义：usage 有真实 prompt 或 completion 时保留真实值，只对为零的那一侧按文本估算，
 // 并把 usage 标记为估计来源（BillingUsage.Estimated=true），供日志「?」与计费识别喵。
 // 适用场景：上游流式只返回 prompt 未返回 completion（或反之），导致输出 token 显示/计费为 0 喵。
-func fillEstimatedUsageIfMissing(modelName string, usage *dto.Usage, requestBody []byte, responseText string) *dto.Usage {
+// isStream 用于与原生通道一致的计数口径：流式启发式、非流式 OpenAI 文本模型走 tiktoken 喵。
+func fillEstimatedUsageIfMissing(c *gin.Context, modelName string, usage *dto.Usage, requestBody []byte, responseText string, isStream bool) *dto.Usage {
 	// 喵~防御：空 usage 直接返回，由调用方决定是否整体估算喵。
 	if usage == nil {
 		return nil
@@ -473,7 +475,7 @@ func fillEstimatedUsageIfMissing(modelName string, usage *dto.Usage, requestBody
 		return usage
 	}
 	// 用文本估算完整 usage 作为素材，只取缺失侧的估算值，不覆盖真实侧喵。
-	estimated := service.EstimateUsageFromTexts(modelName, requestBody, responseText)
+	estimated := service.EstimateUsageFromTexts(c, modelName, requestBody, responseText, isStream)
 	if estimated == nil {
 		return usage
 	}

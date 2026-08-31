@@ -207,7 +207,7 @@ func TestFillEstimatedUsageIfMissing(t *testing.T) {
 
 	// 只有 prompt、无 completion：completion 用响应文本估算补上，并标记为估计来源喵。
 	usage := &dto.Usage{PromptTokens: 100, CompletionTokens: 0, TotalTokens: 100}
-	got := fillEstimatedUsageIfMissing("deepseek-v4-flash", usage, requestBody, responseText)
+	got := fillEstimatedUsageIfMissing(nil, "deepseek-v4-flash", usage, requestBody, responseText, false)
 	require.NotNil(t, got)
 	require.Equal(t, 100, got.PromptTokens, "真实 prompt 必须保留")
 	require.Greater(t, got.CompletionTokens, 0, "输出 token 不能被估成 0")
@@ -216,7 +216,7 @@ func TestFillEstimatedUsageIfMissing(t *testing.T) {
 
 	// 两侧都有真实 token：原样返回，不标记估计喵。
 	usage = &dto.Usage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150}
-	got = fillEstimatedUsageIfMissing("deepseek-v4-flash", usage, requestBody, responseText)
+	got = fillEstimatedUsageIfMissing(nil, "deepseek-v4-flash", usage, requestBody, responseText, false)
 	require.NotNil(t, got)
 	require.Equal(t, 100, got.PromptTokens)
 	require.Equal(t, 50, got.CompletionTokens)
@@ -224,19 +224,19 @@ func TestFillEstimatedUsageIfMissing(t *testing.T) {
 
 	// 只有 completion、无 prompt：prompt 用请求体估算补上喵。
 	usage = &dto.Usage{PromptTokens: 0, CompletionTokens: 30, TotalTokens: 30}
-	got = fillEstimatedUsageIfMissing("deepseek-v4-flash", usage, requestBody, "")
+	got = fillEstimatedUsageIfMissing(nil, "deepseek-v4-flash", usage, requestBody, "", false)
 	require.NotNil(t, got)
 	require.Greater(t, got.PromptTokens, 0, "输入 token 不能被估成 0")
 	require.Equal(t, 30, got.CompletionTokens)
 
 	// 响应文本为空且 completion 缺失：无法估算，原样返回不崩溃喵。
 	usage = &dto.Usage{PromptTokens: 100, CompletionTokens: 0, TotalTokens: 100}
-	got = fillEstimatedUsageIfMissing("deepseek-v4-flash", usage, requestBody, "")
+	got = fillEstimatedUsageIfMissing(nil, "deepseek-v4-flash", usage, requestBody, "", false)
 	require.NotNil(t, got)
 	require.Equal(t, 0, got.CompletionTokens)
 
 	// 空 usage 返回 nil，保持调用方整体估算语义喵。
-	require.Nil(t, fillEstimatedUsageIfMissing("deepseek-v4-flash", nil, requestBody, responseText))
+	require.Nil(t, fillEstimatedUsageIfMissing(nil, "deepseek-v4-flash", nil, requestBody, responseText, false))
 }
 
 // TestBufferCustomStreamToDone 验证流转伪流全量缓存到 [DONE] 与断流分类喵。
