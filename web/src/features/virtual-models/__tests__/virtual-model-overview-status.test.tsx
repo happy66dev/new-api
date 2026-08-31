@@ -206,11 +206,9 @@ describe('VirtualModelOverviewStatus', () => {
     })
     // 当前请求数出现在实时区喵。
     expect(screen.getByText('2')).toBeInTheDocument()
-    // 活跃请求列表展示调用链：候选序号、候选名与已耗时喵。
-    expect(screen.getByText(/gpt-4\.1/)).toBeInTheDocument()
-    expect(screen.getByText(/claude-4-sonnet/)).toBeInTheDocument()
-    expect(screen.getByText(/Candidate 1/)).toBeInTheDocument()
-    expect(screen.getByText(/Candidate 2/)).toBeInTheDocument()
+    // 活跃请求列表展示调用链：候选正在被调用时显示「Calling <候选名>」而非「正在选择候选」喵。
+    expect(screen.getByText(/Calling gpt-4\.1/)).toBeInTheDocument()
+    expect(screen.getByText(/Calling claude-4-sonnet/)).toBeInTheDocument()
     expect(screen.getByText(/5s/)).toBeInTheDocument()
   })
 

@@ -166,6 +166,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			// 实体状态检测：虚拟模型请求以错误收尾时确保整体失败样本已记录；
 			// 内部函数按执行状态与已记录标记去重，普通请求与已成功记录均自动跳过喵。
 			middleware.RecordVirtualModelOverallProbe(c, false, "virtual_model_unavailable")
+			// 虚拟模型 relay 级失败统一补记 type=9 整体失败日志（此前内部候选链耗尽/透传仅 probe 无日志落库）喵。
+			// 内部按防重标记去重，与 abortWithOpenAiMessage 钩子、recordUserUpstreamModelFailureLog 均不重复喵。
+			middleware.RecordVirtualModelOverallFailure(c, string(newAPIError.GetErrorCode()), newAPIError.StatusCode)
 			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
 			// 虚拟模型候选可能已经把响应字节交给客户端，此时必须抑制最终错误正文喵。
 			_, isVirtualCandidateRequest := middleware.GetActiveVirtualModelCandidateAttempt(c)

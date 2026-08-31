@@ -124,8 +124,7 @@ export function VirtualModelOverviewStatus(
                   <span className='flex items-center gap-2 text-xs'>
                     {request.candidate_label ? (
                       <span className='inline-flex items-center gap-1'>
-                        {t('Candidate')} {request.candidate_index}:{' '}
-                        {request.candidate_label}
+                        {t('Calling')} {request.candidate_label}
                       </span>
                     ) : (
                       <span className='text-muted-foreground'>

@@ -325,6 +325,9 @@ func handleVirtualModelRequest(c *gin.Context, modelRequest *ModelRequest) bool 
 		abortWithOpenAiMessage(c, http.StatusNotFound, "virtual model not found", types.ErrorCode("virtual_model_not_found"))
 		return false
 	}
+	// 提前写入虚拟模型名上下文，使早期 abort（快照/冻结检查失败）与 custom 候选路径都能被整体失败日志钩子识别喵。
+	// 后续 applyInternalVirtualModelCandidate 会再次写入同值，重复设置无副作用喵。
+	common.SetContextKey(c, constant.ContextKeyVirtualModelName, virtualModel.VirtualModelName())
 	executionSnapshot, snapshotError := model.GetVirtualModelExecutionSnapshot(virtualModel.ID)
 	// 喵~防御：无法构造候选和规则的一致快照时安全拒绝，避免执行混合版本配置喵。
 	if snapshotError != nil || executionSnapshot == nil || len(executionSnapshot.Candidates) == 0 {
@@ -800,10 +803,64 @@ func recordVirtualModelCustomSuccess(c *gin.Context, useTimeSeconds int, usage *
 		ModelName:        executionState.virtualModelName,
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
-		UseTimeSeconds:   useTimeSeconds,
-		IsStream:         isUpstreamModelRequestStreaming(c),
-		Group:            group,
-		Other:            other,
+		// 成功日志也携带请求体内容预览，供日志页「Content」区块直接展示本次请求喵。
+		Content:        service.VirtualModelRequestContentPreview(c),
+		UseTimeSeconds: useTimeSeconds,
+		IsStream:       isUpstreamModelRequestStreaming(c),
+		Group:          group,
+		Other:          other,
+	})
+}
+
+// RecordVirtualModelOverallFailure 在虚拟模型请求以失败终局时记录一条 type=9 整体失败日志喵。
+// 覆盖 virtual_model_unavailable 中止与内部候选 relay 失败等此前无日志的收尾路径；
+// 请求内容写入 Content（日志页「Content」区块自动展示），上游响应体随候选尝试序列 candidates[].error_body 附带喵。
+// 防重：以 ContextKeyVirtualModelFailureLogged 标记，abort 与 relay 收尾双路径并发调用只落库一次喵。
+func RecordVirtualModelOverallFailure(c *gin.Context, errorClass string, httpStatus int) {
+	// 喵~防御：空上下文直接返回，避免空指针喵。
+	if c == nil {
+		return
+	}
+	// 喵~防御：已记录过失败日志则跳过，防止 abort 与 relay 收尾双路径重复落库喵。
+	if common.GetContextKeyBool(c, constant.ContextKeyVirtualModelFailureLogged) {
+		return
+	}
+	virtualModelName := common.GetContextKeyString(c, constant.ContextKeyVirtualModelName)
+	// 喵~防御：非虚拟模型请求或模型名缺失时跳过，普通请求不产生虚拟模型日志喵。
+	if virtualModelName == "" {
+		return
+	}
+	// 标记已记录（置于真实写入之前），防止并发收尾路径重复落库喵。
+	common.SetContextKey(c, constant.ContextKeyVirtualModelFailureLogged, true)
+	// 请求分组：优先取执行状态的候选分组，缺失时回退空串喵。
+	group := ""
+	useTimeSeconds := 0
+	if executionState, foundState := getVirtualModelExecutionState(c); foundState && executionState != nil {
+		if executionState.modelRequest != nil {
+			group = executionState.modelRequest.Group
+		}
+		// 总耗时取请求进入虚拟层到当前，供日志 Timing 展示失败请求滞留时长喵。
+		useTimeSeconds = int(time.Since(executionState.startTime).Seconds())
+	}
+	other := map[string]interface{}{
+		"virtual_model": virtualModelName,
+		"final_success": false,
+		"error_class":   errorClass,
+		"http_status":   httpStatus,
+	}
+	// 附加请求路径，供日志详情定位请求入口喵。
+	if c.Request != nil && c.Request.URL != nil && c.Request.URL.Path != "" {
+		other["request_path"] = c.Request.URL.Path
+	}
+	// 附加候选尝试序列（含各候选上游错误返回体），供详情「Candidate Attempts」展示喵。
+	model.InjectVirtualModelAttempts(c, other)
+	model.RecordVirtualModelLog(c, c.GetInt("id"), model.RecordVirtualModelLogParams{
+		ModelName:      virtualModelName,
+		Content:        service.VirtualModelRequestContentPreview(c),
+		UseTimeSeconds: useTimeSeconds,
+		IsStream:       isUpstreamModelRequestStreaming(c),
+		Group:          group,
+		Other:          other,
 	})
 }
 
@@ -1017,6 +1074,17 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 		apiKey = decryptedAPIKey
 		candidateRealModelName = referencedUpstreamModel.RealModelName
 		candidateAuthStyle = model.VirtualModelAuthStyle(referencedUpstreamModel.AuthStyle)
+		// 活跃请求标签补全：引用上游候选的快照 RealModelName 可能为空，解析出真实模型名后更新运行状态，
+		// 让「正在选择候选」在候选开始被调用时转为「正在调用 <真实模型名>」喵。
+		displayLabel := candidateRealModelName
+		if strings.TrimSpace(displayLabel) == "" {
+			displayLabel = referencedUpstreamModel.UserUpstreamModelName()
+		}
+		if executionState, foundState := getVirtualModelExecutionState(c); foundState && executionState != nil && executionState.inflightRequestID != "" {
+			if candidateSeq := common.GetContextKeyInt(c, constant.ContextKeyVirtualCandidateSeq); candidateSeq > 0 {
+				UpdateVirtualModelInflightCandidate(int64(executionState.virtualModelID), executionState.inflightRequestID, candidateSeq, displayLabel)
+			}
+		}
 	} else {
 		// 喵~防御：直填候选必须带有完整加密凭据和模型配置，缺失时绝不尝试外发请求喵。
 		if strings.TrimSpace(candidate.EncryptedBaseURL) == "" || strings.TrimSpace(candidate.EncryptedAPIKey) == "" || strings.TrimSpace(candidate.RealModelName) == "" {

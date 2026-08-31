@@ -849,10 +849,12 @@ func settleUserUpstreamModelCharge(c *gin.Context, ownerUserID int, upstreamMode
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
 		ModelName:        upstreamModel.UserUpstreamModelName(),
-		Group:            effectiveGroup,
-		UseTimeSeconds:   useTimeSeconds,
-		IsStream:         isStream,
-		Other:            other,
+		// 成功日志也携带请求体内容预览，供日志页「Content」区块展示本次请求喵。
+		Content:        service.VirtualModelRequestContentPreview(c),
+		Group:          effectiveGroup,
+		UseTimeSeconds: useTimeSeconds,
+		IsStream:       isStream,
+		Other:          other,
 	})
 }
 

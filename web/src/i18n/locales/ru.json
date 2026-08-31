@@ -4314,6 +4314,7 @@
     "Active requests": "Active requests",
     "Requests being processed right now": "Requests being processed right now",
     "Selecting candidate": "Selecting candidate",
+    "Calling": "Вызов",
     "Request error occurred": "Произошла ошибка запроса",
     "Request failed": "Запрос не выполнен",
     "Request flow": "Поток запросов",

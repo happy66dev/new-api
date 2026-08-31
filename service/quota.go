@@ -214,6 +214,16 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 	} else {
 		logContent = fmt.Sprintf("模型价格 %.2f，分组倍率 %.2f", modelPrice, groupRatio)
 	}
+	// 虚拟模型 internal 候选成功日志补充请求体内容预览，与文本路径保持一致喵。
+	if common.GetContextKeyInt(ctx, constant.ContextKeyVirtualLogType) > 0 {
+		if requestContentPreview := VirtualModelRequestContentPreview(ctx); requestContentPreview != "" {
+			// 喵~防御：既有计费摘要非空时用分隔符拼接，避免丢失计费信息喵。
+			if logContent != "" {
+				logContent += " | "
+			}
+			logContent += "请求内容: " + requestContentPreview
+		}
+	}
 
 	// record all the consume log even if quota is 0
 	if totalTokens == 0 {
@@ -352,6 +362,16 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 			modelRatio, completionRatio.InexactFloat64(), audioRatio.InexactFloat64(), audioCompletionRatio.InexactFloat64(), groupRatio)
 	} else {
 		logContent = fmt.Sprintf("模型价格 %.2f，分组倍率 %.2f", modelPrice, groupRatio)
+	}
+	// 虚拟模型 internal 候选成功日志补充请求体内容预览，与文本路径保持一致喵。
+	if common.GetContextKeyInt(ctx, constant.ContextKeyVirtualLogType) > 0 {
+		if requestContentPreview := VirtualModelRequestContentPreview(ctx); requestContentPreview != "" {
+			// 喵~防御：既有计费摘要非空时用分隔符拼接，避免丢失计费信息喵。
+			if logContent != "" {
+				logContent += " | "
+			}
+			logContent += "请求内容: " + requestContentPreview
+		}
 	}
 
 	// record all the consume log even if quota is 0

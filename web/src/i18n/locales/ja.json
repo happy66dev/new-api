@@ -4314,6 +4314,7 @@
     "Active requests": "Active requests",
     "Requests being processed right now": "Requests being processed right now",
     "Selecting candidate": "Selecting candidate",
+    "Calling": "呼び出し中",
     "Request error occurred": "リクエストエラーが発生しました",
     "Request failed": "リクエスト失敗",
     "Request flow": "リクエストフロー",
