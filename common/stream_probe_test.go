@@ -12,6 +12,12 @@ func TestStreamProbeContentChars(t *testing.T) {
 		want int
 	}{
 		{name: "openai chat delta", data: `{"choices":[{"delta":{"content":"Hello"}}]}`, want: 5},
+		{name: "deepseek reasoning content", data: `{"choices":[{"delta":{"reasoning_content":"Think"}}]}`, want: 5},
+		{name: "deepseek reasoning alias", data: `{"choices":[{"delta":{"reasoning":"Deep"}}]}`, want: 4},
+		{name: "reasoning preferred over empty content", data: `{"choices":[{"delta":{"content":"","reasoning_content":"abc"}}]}`, want: 3},
+		{name: "message reasoning content", data: `{"choices":[{"message":{"reasoning_content":"Msg"}}]}`, want: 3},
+		{name: "claude thinking delta", data: `{"delta":{"thinking":"Mull"}}`, want: 4},
+		{name: "top level delta reasoning", data: `{"delta":{"reasoning_content":"Top"}}`, want: 3},
 		{name: "openai message content", data: `{"choices":[{"message":{"content":"Hi"}}]}`, want: 2},
 		{name: "claude delta text", data: `{"delta":{"text":"World"}}`, want: 5},
 		{name: "gemini parts text", data: `{"candidates":[{"content":{"parts":[{"text":"Gemini"}]}}]}`, want: 6},

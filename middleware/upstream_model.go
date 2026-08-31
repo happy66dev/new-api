@@ -187,11 +187,12 @@ func SettleUpstreamModelRelaySuccess(c *gin.Context, ttftMs int64) {
 			}
 		}
 	}
-	// 耗时口径：总耗时取请求入口到当前，首字优先取上游首次响应时间，其次请求级打点兜底喵。
+	// 耗时口径：总耗时取请求入口到当前，首字取代理首次向客户端写字节的时刻，
+	// 未打点（relay 直传无候选写标记）时回退上游首次响应时间喵。
 	requestElapsedMs := time.Since(relayCtx.startTime).Milliseconds()
-	requestFirstByteMs := ttftMs
+	requestFirstByteMs := virtualModelFirstByteMs(c)
 	if requestFirstByteMs <= 0 {
-		requestFirstByteMs = virtualModelFirstByteMs(c)
+		requestFirstByteMs = ttftMs
 	}
 	// 成功结算：上游模型探测成功 + 独立 RMB 结算 + 日志喵。
 	result := &virtualmodelservice.UserUpstreamModelExecutionResult{Usage: usage, TtftMs: ttftMs}
@@ -418,13 +419,13 @@ func executeUserUpstreamModelPassthrough(c *gin.Context, upstreamModel *model.Us
 	if executionState, foundState := getVirtualModelExecutionState(c); foundState && executionState != nil && !executionState.startTime.IsZero() {
 		requestElapsedMs = time.Since(executionState.startTime).Milliseconds()
 	}
-	// 首字（TTFT）口径：优先取上游响应头到达时刻（与候选尝试序列的 ttft_ms 一致），
-	// 未测到时回退请求级首次写响应，再回退总耗时近似喵。
-	// 主人注意：流式场景首次写客户端受探测放流影响（长思考模型会把首次写拖到回答开始），
-	// 它不能代表「上游首个响应字节」，因此这里以 executionResult.TtftMs 为准喵。
-	requestFirstByteMs := executionResult.TtftMs
+	// 首字口径：取代理首次向客户端写字节的时刻（与客户端感知一致），
+	// 未打点时回退上游响应头到达时刻，再回退总耗时近似喵。
+	// 主人注意：探测已把推理增量计入内容，长思考模型会在思考阶段就放流，
+	// 首次写客户端的时刻与上游首字接近，因此这里以写客户端时刻为准喵。
+	requestFirstByteMs := virtualModelFirstByteMs(c)
 	if requestFirstByteMs <= 0 {
-		requestFirstByteMs = virtualModelFirstByteMs(c)
+		requestFirstByteMs = executionResult.TtftMs
 	}
 	if requestFirstByteMs <= 0 {
 		requestFirstByteMs = requestElapsedMs

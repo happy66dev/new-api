@@ -30,11 +30,17 @@ func TestCustomProbeContentCharsAnthropicDelta(t *testing.T) {
 	assert.Equal(t, len("你好世界"), customProbeContentChars(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"你好世界"}}`))
 	// 工具调用的 input_json_delta 无 delta.text，不计入文本内容喵。
 	assert.Equal(t, 0, customProbeContentChars(`{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"city\":\"北京\"}"}}`))
+	// Anthropic 思考增量（thinking_delta）：长思考模型的推理也视为业务内容，探测在思考阶段就放流喵。
+	assert.Equal(t, 4, customProbeContentChars(`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Mull"}}`))
 }
 
 // TestCustomProbeContentCharsOpenAI 验证 OpenAI 聊天增量按 delta.content 计数喵。
 func TestCustomProbeContentCharsOpenAI(t *testing.T) {
 	assert.Equal(t, 5, customProbeContentChars(`{"choices":[{"delta":{"content":"hello"}}]}`))
+	// DeepSeek 推理增量：无顶层 type 时经 StreamProbeContentChars 兜底计数，长思考模型提前放流喵。
+	assert.Equal(t, 5, customProbeContentChars(`{"choices":[{"delta":{"reasoning_content":"Think"}}]}`))
+	// 部分中转站的推理字段别名同样计数喵。
+	assert.Equal(t, 4, customProbeContentChars(`{"choices":[{"delta":{"reasoning":"Deep"}}]}`))
 	// 无 type 字段的未知负载保留兜底可见字符计数，避免非主流格式探测永久阻塞喵。
 	assert.Positive(t, customProbeContentChars(`{"foo":"bar"}`))
 }
