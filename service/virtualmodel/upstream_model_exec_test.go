@@ -127,6 +127,18 @@ func TestNormalizeUpstreamModelUsage(t *testing.T) {
 			want:  &dto.Usage{PromptTokens: 0, CompletionTokens: 0, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 0}},
 		},
 		{
+			// 推理 token 单独上报时并入输出，保证输出 token 包含思考量喵。
+			name:  "推理 token 并入输出",
+			input: &dto.Usage{PromptTokens: 100, CompletionTokens: 0, CompletionTokenDetails: dto.OutputTokenDetails{ReasoningTokens: 203}},
+			want:  &dto.Usage{PromptTokens: 100, CompletionTokens: 203, CompletionTokenDetails: dto.OutputTokenDetails{ReasoningTokens: 203}},
+		},
+		{
+			// completion 非零时不再叠加推理，避免把已含推理的输出重复计数喵。
+			name:  "completion 已含推理不叠加",
+			input: &dto.Usage{PromptTokens: 100, CompletionTokens: 300, CompletionTokenDetails: dto.OutputTokenDetails{ReasoningTokens: 203}},
+			want:  &dto.Usage{PromptTokens: 100, CompletionTokens: 300, CompletionTokenDetails: dto.OutputTokenDetails{ReasoningTokens: 203}},
+		},
+		{
 			// 空 usage 返回 nil，避免空指针喵。
 			name:  "空 usage 返回 nil",
 			input: nil,
@@ -152,6 +164,8 @@ func TestUsageHasTokens(t *testing.T) {
 	// Anthropic 风格字段非零也视为有 token，避免 usage 被误判为空喵。
 	require.True(t, usageHasTokens(&dto.Usage{InputTokens: 1}))
 	require.True(t, usageHasTokens(&dto.Usage{OutputTokens: 1}))
+	// 推理 token 单独上报也算有计费信息，避免整条 usage 被当成无 token 重新估算喵。
+	require.True(t, usageHasTokens(&dto.Usage{CompletionTokenDetails: dto.OutputTokenDetails{ReasoningTokens: 1}}))
 	// 全零视为无 token 喵。
 	require.False(t, usageHasTokens(&dto.Usage{}))
 }

@@ -37,13 +37,19 @@ func appendResponseContentFromLine(builder *strings.Builder, lineBytes []byte) {
 func appendResponseContentFromPayload(builder *strings.Builder, dataPayload []byte) {
 	// OpenAI Chat 增量 delta.content 喵。
 	if content := gjson.GetBytes(dataPayload, "choices.0.delta.content"); content.Exists() && content.Type == gjson.String {
-		builder.WriteString(content.String())
-		return
+		// 仅当 content 非空才作为本块唯一文本返回；
+		// 空 content 说明是推理块（DeepSeek 推理 chunk 常见 content:"" + reasoning_content），继续尝试 reasoning 喵。
+		if content.String() != "" {
+			builder.WriteString(content.String())
+			return
+		}
 	}
 	// OpenAI Chat 推理增量 delta.reasoning_content 喵。
 	if reasoning := gjson.GetBytes(dataPayload, "choices.0.delta.reasoning_content"); reasoning.Exists() && reasoning.Type == gjson.String {
-		builder.WriteString(reasoning.String())
-		return
+		if reasoning.String() != "" {
+			builder.WriteString(reasoning.String())
+			return
+		}
 	}
 	// 非流式 OpenAI message.content（字符串形式）喵。
 	if content := gjson.GetBytes(dataPayload, "choices.0.message.content"); content.Exists() && content.Type == gjson.String {

@@ -31,6 +31,19 @@ func TestAppendResponseContentFromLineAnthropicDelta(t *testing.T) {
 	assert.Equal(t, "好的", builder.String())
 }
 
+// TestAppendResponseContentFromLineDeepSeekReasoning 验证 DeepSeek 推理增量被提取，不被空 content 截断喵。
+func TestAppendResponseContentFromLineDeepSeekReasoning(t *testing.T) {
+	var builder strings.Builder
+	// 推理 chunk：content 为空但 reasoning_content 有文本，此前会被空 content 直接 return 跳过喵。
+	appendResponseContentFromLine(&builder, []byte(`data: {"choices":[{"delta":{"reasoning_content":"深入思考","content":""}}]}`))
+	// 纯 reasoning 块（无 content 字段）也应提取喵。
+	appendResponseContentFromLine(&builder, []byte(`data: {"choices":[{"delta":{"reasoning_content":"再想想"}}]}`))
+	// 答案块：content 非空正常提取喵。
+	appendResponseContentFromLine(&builder, []byte(`data: {"choices":[{"delta":{"content":"结论","reasoning_content":""}}]}`))
+	// 推理与答案文本都应进入响应文本，供 completion 估算避免输出为 0 喵。
+	assert.Equal(t, "深入思考再想想结论", builder.String())
+}
+
 // TestAppendResponseContentFromLineToolCalls 验证 OpenAI 工具调用参数被合拼供计费近似喵。
 func TestAppendResponseContentFromLineToolCalls(t *testing.T) {
 	var builder strings.Builder

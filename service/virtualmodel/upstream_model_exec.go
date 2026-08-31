@@ -397,14 +397,16 @@ func extractUsageFromSSELine(lineBytes []byte, target *dto.Usage) {
 	*target = usage
 }
 
-// usageHasTokens 判断 usage 是否携带任何 token 计数（含 input/output 风格字段）喵。
+// usageHasTokens 判断 usage 是否携带任何 token 计数（含 input/output 风格字段与推理 token）喵。
 func usageHasTokens(usage *dto.Usage) bool {
 	// 喵~防御：空 usage 视为无 token 喵。
 	if usage == nil {
 		return false
 	}
 	return usage.PromptTokens != 0 || usage.CompletionTokens != 0 || usage.TotalTokens != 0 ||
-		usage.InputTokens != 0 || usage.OutputTokens != 0
+		usage.InputTokens != 0 || usage.OutputTokens != 0 ||
+		// 推理 token 单独上报时也算有计费信息，避免整条 usage 被当成无 token 重新估算喵。
+		usage.CompletionTokenDetails.ReasoningTokens != 0
 }
 
 // fillEstimatedUsageIfMissing 在上游 usage 缺失某部分 token 时，用请求/响应文本估算补全喵。
@@ -462,6 +464,11 @@ func normalizeUpstreamModelUsage(usage *dto.Usage) *dto.Usage {
 	}
 	if usage.CompletionTokens == 0 && usage.OutputTokens > 0 {
 		usage.CompletionTokens = usage.OutputTokens
+	}
+	// 推理 token 计入输出：部分上游（DeepSeek/xAI）把推理单独放 completion_tokens_details.reasoning_tokens，
+	// 而 completion_tokens 为 0（或只算正文），此时把推理并入输出，保证输出 token 包含思考量喵。
+	if usage.CompletionTokens == 0 && usage.CompletionTokenDetails.ReasoningTokens > 0 {
+		usage.CompletionTokens = usage.CompletionTokenDetails.ReasoningTokens
 	}
 	// 缓存命中回填：标准字段优先，其次 DeepSeek 的 prompt_cache_hit_tokens，再 Anthropic 的 input_tokens_details.cached_tokens 喵。
 	// 回填后计费按 prompt_tokens - cached_tokens 计算基础输入价，等价于把缓存命中从输入扣除喵。
