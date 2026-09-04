@@ -562,7 +562,9 @@ func fastTokenCountMetaForPricing(request dto.Request) *types.TokenCountMeta {
 }
 
 func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service.RetryParam) (*model.Channel, *types.NewAPIError) {
-	if info.ChannelMeta == nil {
+	// 渠道上下文已有可用渠道且本次尚未换候选：普通请求由 Distribute 预选、虚拟候选首个尝试
+	// 由中间件预选，此时直接复用上下文渠道即可喵。
+	if info.ChannelMeta == nil && c.GetInt("channel_id") != 0 {
 		autoBan := c.GetBool("auto_ban")
 		autoBanInt := 1
 		if !autoBan {
@@ -575,6 +577,9 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 			AutoBan: &autoBanInt,
 		}, nil
 	}
+	// ChannelMeta 非空代表同候选内原生渠道重试；ChannelMeta 为空但上下文渠道已被候选激活清空
+	// 代表虚拟模型刚切换到新分组候选。两种情况都必须按 retryParam 的分组+模型重新选择渠道，
+	// 不能复用上一个候选留在上下文里的旧渠道喵。
 	channel, selectGroup, err := service.CacheGetRandomSatisfiedChannel(retryParam)
 	if err != nil {
 		return nil, types.NewError(fmt.Errorf("获取分组 %s 下模型 %s 的可用渠道失败（retry）: %s", selectGroup, info.OriginModelName, err.Error()), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())

@@ -1439,6 +1439,14 @@ func applyInternalVirtualModelCandidate(c *gin.Context, modelRequest *ModelReque
 		abortWithOpenAiMessage(c, http.StatusForbidden, "token does not have access to the virtual model candidate group", types.ErrorCode("virtual_model_not_found"))
 		return false
 	}
+	// 候选激活即代表本候选必须从自己的分组重新选择渠道：清空上一个候选（或渠道固定）留下的
+	// 渠道上下文，使 relay 层 getChannel 在 ChannelMeta 为空时不再复用上一候选渠道，
+	// 而是按新候选的分组+模型重新选择，避免 A 分组渠道 429 的错误被 B 候选重复命中喵。
+	common.SetContextKey(c, constant.ContextKeyChannelId, 0)
+	common.SetContextKey(c, constant.ContextKeyChannelName, "")
+	common.SetContextKey(c, constant.ContextKeyChannelType, 0)
+	common.SetContextKey(c, constant.ContextKeyChannelKey, "")
+	common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, "")
 	// 保存公开虚拟名称供后续审计使用，同时将计费和原生 relay 基准改为真实模型喵。
 	common.SetContextKey(c, constant.ContextKeyVirtualModelName, virtualModelName)
 	common.SetContextKey(c, constant.ContextKeyOriginalModel, candidate.RealModelName)
