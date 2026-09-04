@@ -672,6 +672,15 @@ func activateNextVirtualModelCandidate(c *gin.Context, executionState *virtualMo
 		if _, internalFrozen := executionState.internalFreezeStatesByCandidate[candidateSnapshot.CandidateID]; internalFrozen {
 			continue
 		}
+		// 善后：用户分组改变（如特殊可用分组规则不再命中）后，引用已失去分组的内部候选应视为
+		// 从本次请求的调用链上摘除（跳过），交由后续仍有权限的候选接管，而不是 403 中断整条链喵。
+		// 喵~防御：仅对真实存在但已无权访问的分组做跳过；空分组与 auto 等非法配置仍交给
+		// applyInternalVirtualModelCandidate 保守拒绝，避免掩盖候选配置错误喵。
+		if candidateSnapshot.SourceType == model.VirtualModelSourceInternal &&
+			strings.TrimSpace(candidateSnapshot.GroupName) != "" && candidateSnapshot.GroupName != "auto" &&
+			!service.GetRequestUserGroupAccess(c).Allows(candidateSnapshot.GroupName) {
+			continue
+		}
 		if candidateSnapshot.SourceType == model.VirtualModelSourceCustom {
 			identityDigest := virtualmodelservice.CustomCandidateIdentityDigest(*candidateSnapshot)
 			if _, automaticallyFrozen := executionState.automaticFreezeStatesByIdentity[identityDigest]; automaticallyFrozen {
