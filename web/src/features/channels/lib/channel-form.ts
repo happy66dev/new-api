@@ -21,6 +21,7 @@ import { z } from 'zod'
 import {
   CLAUDE_FIELD_PASSTHROUGH_TYPES,
   CHANNEL_TYPE_NEW_API,
+  CHANNEL_TYPE_TASK_PLUGIN,
   CHANNEL_STATUS,
   ERROR_MESSAGES,
   FIELD_PASSTHROUGH_TYPES,
@@ -202,6 +203,7 @@ export const channelFormSchema = z
     name: z.string().min(1, ERROR_MESSAGES.REQUIRED_NAME),
     type: z.number().min(0, ERROR_MESSAGES.REQUIRED_TYPE),
     base_url: z.string().optional(),
+    task_plugin_key: z.string().optional(),
     key: z.string(),
     openai_organization: z.string().optional(),
     models: z.string().min(1, ERROR_MESSAGES.REQUIRED_MODELS),
@@ -257,6 +259,7 @@ export const channelFormSchema = z
     force_format: z.boolean().optional(),
     thinking_to_content: z.boolean().optional(),
     use_responses_api: z.boolean().optional(),
+    responses_to_chat_completions: z.boolean().optional(),
     fake_non_stream: z.boolean().optional(),
     simulate_remote_compact_v2: z.boolean().optional(),
     proxy: z
@@ -289,6 +292,7 @@ export const channelFormSchema = z
     claude_beta_query: z.boolean().optional(), // Anthropic: beta query passthrough
     claude_cache_control: z.boolean().optional(), // Anthropic: stable prefix cache control
     disable_task_polling_sleep: z.boolean().optional(),
+    agnes_auto_image_url: z.boolean().optional(),
     // Upstream model update settings (stored in settings JSON)
     upstream_model_update_check_enabled: z.boolean().optional(),
     upstream_model_update_auto_sync_enabled: z.boolean().optional(),
@@ -296,7 +300,9 @@ export const channelFormSchema = z
   })
   .superRefine((data, ctx) => {
     if (
-      [3, 8, 36, 45, CHANNEL_TYPE_NEW_API].includes(data.type) &&
+      [3, 8, 36, 45, CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_TASK_PLUGIN].includes(
+        data.type
+      ) &&
       !data.base_url?.trim()
     ) {
       addRequiredIssue(
@@ -304,6 +310,12 @@ export const channelFormSchema = z
         'base_url',
         'Base URL is required for this channel type'
       )
+    }
+    if (
+      data.type === CHANNEL_TYPE_TASK_PLUGIN &&
+      !data.task_plugin_key?.trim()
+    ) {
+      addRequiredIssue(ctx, 'task_plugin_key', 'Task plugin is required')
     }
 
     if (data.type === CHANNEL_TYPE_ADVANCED_CUSTOM) {
@@ -416,6 +428,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   name: '',
   type: 1,
   base_url: '',
+  task_plugin_key: '',
   key: '',
   openai_organization: '',
   models: '',
@@ -442,6 +455,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   force_format: false,
   thinking_to_content: false,
   use_responses_api: false,
+  responses_to_chat_completions: false,
   fake_non_stream: false,
   simulate_remote_compact_v2: false,
   proxy: '',
@@ -466,6 +480,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   claude_beta_query: false,
   claude_cache_control: false,
   disable_task_polling_sleep: false,
+  agnes_auto_image_url: false,
   upstream_model_update_check_enabled: false,
   upstream_model_update_auto_sync_enabled: false,
   upstream_model_update_ignored_models: '',
@@ -484,9 +499,11 @@ export function transformChannelToFormDefaults(
 ): ChannelFormValues {
   // Parse channel extra settings from setting field
   let extraSettings = {
+    task_plugin_key: '',
     force_format: false,
     thinking_to_content: false,
     use_responses_api: false,
+    responses_to_chat_completions: false,
     fake_non_stream: false,
     simulate_remote_compact_v2: false,
     proxy: '',
@@ -506,9 +523,12 @@ export function transformChannelToFormDefaults(
         parsed.http2_connection_shards
       )
       extraSettings = {
+        task_plugin_key: parsed.task_plugin_key || '',
         force_format: parsed.force_format || false,
         thinking_to_content: parsed.thinking_to_content || false,
         use_responses_api: parsed.use_responses_api || false,
+        responses_to_chat_completions:
+          parsed.responses_to_chat_completions || false,
         fake_non_stream: parsed.fake_non_stream || false,
         simulate_remote_compact_v2: parsed.simulate_remote_compact_v2 || false,
         proxy: parsed.proxy || '',
@@ -542,6 +562,7 @@ export function transformChannelToFormDefaults(
   let claudeBetaQuery = false
   let claudeCacheControl = false
   let disableTaskPollingSleep = false
+  let agnesAutoImageURL = false
   let upstreamModelUpdateCheckEnabled = false
   let upstreamModelUpdateAutoSyncEnabled = false
   let upstreamModelUpdateIgnoredModels = ''
@@ -563,6 +584,7 @@ export function transformChannelToFormDefaults(
       claudeBetaQuery = parsed.claude_beta_query === true
       claudeCacheControl = parsed.claude_cache_control === true
       disableTaskPollingSleep = parsed.disable_task_polling_sleep === true
+      agnesAutoImageURL = parsed.agnes_auto_image_url === true
       upstreamModelUpdateCheckEnabled =
         parsed.upstream_model_update_check_enabled === true
       upstreamModelUpdateAutoSyncEnabled =
@@ -622,6 +644,7 @@ export function transformChannelToFormDefaults(
     claude_beta_query: claudeBetaQuery,
     claude_cache_control: claudeCacheControl,
     disable_task_polling_sleep: disableTaskPollingSleep,
+    agnes_auto_image_url: agnesAutoImageURL,
     allow_safety_identifier: allowSafetyIdentifier,
     upstream_model_update_check_enabled: upstreamModelUpdateCheckEnabled,
     upstream_model_update_auto_sync_enabled: upstreamModelUpdateAutoSyncEnabled,
@@ -635,10 +658,16 @@ export function transformChannelToFormDefaults(
  */
 export function buildSettingJSON(formData: ChannelFormValues): string {
   const settingObj: Record<string, unknown> = {
+    task_plugin_key:
+      formData.type === CHANNEL_TYPE_TASK_PLUGIN
+        ? formData.task_plugin_key?.trim() || ''
+        : undefined,
     force_format: formData.force_format || false,
     thinking_to_content: formData.thinking_to_content || false,
     use_responses_api:
       formData.type === 1 && formData.use_responses_api === true,
+    responses_to_chat_completions:
+      formData.type === 1 && formData.responses_to_chat_completions === true,
     fake_non_stream: formData.type === 1 && formData.fake_non_stream === true,
     simulate_remote_compact_v2: formData.simulate_remote_compact_v2 === true,
     proxy: formData.proxy?.trim() || '',
@@ -772,6 +801,11 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
 
   settingsObj.disable_task_polling_sleep =
     formData.disable_task_polling_sleep === true
+  if (formData.type === 63) {
+    settingsObj.agnes_auto_image_url = formData.agnes_auto_image_url === true
+  } else if ('agnes_auto_image_url' in settingsObj) {
+    delete settingsObj.agnes_auto_image_url
+  }
 
   // Upstream model update settings (for model-fetchable channel types)
   if (MODEL_FETCHABLE_TYPES.has(formData.type)) {

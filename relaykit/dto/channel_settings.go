@@ -11,9 +11,11 @@ import (
 )
 
 type ChannelSettings struct {
+	TaskPluginKey              string `json:"task_plugin_key,omitempty"`
 	ForceFormat                bool   `json:"force_format,omitempty"`
 	ThinkingToContent          bool   `json:"thinking_to_content,omitempty"`
 	UseResponsesAPI            bool   `json:"use_responses_api,omitempty"`
+	ResponsesToChatCompletions bool   `json:"responses_to_chat_completions,omitempty"`
 	FakeNonStream              bool   `json:"fake_non_stream,omitempty"`
 	SimulateRemoteCompactV2    bool   `json:"simulate_remote_compact_v2,omitempty"`
 	Proxy                      string `json:"proxy"`
@@ -74,6 +76,7 @@ const (
 )
 
 type ChannelOtherSettings struct {
+	AgnesAutoImageURL                     bool                  `json:"agnes_auto_image_url,omitempty"`
 	AzureResponsesVersion                 string                `json:"azure_responses_version,omitempty"`
 	VertexKeyType                         VertexKeyType         `json:"vertex_key_type,omitempty"` // "json" or "api_key"
 	OpenRouterEnterprise                  *bool                 `json:"openrouter_enterprise,omitempty"`

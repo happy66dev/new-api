@@ -134,6 +134,7 @@ import {
   getChannelKey,
   getGroups,
   getPrefillGroups,
+  getTaskPluginOptions,
   refreshCodexCredential,
 } from '../../api'
 import {
@@ -141,6 +142,8 @@ import {
   CLAUDE_FIELD_PASSTHROUGH_TYPES,
   CHANNEL_STATUS_LABELS,
   CHANNEL_TYPE_OPTIONS,
+  CHANNEL_TYPE_TASK_PLUGIN,
+  channelTypeOptionsForTaskPluginBind,
   CHANNEL_TYPE_WARNINGS,
   ERROR_MESSAGES,
   FIELD_PASSTHROUGH_TYPES,
@@ -287,6 +290,7 @@ const SENSITIVE_FORM_FIELDS = [
   'force_format',
   'thinking_to_content',
   'use_responses_api',
+  'responses_to_chat_completions',
   'fake_non_stream',
   'simulate_remote_compact_v2',
   'proxy',
@@ -305,6 +309,7 @@ const SENSITIVE_FORM_FIELDS = [
   'claude_beta_query',
   'claude_cache_control',
   'disable_task_polling_sleep',
+  'agnes_auto_image_url',
   'upstream_model_update_check_enabled',
   'upstream_model_update_auto_sync_enabled',
   'upstream_model_update_ignored_models',
@@ -348,6 +353,7 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.force_format ||
     values.thinking_to_content ||
     values.use_responses_api ||
+    values.responses_to_chat_completions ||
     values.fake_non_stream ||
     values.simulate_remote_compact_v2 ||
     values.pass_through_body_enabled ||
@@ -360,7 +366,8 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.claude_cache_control ||
     values.upstream_model_update_check_enabled ||
     values.upstream_model_update_auto_sync_enabled ||
-    values.upstream_model_update_ignored_models?.trim()
+    values.upstream_model_update_ignored_models?.trim() ||
+    values.agnes_auto_image_url
   )
 }
 
@@ -630,6 +637,11 @@ export function ChannelMutateDrawer({
     ADMIN_PERMISSION_RESOURCES.CHANNEL,
     ADMIN_PERMISSION_ACTIONS.SENSITIVE_WRITE
   )
+  const canBindTaskPlugin = hasPermission(
+    currentUser,
+    ADMIN_PERMISSION_RESOURCES.TASK_PLUGIN,
+    ADMIN_PERMISSION_ACTIONS.BIND
+  )
   const canRevealChannelKey = currentUser?.role === ROLE.SUPER_ADMIN
   const [fetchModelsDialogOpen, setFetchModelsDialogOpen] = useState(false)
   const [channelKey, setChannelKey] = useState<string | null>(null)
@@ -759,6 +771,9 @@ export function ChannelMutateDrawer({
   const currentForceFormat = form.watch('force_format')
   const currentThinkingToContent = form.watch('thinking_to_content')
   const currentUseResponsesAPI = form.watch('use_responses_api')
+  const currentResponsesToChatCompletions = form.watch(
+    'responses_to_chat_completions'
+  )
   const currentFakeNonStream = form.watch('fake_non_stream')
   const currentSimulateRemoteCompactV2 = form.watch(
     'simulate_remote_compact_v2'
@@ -948,13 +963,20 @@ export function ChannelMutateDrawer({
         ?.label || `#${currentType}`,
     [currentType]
   )
+  const taskPluginOptionsQuery = useQuery({
+    queryKey: ['task-plugin-options'],
+    queryFn: getTaskPluginOptions,
+    enabled: currentType === CHANNEL_TYPE_TASK_PLUGIN && canBindTaskPlugin,
+  })
 
   const channelTypeOptions = useMemo(() => {
-    const options = CHANNEL_TYPE_OPTIONS.map((option) => ({
-      value: String(option.value),
-      label: t(option.label),
-      icon: <ChannelTypeLogo type={option.value} size={16} />,
-    }))
+    const options = channelTypeOptionsForTaskPluginBind(canBindTaskPlugin).map(
+      (option) => ({
+        value: String(option.value),
+        label: t(option.label),
+        icon: <ChannelTypeLogo type={option.value} size={16} />,
+      })
+    )
     if (!options.some((option) => Number(option.value) === currentType)) {
       options.push({
         value: String(currentType),
@@ -963,7 +985,7 @@ export function ChannelMutateDrawer({
       })
     }
     return options
-  }, [currentType, t])
+  }, [canBindTaskPlugin, currentType, t])
 
   const formErrors = form.formState.errors
   const identityHasErrors = Boolean(
@@ -1040,6 +1062,7 @@ export function ChannelMutateDrawer({
     currentForceFormat ||
     currentThinkingToContent ||
     currentUseResponsesAPI ||
+    currentResponsesToChatCompletions ||
     currentFakeNonStream ||
     currentSimulateRemoteCompactV2 ||
     currentPassThroughBodyEnabled ||
@@ -2051,6 +2074,81 @@ export function ChannelMutateDrawer({
                             />
                           </fieldset>
 
+                          {currentType === CHANNEL_TYPE_TASK_PLUGIN && (
+                            <FormField
+                              control={form.control}
+                              name='task_plugin_key'
+                              render={({ field }) => (
+                                <FormItem>
+                                  <FormLabel>{t('Task plugin *')}</FormLabel>
+                                  {canBindTaskPlugin ? (
+                                    <Select
+                                      value={field.value}
+                                      onValueChange={(value) => {
+                                        field.onChange(value)
+                                        const plugin =
+                                          taskPluginOptionsQuery.data?.find(
+                                            (item) => item.key === value
+                                          )
+                                        if (plugin?.models?.length) {
+                                          form.setValue(
+                                            'models',
+                                            formatModelsArray(plugin.models),
+                                            {
+                                              shouldDirty: true,
+                                            }
+                                          )
+                                        }
+                                      }}
+                                      items={(
+                                        taskPluginOptionsQuery.data ?? []
+                                      ).map((plugin) => ({
+                                        value: plugin.key,
+                                        label: `${plugin.name} (${plugin.key})`,
+                                      }))}
+                                    >
+                                      <FormControl>
+                                        <SelectTrigger>
+                                          <SelectValue
+                                            placeholder={t(
+                                              'Select task plugin'
+                                            )}
+                                          />
+                                        </SelectTrigger>
+                                      </FormControl>
+                                      <SelectContent>
+                                        {(
+                                          taskPluginOptionsQuery.data ?? []
+                                        ).map((plugin) => (
+                                          <SelectItem
+                                            key={plugin.key}
+                                            value={plugin.key}
+                                          >
+                                            {plugin.name} ({plugin.key})
+                                          </SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                  ) : (
+                                    <FormControl>
+                                      <Input
+                                        readOnly
+                                        value={field.value ?? ''}
+                                        className='font-mono'
+                                      />
+                                    </FormControl>
+                                  )}
+                                  <FormDescription>
+                                    {t(
+                                      'Selecting a plugin fills its declared models.'
+                                    )}
+                                  </FormDescription>
+                                  <FormMessage />
+                                </FormItem>
+                              )}
+                            />
+                          )}
+
                           <FormField
                             control={form.control}
                             name='name'
@@ -2801,7 +2899,11 @@ export function ChannelMutateDrawer({
                                 name='base_url'
                                 render={({ field }) => (
                                   <FormItem>
-                                    <FormLabel>{t('Base URL')}</FormLabel>
+                                    <FormLabel>
+                                      {currentType === CHANNEL_TYPE_TASK_PLUGIN
+                                        ? t('Base URL *')
+                                        : t('Base URL')}
+                                    </FormLabel>
                                     <FormControl>
                                       <Input
                                         placeholder={t(
@@ -4147,6 +4249,32 @@ export function ChannelMutateDrawer({
                                   />
                                   <FormField
                                     control={form.control}
+                                    name='responses_to_chat_completions'
+                                    render={({ field }) => (
+                                      <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
+                                        <div className='space-y-0.5'>
+                                          <FormLabel>
+                                            {t(
+                                              'Responses -> ChatCompletions Compatibility'
+                                            )}
+                                          </FormLabel>
+                                          <FormDescription>
+                                            {t(
+                                              'Convert Responses requests to Chat Completions for this channel'
+                                            )}
+                                          </FormDescription>
+                                        </div>
+                                        <FormControl>
+                                          <Switch
+                                            checked={field.value}
+                                            onCheckedChange={field.onChange}
+                                          />
+                                        </FormControl>
+                                      </FormItem>
+                                    )}
+                                  />
+                                  <FormField
+                                    control={form.control}
                                     name='fake_non_stream'
                                     render={({ field }) => (
                                       <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
@@ -4271,6 +4399,32 @@ export function ChannelMutateDrawer({
                                   </FormItem>
                                 )}
                               />
+
+                              {currentType === 63 && (
+                                <FormField
+                                  control={form.control}
+                                  name='agnes_auto_image_url'
+                                  render={({ field }) => (
+                                    <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
+                                      <div className='space-y-0.5'>
+                                        <FormLabel>
+                                          {t('Automatically convert base64 images to URLs')}
+                                        </FormLabel>
+                                        <FormDescription>
+                                          {t('Upload incoming base64 images through the configured Meshy2API image proxy for Agnes')}
+                                        </FormDescription>
+                                      </div>
+                                      <FormControl>
+                                        <Switch
+                                          checked={field.value === true}
+                                          onCheckedChange={field.onChange}
+                                          disabled={sensitiveLocked}
+                                        />
+                                      </FormControl>
+                                    </FormItem>
+                                  )}
+                                />
+                              )}
                             </div>
 
                             <FormField

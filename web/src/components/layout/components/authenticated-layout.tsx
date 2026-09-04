@@ -90,6 +90,7 @@ export function AuthenticatedLayout(props: AuthenticatedLayoutProps) {
                   '@container/content',
                   'h-[calc(100svh-var(--app-header-height,0px))]',
                   'min-h-0 overflow-hidden',
+                  'pb-0',
                   'peer-data-[variant=inset]:h-[calc(100svh-var(--app-header-height,0px)-(var(--spacing)*4))]',
                   backgroundImage && 'backdrop-blur-sm'
                 )}

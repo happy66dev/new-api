@@ -56,11 +56,14 @@ const (
 	ChannelTypeReplicate      = 56
 	ChannelTypeCodex          = 57
 	ChannelTypeAdvancedCustom = 58
-	ChannelTypeMeshy2API      = 59
-	ChannelTypeUnrealSpeech   = 60
-	ChannelTypeSub2API        = 61
-	ChannelTypeNewAPI         = 62
-	ChannelTypeDummy          // this one is only for count, do not add any channel after this
+	// Keep channel IDs stable for existing installations.
+	ChannelTypeMeshy2API    = 59
+	ChannelTypeUnrealSpeech = 60
+	ChannelTypeSub2API      = 61
+	ChannelTypeNewAPI       = 62
+	ChannelTypeAgnes        = 63
+	ChannelTypeTaskPlugin   = 64
+	ChannelTypeDummy        // this one is only for count, do not add any channel after this
 
 )
 
@@ -126,9 +129,21 @@ var ChannelBaseURLs = []string{
 	"",                                          //58
 	"",                                          //59
 	"https://api.v8.unrealspeech.com",           //60
-	"",                                          //60
 	"",                                          //61
 	"",                                          //62
+	"https://apihub.agnes-ai.com",               //63
+	"",                                          //64
+	"",                                          //65
+}
+
+func GetChannelBaseURL(channelType int) string {
+	if channelType == ChannelTypeTaskPlugin {
+		return ""
+	}
+	if channelType < 0 || channelType >= len(ChannelBaseURLs) {
+		return ""
+	}
+	return ChannelBaseURLs[channelType]
 }
 
 var ChannelTypeNames = map[int]string{
@@ -191,6 +206,8 @@ var ChannelTypeNames = map[int]string{
 	ChannelTypeUnrealSpeech:   "UnrealSpeech",
 	ChannelTypeSub2API:        "Sub2API",
 	ChannelTypeNewAPI:         "New API",
+	ChannelTypeAgnes:          "Agnes",
+	ChannelTypeTaskPlugin:     "Task Plugin",
 }
 
 func GetChannelTypeName(channelType int) string {

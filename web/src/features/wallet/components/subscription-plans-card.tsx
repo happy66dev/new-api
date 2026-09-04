@@ -60,7 +60,6 @@ import { formatBillingCurrencyFromUSD } from '@/lib/currency'
 import { formatQuota } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
-import { getDisplayedBillingPreference } from '../lib/billing-preference'
 import type { PaymentMethod, TopupInfo } from '../types'
 
 interface SubscriptionPlansCardProps {
@@ -193,12 +192,9 @@ export function SubscriptionPlansCard({
   const hasAny = allSubscriptions.length > 0
   const isAvailable = loading || plans.length > 0 || hasAny
   const disablePref = !hasActive
-  const displayPref = getDisplayedBillingPreference(
-    billingPreference,
-    hasActive
-  )
-  const showWalletFallbackNotice =
-    disablePref && billingPreference === 'subscription_first'
+  const isSubPref =
+    billingPreference === 'subscription_first' ||
+    billingPreference === 'subscription_only'
 
   const planPurchaseCountMap = useMemo(() => {
     const map = new Map<number, number>()
@@ -235,7 +231,7 @@ export function SubscriptionPlansCard({
     const total = Number(sub?.subscription?.amount_total || 0)
     const used = Number(sub?.subscription?.amount_used || 0)
     if (total <= 0) return 0
-    return Math.min(100, Math.max(0, Math.round((used / total) * 100)))
+    return Math.round((used / total) * 100)
   }
 
   const getLimitUsagePercent = (used: number, limit: number) => {
@@ -340,12 +336,12 @@ export function SubscriptionPlansCard({
                     label: getBillingPreferenceLabel('wallet_only', t),
                   },
                 ]}
-                value={displayPref}
+                value={billingPreference}
                 onValueChange={(v) => v !== null && handlePreferenceChange(v)}
               >
                 <SelectTrigger className='h-8 flex-1 text-xs sm:w-[140px] sm:flex-none'>
                   <SelectValue>
-                    {getBillingPreferenceLabel(displayPref, t)}
+                    {getBillingPreferenceLabel(billingPreference, t)}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent alignItemWithTrigger={false}>
@@ -387,14 +383,17 @@ export function SubscriptionPlansCard({
             </div>
           </div>
 
-          {showWalletFallbackNotice && (
+          {disablePref && isSubPref && (
             <p className='text-muted-foreground mt-2 text-xs'>
-              {t(
-                'Preference saved as {{pref}}, but no active subscription. Wallet will be used automatically.',
-                {
-                  pref: t('Subscription First'),
-                }
-              )}
+              {billingPreference === 'subscription_only'
+                ? t(
+                    'Preference saved as {{pref}}, but no active subscription. Requests will be rejected.',
+                    { pref: t('Subscription Only') }
+                  )
+                : t(
+                    'Preference saved as {{pref}}, but no active subscription. Wallet will be used automatically.',
+                    { pref: t('Subscription First') }
+                  )}
             </p>
           )}
 
@@ -503,75 +502,60 @@ export function SubscriptionPlansCard({
                       )}
                       {usageLimits.map((limit) => {
                         const remaining = Math.max(0, limit.limit - limit.used)
-                        const limitUsagePercent = getLimitUsagePercent(
+                        const usage = getLimitUsagePercent(
                           limit.used,
                           limit.limit
                         )
                         return (
-                          <div key={limit.key} className='mt-1'>
-                            <div className='text-muted-foreground'>
-                              {limit.label}:{' '}
-                              <Tooltip>
-                                <TooltipTrigger
-                                  render={<span className='cursor-help' />}
-                                >
-                                  {formatQuota(limit.used)}/
-                                  {formatQuota(limit.limit)} · {t('Remaining')}{' '}
-                                  {formatQuota(remaining)}
-                                </TooltipTrigger>
-                                <TooltipContent>
-                                  {t('Raw Quota')}: {limit.used}/{limit.limit} ·{' '}
-                                  {t('Remaining')} {remaining}
-                                </TooltipContent>
-                              </Tooltip>
+                          <div
+                            key={limit.key}
+                            className='text-muted-foreground mt-1'
+                          >
+                            {limit.label}: {formatQuota(limit.used)}/
+                            {formatQuota(limit.limit)} · {t('Remaining')}{' '}
+                            {formatQuota(remaining)}
+                            <span className='ml-2'>
+                              {t('Used')} {usage}%
+                            </span>
+                            {isActive && limit.nextResetTime > 0 && (
                               <span className='ml-2'>
-                                {t('Used')} {limitUsagePercent}%
+                                {t('Next reset')}:{' '}
+                                {new Date(
+                                  limit.nextResetTime * 1000
+                                ).toLocaleString()}
                               </span>
-                              {isActive && limit.nextResetTime > 0 && (
-                                <span className='ml-2'>
-                                  {t('Next reset')}:{' '}
-                                  {new Date(
-                                    limit.nextResetTime * 1000
-                                  ).toLocaleString()}
-                                </span>
-                              )}
-                            </div>
+                            )}
                             {isActive && (
-                              <Progress
-                                value={limitUsagePercent}
-                                className='mt-2 h-1.5'
-                              />
+                              <Progress value={usage} className='mt-2 h-1.5' />
                             )}
                           </div>
                         )
                       })}
-                      {totalAmount >= 0 && (
-                        <div className='text-muted-foreground mt-2'>
-                          {t('Quota per Billing Period')}:{' '}
-                          {totalAmount > 0 ? (
-                            <Tooltip>
-                              <TooltipTrigger
-                                render={<span className='cursor-help' />}
-                              >
-                                {formatQuota(usedAmount)}/
-                                {formatQuota(totalAmount)} · {t('Remaining')}{' '}
-                                {formatQuota(remainAmount)}
-                              </TooltipTrigger>
-                              <TooltipContent>
-                                {t('Raw Quota')}: {usedAmount}/{totalAmount} ·{' '}
-                                {t('Remaining')} {remainAmount}
-                              </TooltipContent>
-                            </Tooltip>
-                          ) : (
-                            t('Unlimited')
-                          )}
-                          {totalAmount > 0 && (
-                            <span className='ml-2'>
-                              {t('Used')} {usagePercent}%
-                            </span>
-                          )}
-                        </div>
-                      )}
+                      <div className='text-muted-foreground mt-1'>
+                        {t('Total Quota')}:{' '}
+                        {totalAmount > 0 ? (
+                          <Tooltip>
+                            <TooltipTrigger
+                              render={<span className='cursor-help' />}
+                            >
+                              {formatQuota(usedAmount)}/
+                              {formatQuota(totalAmount)} · {t('Remaining')}{' '}
+                              {formatQuota(remainAmount)}
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              {t('Raw Quota')}: {usedAmount}/{totalAmount} ·{' '}
+                              {t('Remaining')} {remainAmount}
+                            </TooltipContent>
+                          </Tooltip>
+                        ) : (
+                          t('Unlimited')
+                        )}
+                        {totalAmount > 0 && (
+                          <span className='ml-2'>
+                            {t('Used')} {usagePercent}%
+                          </span>
+                        )}
+                      </div>
                       {totalAmount > 0 && isActive && (
                         <Progress value={usagePercent} className='mt-2 h-1.5' />
                       )}
@@ -621,46 +605,37 @@ export function SubscriptionPlansCard({
                 groupAvailability = `${groupLabel}: ${groupList}`
               }
 
-              let totalQuotaBenefit: string | null = null
-              if (totalAmount >= 0) {
-                totalQuotaBenefit =
-                  totalAmount > 0
-                    ? `${t('Quota per Billing Period')}: ${formatQuota(totalAmount)}`
-                    : `${t('Quota per Billing Period')}: ${t('Unlimited')}`
-              }
-
               const usageLimitBenefits = [
                 {
-                  key: 'five-hour',
                   label: t('5-hour Quota Limit'),
                   limit: Number(plan.five_hour_limit || 0),
                 },
                 {
-                  key: 'weekly',
                   label: t('Weekly Quota Limit'),
                   limit: Number(plan.weekly_limit || 0),
                 },
                 {
-                  key: 'monthly',
                   label: t('Monthly Quota Limit'),
                   limit: Number(plan.monthly_limit || 0),
                 },
               ]
-                .filter((limit) => limit.limit > 0)
-                .map((limit) => `${limit.label}: ${formatQuota(limit.limit)}`)
+                .filter((item) => item.limit > 0)
+                .map((item) => `${item.label}: ${formatQuota(item.limit)}`)
 
               const benefits = [
                 `${t('Validity Period')}: ${formatDuration(plan, t)}`,
                 formatResetPeriod(plan, t) !== t('No Reset')
                   ? `${t('Quota Reset')}: ${formatResetPeriod(plan, t)}`
                   : null,
-                totalQuotaBenefit,
+                totalAmount > 0
+                  ? `${t('Total Quota')}: ${formatQuota(totalAmount)}`
+                  : `${t('Total Quota')}: ${t('Unlimited')}`,
                 ...usageLimitBenefits,
+                groupAvailability,
                 limit > 0 ? `${t('Purchase Limit')}: ${limit}` : null,
                 plan.upgrade_group
                   ? `${t('Upgrade Group')}: ${plan.upgrade_group}`
                   : null,
-                groupAvailability,
               ].filter(Boolean) as string[]
 
               return (

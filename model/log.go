@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/setting/console_setting"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
@@ -66,6 +67,8 @@ type Log struct {
 	Username          string `json:"username" gorm:"index;index:index_username_model_name,priority:2;default:''"`
 	TokenName         string `json:"token_name" gorm:"index;default:''"`
 	ModelName         string `json:"model_name" gorm:"index;index:index_username_model_name,priority:1;default:''"`
+	ModelIcon         string `json:"model_icon,omitempty" gorm:"-"`
+	ProviderIcon      string `json:"provider_icon,omitempty" gorm:"-"`
 	Quota             int    `json:"quota" gorm:"default:0"`
 	PromptTokens      int    `json:"prompt_tokens" gorm:"default:0"`
 	CompletionTokens  int    `json:"completion_tokens" gorm:"default:0"`
@@ -79,6 +82,37 @@ type Log struct {
 	RequestId         string `json:"request_id,omitempty" gorm:"type:varchar(64);index:idx_logs_request_id;default:''"`
 	UpstreamRequestId string `json:"upstream_request_id,omitempty" gorm:"type:varchar(128);index:idx_logs_upstream_request_id;default:''"`
 	Other             string `json:"other"`
+}
+
+// GetLogMultiKeyIndex returns the submit-time multi-key index recorded in a
+// task consumption log. It lets async polling recover the original credential
+// for tasks created before providers persisted their selected key.
+func GetLogMultiKeyIndex(requestID string, channelID int) (int, bool, error) {
+	if LOG_DB == nil || requestID == "" || channelID == 0 {
+		return 0, false, nil
+	}
+	var entry Log
+	err := LOG_DB.Select("other").
+		Where("request_id = ? AND channel_id = ? AND type = ?", requestID, channelID, LogTypeConsume).
+		Take(&entry).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	var payload struct {
+		AdminInfo struct {
+			MultiKeyIndex *int `json:"multi_key_index"`
+		} `json:"admin_info"`
+	}
+	if err := common.UnmarshalJsonStr(entry.Other, &payload); err != nil {
+		return 0, false, err
+	}
+	if payload.AdminInfo.MultiKeyIndex == nil {
+		return 0, false, nil
+	}
+	return *payload.AdminInfo.MultiKeyIndex, true, nil
 }
 
 // don't use iota, avoid change log type value
@@ -124,6 +158,8 @@ func formatUserLogs(logs []*Log, startIdx int) {
 		if otherMap != nil {
 			// Remove admin-only debug fields.
 			delete(otherMap, "admin_info")
+			// Remove diagnostics reserved for root.
+			delete(otherMap, "root_info")
 			// Remove operation-audit details (operator/route info), admin-only.
 			delete(otherMap, "audit_info")
 			// delete(otherMap, "reject_reason")
@@ -134,6 +170,19 @@ func formatUserLogs(logs []*Log, startIdx int) {
 	assignDisplayLogIds(logs, startIdx)
 }
 
+// FormatAdminLogs removes root-only diagnostics while retaining operational
+// admin_info. Root callers must not pass their results through this formatter.
+func FormatAdminLogs(logs []*Log) {
+	for i := range logs {
+		otherMap, _ := common.StrToMap(logs[i].Other)
+		if otherMap == nil {
+			continue
+		}
+		delete(otherMap, "root_info")
+		logs[i].Other = common.MapToJsonStr(otherMap)
+	}
+}
+
 func GetLogByTokenId(tokenId int) (logs []*Log, err error) {
 	order := "id desc"
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
@@ -141,6 +190,7 @@ func GetLogByTokenId(tokenId int) (logs []*Log, err error) {
 	}
 	err = LOG_DB.Model(&Log{}).Where("token_id = ?", tokenId).Order(order).Limit(common.MaxRecentItems).Find(&logs).Error
 	formatUserLogs(logs, 0)
+	fillLogModelIcons(logs)
 	return logs, err
 }
 
@@ -722,6 +772,7 @@ func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName
 			logs[i].ChannelName = channelMap[logs[i].ChannelId]
 		}
 	}
+	fillLogModelIcons(logs)
 
 	return logs, total, err
 }
@@ -782,7 +833,68 @@ func GetUserLogs(userId int, sharedModelNames []string, logType int, startTimest
 	}
 
 	formatUserLogs(logs, startIdx)
+	fillLogModelIcons(logs)
+	if console_setting.GetConsoleSetting().HideUpstreamRequestID {
+		for _, entry := range logs {
+			entry.UpstreamRequestId = ""
+		}
+	}
 	return logs, total, err
+}
+
+func fillLogModelIcons(logs []*Log) {
+	if len(logs) == 0 || DB == nil {
+		return
+	}
+	names := make([]string, 0, len(logs))
+	seen := make(map[string]struct{}, len(logs))
+	for _, entry := range logs {
+		if entry.ModelName == "" {
+			continue
+		}
+		if _, ok := seen[entry.ModelName]; ok {
+			continue
+		}
+		seen[entry.ModelName] = struct{}{}
+		names = append(names, entry.ModelName)
+	}
+	if len(names) == 0 {
+		return
+	}
+	var models []Model
+	if err := DB.Select("model_name", "icon", "vendor_id").Where("model_name IN ?", names).Find(&models).Error; err != nil {
+		return
+	}
+	icons := make(map[string]string, len(models))
+	vendorIDs := make([]int, 0, len(models))
+	seenVendors := make(map[int]struct{})
+	for _, item := range models {
+		icons[item.ModelName] = item.Icon
+		if item.VendorID > 0 {
+			if _, ok := seenVendors[item.VendorID]; !ok {
+				seenVendors[item.VendorID] = struct{}{}
+				vendorIDs = append(vendorIDs, item.VendorID)
+			}
+		}
+	}
+	vendorIcons := make(map[int]string, len(vendorIDs))
+	if len(vendorIDs) > 0 {
+		var vendors []Vendor
+		if err := DB.Select("id", "icon").Where("id IN ?", vendorIDs).Find(&vendors).Error; err == nil {
+			for _, vendor := range vendors {
+				vendorIcons[vendor.Id] = vendor.Icon
+			}
+		}
+	}
+	for _, entry := range logs {
+		entry.ModelIcon = icons[entry.ModelName]
+		for _, item := range models {
+			if item.ModelName == entry.ModelName {
+				entry.ProviderIcon = vendorIcons[item.VendorID]
+				break
+			}
+		}
+	}
 }
 
 type Stat struct {
@@ -907,10 +1019,16 @@ func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelNa
 		common.SysError("failed to query log stat: " + err.Error())
 		return stat, errors.New("查询统计数据失败")
 	}
-	if err := rpmTpmQuery.Scan(&stat).Error; err != nil {
+	var rateStat struct {
+		Rpm int
+		Tpm int
+	}
+	if err := rpmTpmQuery.Scan(&rateStat).Error; err != nil {
 		common.SysError("failed to query rpm/tpm stat: " + err.Error())
 		return stat, errors.New("查询统计数据失败")
 	}
+	stat.Rpm = rateStat.Rpm
+	stat.Tpm = rateStat.Tpm
 
 	return stat, nil
 }

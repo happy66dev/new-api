@@ -83,8 +83,15 @@ func ChannelType2APIType(channelType int) (int, bool) {
 		apiType = constant.APITypeSub2API
 	case constant.ChannelTypeNewAPI:
 		apiType = constant.APITypeNewAPI
+	case constant.ChannelTypeAgnes:
+		apiType = constant.APITypeAgnes
 	}
 	if apiType == -1 {
+		// Task plugin channels are served by the task relay and must never
+		// fall back to the OpenAI adaptor.
+		if channelType == constant.ChannelTypeTaskPlugin {
+			return -1, false
+		}
 		return constant.APITypeOpenAI, false
 	}
 	return apiType, true

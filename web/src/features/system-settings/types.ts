@@ -132,6 +132,7 @@ export type SiteSettings = {
   About: string
   HomePageContent: string
   ServerAddress: string
+  TaskPublicAddress: string
   'legal.user_agreement': string
   'legal.privacy_policy': string
   HeaderNavModules: string
@@ -169,6 +170,10 @@ export type SiteSettings = {
   'console_setting.spa_meta_description': string
   'console_setting.spa_meta_og_type': string
   'console_setting.spa_meta_og_description': string
+  'console_setting.homepage_style': 'default' | 'custom' | 'preset-1'
+  'console_setting.homepage_preset_title_mode': 'i18n' | 'english'
+  'console_setting.homepage_preset_sla_enabled': boolean
+  'console_setting.homepage_preset_sla_text': string
 }
 
 export type AuthSettings = {
@@ -432,6 +437,7 @@ export type BillingSettings = {
   'checkin_setting.min_quota': number
   'checkin_setting.max_quota': number
   'checkin_setting.min_user_quota': number
+  'checkin_setting.deductible_groups': string
   PaymentAnnouncement: string
 }
 
@@ -439,6 +445,7 @@ export type OperationsSettings = {
   DefaultCollapseSidebar: boolean
   DemoSiteEnabled: boolean
   SelfUseModeEnabled: boolean
+  'console_setting.hide_upstream_request_id': boolean
   'error_rewrite.enabled': boolean
   'error_rewrite.rules': string
   QuotaRemindEnabled: boolean

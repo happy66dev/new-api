@@ -73,10 +73,12 @@ func SetRelayRouter(router *gin.Engine) {
 		playgroundRelayRouter.POST("/audio/speech", controller.PlaygroundSpeech)
 		playgroundRelayRouter.POST("/audio/speech/tasks", controller.PlaygroundSpeechTask)
 		playgroundRelayRouter.POST("/3d", controller.PlaygroundThreeD)
+		playgroundRelayRouter.POST("/videos", controller.PlaygroundVideo)
 		playgroundRouter.GET("/audio/speech/tasks/:task_id", controller.PlaygroundSpeechTaskFetch)
 		playgroundRouter.GET("/audio/speech/tasks/:task_id/content", controller.PlaygroundSpeechContent)
 		playgroundRouter.GET("/audio/speech/tasks/:task_id/timestamps", controller.PlaygroundSpeechTimestamps)
 		playgroundRouter.GET("/3d/:task_id", controller.PlaygroundThreeDFetch)
+		playgroundRouter.GET("/videos/:task_id", controller.PlaygroundVideoFetch)
 	}
 	relayV1Router := router.Group("/v1")
 	relayV1Router.Use(middleware.RouteTag("relay"))
@@ -113,9 +115,6 @@ func SetRelayRouter(router *gin.Engine) {
 		})
 
 		// response related routes
-		httpRouter.POST("/responses", func(c *gin.Context) {
-			controller.Relay(c, types.RelayFormatOpenAIResponses)
-		})
 		httpRouter.POST("/responses/compact", func(c *gin.Context) {
 			controller.Relay(c, types.RelayFormatOpenAIResponsesCompaction)
 		})
@@ -195,16 +194,6 @@ func SetRelayRouter(router *gin.Engine) {
 	relayMjModeRouter.Use(middleware.SystemPerformanceCheck())
 	registerMjRouterGroup(relayMjModeRouter)
 	//relayMjRouter.Use()
-
-	relaySunoRouter := router.Group("/suno")
-	relaySunoRouter.Use(middleware.RouteTag("relay"))
-	relaySunoRouter.Use(middleware.SystemPerformanceCheck())
-	relaySunoRouter.Use(middleware.TokenAuth(), middleware.Distribute())
-	{
-		relaySunoRouter.POST("/submit/:action", controller.RelayTask)
-		relaySunoRouter.POST("/fetch", controller.RelayTaskFetch)
-		relaySunoRouter.GET("/fetch/:id", controller.RelayTaskFetch)
-	}
 
 	relayGeminiRouter := router.Group("/v1beta")
 	relayGeminiRouter.Use(middleware.RouteTag("relay"))

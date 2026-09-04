@@ -19,11 +19,22 @@ For commercial licensing, please contact support@quantumnous.com
 /* eslint-disable react-refresh/only-export-components */
 import { createContext, useContext, useState, type ReactNode } from 'react'
 
+import { ROLE } from '@/lib/roles'
+import { useAuthStore } from '@/stores/auth-store'
 import { useIsAdmin } from '@/hooks/use-admin'
 
 import type { ChannelAffinityInfo } from '../types'
 
 export type LogsViewScope = 'all' | 'self'
+export type LogsViewAccess = 'self' | 'admin' | 'root'
+
+export function resolveLogsViewAccess(
+  role: number,
+  viewScope: LogsViewScope
+): LogsViewAccess {
+  if (viewScope !== 'all' || role < ROLE.ADMIN) return 'self'
+  return role === ROLE.SUPER_ADMIN ? 'root' : 'admin'
+}
 
 interface UsageLogsContextValue {
   selectedUserId: number | null
@@ -99,13 +110,22 @@ export function useUsageLogsContext() {
  *   普通用户切到「全部」时走 `/api/log/self?scope=all`，视为用户级范围而非管理员全量。
  */
 export function useLogsViewScope() {
+  // isAdminUser 为 HEAD 版导出（旧消费者按角色布尔判断用）；role 为上游 role 模型，两者语义等价喵。
   const isAdminUser = useIsAdmin()
+  const role = useAuthStore((state) => state.auth.user?.role ?? ROLE.GUEST)
   const { viewScope, setViewScope } = useUsageLogsContext()
+  const canManageScope = role >= ROLE.ADMIN
+  const viewAccess = resolveLogsViewAccess(role, viewScope)
+  const isAdminView = viewAccess !== 'self'
+  const isRootView = viewAccess === 'root'
 
   return {
     isAdminUser,
+    canManageScope,
     viewScope,
     setViewScope,
-    isAdminView: isAdminUser && viewScope === 'all',
+    isAdminView,
+    isRootView,
+    viewAccess,
   }
 }

@@ -113,7 +113,10 @@ func GetStatus(c *gin.Context) {
 		"default_use_auto_group":        setting.DefaultUseAutoGroup,
 		"support_enabled":               common.SupportEnabled,
 		"site_appearance":               console_setting.GetAppearanceSetting(),
+		"homepage":                      console_setting.GetHomepageSetting(),
 		"spa_meta":                      console_setting.GetSPAMetaSetting(),
+
+		"password_login_encryption_enabled": common.PasswordLoginEncryptionEnabled,
 
 		"usd_exchange_rate": operation_setting.USDExchangeRate,
 		"price":             operation_setting.Price,
@@ -145,6 +148,7 @@ func GetStatus(c *gin.Context) {
 		"privacy_policy_enabled":      legalSetting.PrivacyPolicy != "",
 		"checkin_enabled":             operation_setting.GetCheckinSetting().Enabled,
 		"checkin_min_user_quota":      operation_setting.GetCheckinSetting().MinUserQuota,
+		"checkin_deductible_groups":   operation_setting.GetCheckinSetting().DeductibleGroups,
 	}
 
 	// 根据启用状态注入可选内容
