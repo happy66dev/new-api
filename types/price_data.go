@@ -30,6 +30,9 @@ type PriceData struct {
 	Quota                int // 按次计费的最终额度（MJ / Task）
 	QuotaToPreConsume    int // 按量计费的预消耗额度
 	GroupRatioInfo       GroupRatioInfo
+	// PricingGroupOverride 记录这份定价来自哪个分组的定制价，为空表示走的是全局定价喵。
+	// 只用于消费日志审计与前端标记，不参与任何额度计算喵。
+	PricingGroupOverride string
 }
 
 func (p *PriceData) AddOtherRatio(key string, ratio float64) {

@@ -66,6 +66,8 @@ func LogTaskConsumption(c *gin.Context, info *relaycommon.RelayInfo, task *model
 		}
 	}
 	appendTaskLogInfo(task, other)
+	// 记下这笔任务命中的分组定制定价来源，管理员才能核对「为什么这个分组是这个价」喵。
+	appendPricingGroupOverrideToOther(other, info.PriceData.PricingGroupOverride)
 	attachQuotaSaturation(c, info, other)
 	model.RecordConsumeLog(c, info.UserId, model.RecordConsumeLogParams{
 		ChannelId:    info.ChannelId,
@@ -341,14 +343,8 @@ func RecalculateTaskQuotaByTokens(ctx context.Context, task *model.Task, totalTo
 
 	modelName := taskModelName(task)
 
-	// 获取模型价格和倍率
-	modelRatio, hasRatioSetting, _ := ratio_setting.GetModelRatio(modelName)
-	// 只有配置了倍率(非固定价格)时才按 token 重新计费
-	if !hasRatioSetting || modelRatio <= 0 {
-		return false
-	}
-
-	// 获取用户和组的倍率信息
+	// 先把分组定下来，再按分组解析定价：分组定制定价允许同一个模型在不同分组用不同倍率甚至不同计费方式，
+	// 所以分组必须早于任何价格读取，否则会拿全局价去重算实际由某个定制分组完成的任务喵。
 	group := task.Group
 	if group == "" {
 		user, err := model.GetUserById(task.UserId, false)
@@ -357,6 +353,24 @@ func RecalculateTaskQuotaByTokens(ctx context.Context, task *model.Task, totalTo
 		}
 	}
 	if group == "" {
+		return false
+	}
+
+	// 该分组显式声明按次计费时，这笔任务的价格就是按次价，不能再按 token 重算，
+	// 否则「A 组按次、B 组按量」里 A 组的任务会被 B 组用的全局倍率重新算一遍钱喵。
+	// 正常任务在提交时就把 PerCallBilling 冻结进 BillingContext 了，这里是给
+	// 老数据（BillingContext 缺失或没有该字段）兜的一道底喵。
+	if override, hasOverride := ratio_setting.GetGroupModelOverride(group, modelName); hasOverride {
+		if override.BillingMode == ratio_setting.GroupBillingModePerCall {
+			return false
+		}
+	}
+
+	// 获取该分组下真正生效的模型倍率（分组定制优先，没配再回落全局）喵。
+	pricing := ratio_setting.ResolveModelPricing(group, modelName)
+	modelRatio := pricing.ModelRatio
+	// 只有配置了倍率(非固定价格)时才按 token 重新计费
+	if !pricing.ModelRatioConfigured || modelRatio <= 0 {
 		return false
 	}
 

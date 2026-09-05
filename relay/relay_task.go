@@ -298,17 +298,26 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	info.OriginModelName = modelName
 	var priceData types.PriceData
 	var err error
-	useTiered := billing_setting.GetBillingMode(modelName) == billing_setting.BillingModeTieredExpr
+	// 必须先把最终分组定下来再判计费方式：分组定制定价允许同一个模型在 A 组按次、B 组走阶梯表达式，
+	// 所以 UsingGroup 一定要早于任何价格与计费方式读取喵。
+	groupRatioInfo := helper.HandleGroupRatio(c, info)
+	useTiered := billing_setting.GetBillingModeForGroup(info.UsingGroup, modelName) == billing_setting.BillingModeTieredExpr
 	var exprStr string
 	var exists bool
+	// 记下这条表达式到底是分组定制的还是全局的，只用于日志审计，不参与算钱喵。
+	var exprFromGroup bool
 	if useTiered {
-		exprStr, exists = billing_setting.GetBillingExpr(modelName)
+		exprStr, exists = billing_setting.GetBillingExprForGroup(info.UsingGroup, modelName)
+		_, exprFromGroup = billing_setting.GetGroupBillingExpr(info.UsingGroup, modelName)
 	} else if info.IsModelMapped {
-		if billing_setting.GetBillingMode(info.UpstreamModelName) == billing_setting.BillingModeTieredExpr {
-			if tailExpr, tailOK := billing_setting.GetBillingExpr(info.UpstreamModelName); tailOK && strings.TrimSpace(tailExpr) != "" {
+		// 映射后的上游模型名也按同一分组判一次，保持「分组定制优先、全局兜底」的口径一致喵。
+		if billing_setting.GetBillingModeForGroup(info.UsingGroup, info.UpstreamModelName) == billing_setting.BillingModeTieredExpr {
+			if tailExpr, tailOK := billing_setting.GetBillingExprForGroup(info.UsingGroup, info.UpstreamModelName); tailOK && strings.TrimSpace(tailExpr) != "" {
 				exprStr = tailExpr
 				exists = true
 				useTiered = true
+				// 尾部模型的表达式同样要判来源，否则映射链上的分组定制会被记成全局价喵。
+				_, exprFromGroup = billing_setting.GetGroupBillingExpr(info.UsingGroup, info.UpstreamModelName)
 			}
 		}
 	}
@@ -333,10 +342,14 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 			}
 			return nil, service.TaskErrorWrapper(runErr, "model_price_error", http.StatusBadRequest)
 		}
-		groupRatioInfo := helper.HandleGroupRatio(c, info)
+		// 分组倍率已在上面按最终分组算好，这里直接复用，避免同一请求两次解析分组喵。
 		quota, clamp := common.QuotaRoundChecked(cost * common.QuotaPerUnit * groupRatioInfo.GroupRatio)
 		noteTaskQuotaClamp(info, clamp)
 		priceData = types.PriceData{Quota: quota, QuotaToPreConsume: quota, GroupRatioInfo: groupRatioInfo}
+		// 表达式来自分组定制时记下来源分组，任务日志才能审计「这笔为什么按这个表达式算」喵。
+		if exprFromGroup {
+			priceData.PricingGroupOverride = info.UsingGroup
+		}
 		info.TieredBillingSnapshot = &billingexpr.BillingSnapshot{BillingMode: billing_setting.BillingModeTieredExpr, ModelName: modelName, ExprString: exprStr, ExprHash: billingexpr.ExprHashString(exprStr), GroupRatio: groupRatioInfo.GroupRatio, EstimatedQuotaBeforeGroup: cost * common.QuotaPerUnit, EstimatedQuotaAfterGroup: quota, EstimatedTier: trace.MatchedTier, QuotaPerUnit: common.QuotaPerUnit, ExprVersion: billingexpr.ExprVersion(exprStr), TaskUsageBilling: true, UsageFacts: facts}
 	} else {
 		priceData, err = helper.ModelPriceHelperPerCall(c, info)

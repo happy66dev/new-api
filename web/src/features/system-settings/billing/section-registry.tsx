@@ -58,6 +58,14 @@ const getGroupDefaults = (settings: BillingSettings) => ({
     settings['console_setting.model_square_visible_groups'],
 })
 
+// 分组定制定价三份配置的初始值：定价覆盖归 GroupModelPricing，
+// 分组级计费方式与阶梯表达式归 billing_setting 那两个 key 喵。
+const getGroupModelPricingDefaults = (settings: BillingSettings) => ({
+  GroupModelPricing: settings.GroupModelPricing,
+  GroupBillingMode: settings['billing_setting.group_billing_mode'],
+  GroupBillingExpr: settings['billing_setting.group_billing_expr'],
+})
+
 const BILLING_SECTIONS = [
   {
     id: 'quota',
@@ -116,8 +124,15 @@ const BILLING_SECTIONS = [
         titleKey='Model Pricing'
         modelDefaults={getModelDefaults(settings)}
         groupDefaults={getGroupDefaults(settings)}
+        groupModelPricingDefaults={getGroupModelPricingDefaults(settings)}
         toolPricesDefault={settings['tool_price_setting.prices']}
-        visibleTabs={['models', 'unset-models', 'tool-prices', 'upstream-sync']}
+        visibleTabs={[
+          'models',
+          'unset-models',
+          'group-model-pricing',
+          'tool-prices',
+          'upstream-sync',
+        ]}
       />
     ),
   },
@@ -129,6 +144,7 @@ const BILLING_SECTIONS = [
         titleKey='Group Pricing'
         modelDefaults={getModelDefaults(settings)}
         groupDefaults={getGroupDefaults(settings)}
+        groupModelPricingDefaults={getGroupModelPricingDefaults(settings)}
         toolPricesDefault={settings['tool_price_setting.prices']}
         visibleTabs={['groups']}
       />

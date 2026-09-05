@@ -33,6 +33,8 @@ import { SettingsSection } from '../components/settings-section'
 import { useUpdateOption } from '../hooks/use-update-option'
 import { safeJsonParse } from '../utils/json-parser'
 import { positiveIntegerSchema } from '../utils/numeric-field'
+import { GroupModelPricingForm } from './group-model-pricing-form'
+import type { GroupModelPricingFormValues } from './group-model-pricing-utils'
 import { GroupRatioForm } from './group-ratio-form'
 import { ModelRatioForm } from './model-ratio-form'
 import { ToolPriceSettings } from './tool-price-settings'
@@ -174,18 +176,30 @@ const createGroupSchema = (t: Translate) =>
     }),
   })
 
+// 分组定制定价这一页的三份配置都是「分组 -> 模型 -> ...」两层 JSON 对象，
+// 只校验 JSON 合法性，具体数值的合法性交给后端 CheckGroupModelPricing 把关喵。
+const createGroupModelPricingSchema = (t: Translate) =>
+  z.object({
+    GroupModelPricing: createJsonStringField(t),
+    GroupBillingMode: createJsonStringField(t),
+    GroupBillingExpr: createJsonStringField(t),
+  })
+
 type ModelFormValues = z.infer<ReturnType<typeof createModelSchema>>
 type GroupFormValues = z.infer<ReturnType<typeof createGroupSchema>>
 type RatioTabId =
   | 'models'
   | 'unset-models'
   | 'groups'
+  | 'group-model-pricing'
   | 'tool-prices'
   | 'upstream-sync'
 
 type RatioSettingsCardProps = {
   modelDefaults: ModelFormValues
   groupDefaults: GroupFormValues
+  /** 分组定制定价三份配置的初始值，来自系统设置接口喵。 */
+  groupModelPricingDefaults: GroupModelPricingFormValues
   toolPricesDefault: string
   titleKey?: string
   visibleTabs?: RatioTabId[]
@@ -194,6 +208,7 @@ type RatioSettingsCardProps = {
 export function RatioSettingsCard({
   modelDefaults,
   groupDefaults,
+  groupModelPricingDefaults,
   toolPricesDefault,
   titleKey = 'Pricing Ratios',
   visibleTabs = ['models', 'groups', 'tool-prices', 'upstream-sync'],
@@ -258,6 +273,23 @@ export function RatioSettingsCard({
   })
   const modelSchema = useMemo(() => createModelSchema(t), [t])
   const groupSchema = useMemo(() => createGroupSchema(t), [t])
+  const groupModelPricingSchema = useMemo(
+    () => createGroupModelPricingSchema(t),
+    [t]
+  )
+
+  // 分组定制定价的「已保存值」快照：保存时只把真正变过的那份配置发给后端喵。
+  const groupModelPricingNormalizedDefaults = useRef({
+    GroupModelPricing: normalizeJsonString(
+      groupModelPricingDefaults.GroupModelPricing
+    ),
+    GroupBillingMode: normalizeJsonString(
+      groupModelPricingDefaults.GroupBillingMode
+    ),
+    GroupBillingExpr: normalizeJsonString(
+      groupModelPricingDefaults.GroupBillingExpr
+    ),
+  })
 
   const modelForm = useForm<ModelFormValues>({
     resolver: zodResolver(modelSchema),
@@ -298,6 +330,22 @@ export function RatioSettingsCard({
       GroupRetryTimes: formatJsonForTextarea(groupDefaults.GroupRetryTimes),
       ModelSquareVisibleGroups: formatJsonForTextarea(
         groupDefaults.ModelSquareVisibleGroups
+      ),
+    },
+  })
+
+  const groupModelPricingForm = useForm<GroupModelPricingFormValues>({
+    resolver: zodResolver(groupModelPricingSchema),
+    mode: 'onChange',
+    defaultValues: {
+      GroupModelPricing: formatJsonForTextarea(
+        groupModelPricingDefaults.GroupModelPricing
+      ),
+      GroupBillingMode: formatJsonForTextarea(
+        groupModelPricingDefaults.GroupBillingMode
+      ),
+      GroupBillingExpr: formatJsonForTextarea(
+        groupModelPricingDefaults.GroupBillingExpr
       ),
     },
   })
@@ -376,6 +424,32 @@ export function RatioSettingsCard({
       ),
     })
   }, [groupDefaults, groupForm])
+
+  useEffect(() => {
+    groupModelPricingNormalizedDefaults.current = {
+      GroupModelPricing: normalizeJsonString(
+        groupModelPricingDefaults.GroupModelPricing
+      ),
+      GroupBillingMode: normalizeJsonString(
+        groupModelPricingDefaults.GroupBillingMode
+      ),
+      GroupBillingExpr: normalizeJsonString(
+        groupModelPricingDefaults.GroupBillingExpr
+      ),
+    }
+
+    groupModelPricingForm.reset({
+      GroupModelPricing: formatJsonForTextarea(
+        groupModelPricingDefaults.GroupModelPricing
+      ),
+      GroupBillingMode: formatJsonForTextarea(
+        groupModelPricingDefaults.GroupBillingMode
+      ),
+      GroupBillingExpr: formatJsonForTextarea(
+        groupModelPricingDefaults.GroupBillingExpr
+      ),
+    })
+  }, [groupModelPricingDefaults, groupModelPricingForm])
 
   const saveModelRatios = useCallback(
     async (values: ModelFormValues) => {
@@ -472,6 +546,52 @@ export function RatioSettingsCard({
     [updateOption]
   )
 
+  /**
+   * 保存分组定制定价喵。
+   *
+   * 三份配置各自对应一个后端 option key，只有内容真的变了才发请求，
+   * 避免用户只改了一份却把三份全写一遍（写操作会触发后端重载定价缓存）喵。
+   */
+  const saveGroupModelPricing = useCallback(
+    async (values: GroupModelPricingFormValues) => {
+      const normalized = {
+        GroupModelPricing: normalizeJsonString(values.GroupModelPricing),
+        GroupBillingMode: normalizeJsonString(values.GroupBillingMode),
+        GroupBillingExpr: normalizeJsonString(values.GroupBillingExpr),
+      }
+
+      // 表单字段名到后端 option key 的映射，分组计费方式与表达式都归 billing_setting 管喵。
+      const apiKeyMap: Record<keyof GroupModelPricingFormValues, string> = {
+        GroupModelPricing: 'GroupModelPricing',
+        GroupBillingMode: 'billing_setting.group_billing_mode',
+        GroupBillingExpr: 'billing_setting.group_billing_expr',
+      }
+
+      const updates = (
+        Object.keys(normalized) as Array<keyof GroupModelPricingFormValues>
+      ).filter(
+        (key) =>
+          normalized[key] !== groupModelPricingNormalizedDefaults.current[key]
+      )
+
+      // 喵~防御：没有任何改动时提示一声就返回，别白发三个请求喵。
+      if (updates.length === 0) {
+        toast.info(t('No group custom pricing changes to save'))
+        return
+      }
+
+      for (const key of updates) {
+        await updateOption.mutateAsync({
+          key: apiKeyMap[key],
+          value: normalized[key],
+        })
+      }
+
+      groupModelPricingNormalizedDefaults.current = normalized
+    },
+    [t, updateOption]
+  )
+
   const handleResetRatios = useCallback(() => {
     setConfirmOpen(true)
   }, [])
@@ -481,10 +601,23 @@ export function RatioSettingsCard({
     resetMutate()
   }, [resetMutate])
 
+  // 分组下拉框的候选项来自分组倍率配置的 key：站点配过倍率的分组才是真实存在的分组喵。
+  const availableGroups = useMemo(() => {
+    const groupRatioMap = safeJsonParse<Record<string, number>>(
+      groupDefaults.GroupRatio,
+      { fallback: {}, silent: true }
+    )
+    // 喵~防御：解析失败或配置为空时返回空数组，编辑面板会因此整体禁用而不是崩掉喵。
+    return Object.keys(groupRatioMap).sort((left, right) =>
+      left.localeCompare(right)
+    )
+  }, [groupDefaults.GroupRatio])
+
   const tabLabels: Record<RatioTabId, string> = {
     models: 'Model prices',
     'unset-models': 'Unset price models',
     groups: 'Group ratios',
+    'group-model-pricing': 'Group custom pricing',
     'tool-prices': 'Tool prices',
     'upstream-sync': 'Upstream price sync',
   }
@@ -495,6 +628,7 @@ export function RatioSettingsCard({
       3: 'grid-cols-3',
       4: 'grid-cols-4',
       5: 'grid-cols-5',
+      6: 'grid-cols-6',
     }[visibleTabs.length] ?? 'grid-cols-4'
   const defaultTab = visibleTabs[0] ?? 'models'
 
@@ -518,6 +652,16 @@ export function RatioSettingsCard({
           form={groupForm}
           onSave={saveGroupRatios}
           isSaving={updateOption.isPending}
+        />
+      )
+    }
+    if (tab === 'group-model-pricing') {
+      return (
+        <GroupModelPricingForm
+          form={groupModelPricingForm}
+          onSave={saveGroupModelPricing}
+          isSaving={updateOption.isPending}
+          availableGroups={availableGroups}
         />
       )
     }

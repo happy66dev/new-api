@@ -271,6 +271,23 @@ func getModelListGroups(c *gin.Context) (modelListGroups, error) {
 	}, nil
 }
 
+// hasBillingConfigInAnyGroup 判断模型在这批分组里是否至少有一个分组配了可用价格喵。
+// 分组定制定价允许「只有某个分组给这个模型定了价」，模型列表的可见性判断必须逐分组看一遍，
+// 否则用户明明在自己分组里能用的模型会因为全局没定价而被过滤掉喵。
+// 分组列表为空时退回全局口径判断，保持没有分组上下文时的老行为喵。
+func hasBillingConfigInAnyGroup(groups []string, modelName string) bool {
+	// 喵~防御：拿不到分组时按全局口径判断，避免直接把所有模型都过滤掉喵。
+	if len(groups) == 0 {
+		return helper.HasModelBillingConfig(modelName)
+	}
+	for _, group := range groups {
+		if helper.HasModelBillingConfigForGroup(group, modelName) {
+			return true
+		}
+	}
+	return false
+}
+
 func ListModels(c *gin.Context, modelType int) {
 	acceptUnsetRatioModel := operation_setting.SelfUseModeEnabled
 	if !acceptUnsetRatioModel {
@@ -312,7 +329,9 @@ func ListModels(c *gin.Context, modelType int) {
 				continue
 			}
 		}
-		if !acceptUnsetRatioModel && !helper.HasModelBillingConfig(modelName) {
+		// 只要该模型在用户任意一个可用分组里配了价（含分组定制价）就算已定价，
+		// 否则只在某个分组定制过价的模型会被误判成未定价而从模型列表里消失喵。
+		if !acceptUnsetRatioModel && !hasBillingConfigInAnyGroup(ownerGroups, modelName) {
 			continue
 		}
 		userModelNames = append(userModelNames, modelName)

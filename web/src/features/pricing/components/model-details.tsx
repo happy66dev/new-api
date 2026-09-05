@@ -34,7 +34,10 @@ import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { CopyButton } from '@/components/copy-button'
-import { StaticDataTable } from '@/components/data-table'
+import {
+  StaticDataTable,
+  type StaticDataTableColumn,
+} from '@/components/data-table'
 import { sideDrawerContentClassName } from '@/components/drawer-layout'
 import { GroupBadge } from '@/components/group-badge'
 import { PublicLayout } from '@/components/layout'
@@ -58,7 +61,7 @@ import {
 import { getLobeIcon } from '@/lib/lobe-icon'
 import { cn } from '@/lib/utils'
 
-import { DEFAULT_TOKEN_UNIT } from '../constants'
+import { DEFAULT_TOKEN_UNIT, QUOTA_TYPE_VALUES } from '../constants'
 import { usePricingData } from '../hooks/use-pricing-data'
 import {
   formatTaskUsageUnitPrice,
@@ -75,7 +78,10 @@ import { parseTags } from '../lib/filters'
 import {
   getAvailableGroups,
   getConfiguredGroupRatio,
+  getGroupQuotaType,
+  hasPriceTypeRatio,
   isTokenBasedModel,
+  resolveGroupPricingModel,
 } from '../lib/model-helpers'
 import { formatFixedPrice, formatGroupPrice } from '../lib/price'
 import {
@@ -960,31 +966,60 @@ function GroupPricingSection(props: {
     [props.model, props.modelSquareGroups, props.usableGroup]
   )
 
-  const isTokenBased = isTokenBasedModel(props.model)
   const tokenUnitLabel = props.tokenUnit === 'K' ? '1K' : '1M'
 
+  // 按计费方式把可用分组分成三堆喵：
+  // 阶梯计费的分组单独展示表达式，其余按「按量」「按次」各成一张卡片，
+  // 只存在一种计费方式时另一张卡片自动缺省，视觉上和改造前的单表格一致喵。
+  const groupBuckets = useMemo(() => {
+    const dynamic: string[] = []
+    const perToken: string[] = []
+    const perCall: string[] = []
+    for (const group of availableGroups) {
+      const groupModel = resolveGroupPricingModel(props.model, group)
+      if (isDynamicPricingModel(groupModel)) {
+        dynamic.push(group)
+        continue
+      }
+      if (getGroupQuotaType(props.model, group) === QUOTA_TYPE_VALUES.REQUEST) {
+        perCall.push(group)
+        continue
+      }
+      perToken.push(group)
+    }
+    return { dynamic, perToken, perCall }
+  }, [availableGroups, props.model])
+
+  // 缓存/图片/音频这些附加价格列取「所有按量分组的并集」：
+  // 分组定制允许某个分组独有缓存价，只看模型全局字段会把这一列整列漏掉喵。
   const extraPriceTypes = useMemo(() => {
-    const types: { label: string; type: PriceType }[] = []
-    if (props.model.cache_ratio != null) {
-      types.push({ label: t('Cache'), type: 'cache' })
-    }
-    if (props.model.create_cache_ratio != null) {
-      types.push({ label: t('Cache Write'), type: 'create_cache' })
-    }
-    if (props.model.image_ratio != null) {
-      types.push({ label: t('Image'), type: 'image' })
-    }
-    if (props.model.audio_ratio != null) {
-      types.push({ label: t('Audio In'), type: 'audio_input' })
-    }
-    if (
-      props.model.audio_ratio != null &&
-      props.model.audio_completion_ratio != null
-    ) {
-      types.push({ label: t('Audio Out'), type: 'audio_output' })
-    }
-    return types
-  }, [props.model, t])
+    const candidates: { labelKey: string; type: PriceType }[] = [
+      { labelKey: 'Cache', type: 'cache' },
+      { labelKey: 'Cache Write', type: 'create_cache' },
+      { labelKey: 'Image', type: 'image' },
+      { labelKey: 'Audio In', type: 'audio_input' },
+      { labelKey: 'Audio Out', type: 'audio_output' },
+    ]
+    // 没有任何按量分组时退回按模型自身判断，保证「基础价」区块的展示不受影响喵。
+    const scopedGroups =
+      groupBuckets.perToken.length > 0 ? groupBuckets.perToken : []
+    return candidates
+      .filter((candidate) => {
+        if (scopedGroups.length === 0) {
+          return hasPriceTypeRatio(props.model, candidate.type)
+        }
+        return scopedGroups.some((group) =>
+          hasPriceTypeRatio(
+            resolveGroupPricingModel(props.model, group),
+            candidate.type
+          )
+        )
+      })
+      .map((candidate) => ({
+        label: t(candidate.labelKey),
+        type: candidate.type,
+      }))
+  }, [groupBuckets.perToken, props.model, t])
 
   if (availableGroups.length === 0) {
     return (
@@ -1196,9 +1231,13 @@ function GroupPricingSection(props: {
     )
   }
 
-  const renderGroupPrice = (group: string, type: PriceType) =>
-    formatGroupPrice(
-      props.model,
+  // 每个分组都先投影成「该分组视角的模型」再取价，这样分组定制价与全局价共用同一套格式化逻辑喵。
+  const renderGroupPrice = (group: string, type: PriceType) => {
+    const groupModel = resolveGroupPricingModel(props.model, group)
+    // 喵~防御：这个分组没配该项价格时显示 '-'，绝不把 NaN 渲染给用户看喵。
+    if (!hasPriceTypeRatio(groupModel, type)) return '-'
+    return formatGroupPrice(
+      groupModel,
       group,
       type,
       props.tokenUnit,
@@ -1207,9 +1246,10 @@ function GroupPricingSection(props: {
       props.usdExchangeRate,
       props.groupRatio
     )
+  }
   const renderFixedGroupPrice = (group: string) =>
     formatFixedPrice(
-      props.model,
+      resolveGroupPricingModel(props.model, group),
       group,
       showRechargePrice,
       props.priceRate,
@@ -1217,75 +1257,213 @@ function GroupPricingSection(props: {
       props.groupRatio
     )
 
+  const groupColumn = {
+    id: 'group',
+    header: t('Group'),
+    className: thClass,
+    cellClassName: 'py-2.5',
+    cell: (group: string) => <GroupBadge group={group} size='sm' />,
+  }
+  const ratioColumn = {
+    id: 'ratio',
+    header: t('Ratio'),
+    className: thClass,
+    cellClassName: 'text-muted-foreground py-2.5 font-mono',
+    cell: (group: string) =>
+      `${getConfiguredGroupRatio(props.groupRatio, group)}x`,
+  }
+
+  // 只有一种计费方式时不加卡片标题，保持和改造前完全一样的朴素表格外观喵。
+  const hasMixedBillingModes =
+    [
+      groupBuckets.perToken.length,
+      groupBuckets.perCall.length,
+      groupBuckets.dynamic.length,
+    ].filter((count) => count > 0).length > 1
+
   return (
     <section>
       <SectionTitle>{t('Pricing by Group')}</SectionTitle>
       <AutoGroupChain model={props.model} autoGroups={props.autoGroups} />
+      <div className='space-y-4'>
+        {groupBuckets.perToken.length > 0 && (
+          <GroupPricingModeBlock
+            title={hasMixedBillingModes ? t('Per-token billing') : null}
+            groups={groupBuckets.perToken}
+            columns={[
+              groupColumn,
+              ratioColumn,
+              {
+                id: 'input',
+                header: t('Input'),
+                className: `${thClass} text-right`,
+                cellClassName: 'py-2.5 text-right font-mono',
+                cell: (group: string) => renderGroupPrice(group, 'input'),
+              },
+              {
+                id: 'output',
+                header: t('Output'),
+                className: `${thClass} text-right`,
+                cellClassName: 'py-2.5 text-right font-mono',
+                cell: (group: string) => renderGroupPrice(group, 'output'),
+              },
+              ...extraPriceTypes.map((ep) => ({
+                id: ep.type,
+                header: ep.label,
+                className: `${thClass} text-right`,
+                cellClassName: 'py-2.5 text-right font-mono',
+                cell: (group: string) => renderGroupPrice(group, ep.type),
+              })),
+            ]}
+            footnote={`${t('Prices shown per')} ${tokenUnitLabel} tokens`}
+          />
+        )}
+        {groupBuckets.perCall.length > 0 && (
+          <GroupPricingModeBlock
+            title={hasMixedBillingModes ? t('Per-call billing') : null}
+            groups={groupBuckets.perCall}
+            columns={[
+              groupColumn,
+              ratioColumn,
+              {
+                id: 'price',
+                header: t('Price'),
+                className: `${thClass} text-right`,
+                cellClassName: 'py-2.5 text-right font-mono',
+                cell: renderFixedGroupPrice,
+              },
+            ]}
+            footnote={null}
+          />
+        )}
+        {groupBuckets.dynamic.length > 0 && (
+          <DynamicGroupPricingBlock
+            model={props.model}
+            groups={groupBuckets.dynamic}
+            groupRatio={props.groupRatio}
+            tokenUnit={props.tokenUnit}
+            priceRate={props.priceRate}
+            usdExchangeRate={props.usdExchangeRate}
+            showRechargePrice={showRechargePrice}
+          />
+        )}
+      </div>
+    </section>
+  )
+}
+
+/**
+ * 一种计费方式对应的分组价格表格喵。
+ * title 为 null 时不渲染小标题，用于「只有一种计费方式」的场景，外观与改造前一致喵。
+ */
+function GroupPricingModeBlock(props: {
+  title: string | null
+  groups: string[]
+  columns: StaticDataTableColumn<string>[]
+  footnote: string | null
+}) {
+  return (
+    <div>
+      {props.title !== null && (
+        <div className='text-muted-foreground mb-1.5 px-4 text-[10px] font-medium tracking-wider uppercase sm:px-0'>
+          {props.title}
+        </div>
+      )}
       <StaticDataTable
         className='-mx-4 rounded-none border-0 sm:mx-0'
         tableClassName='text-sm'
         headerRowClassName='hover:bg-transparent'
-        data={availableGroups}
+        data={props.groups}
         getRowKey={(group) => group}
-        columns={[
-          {
-            id: 'group',
-            header: t('Group'),
-            className: thClass,
-            cellClassName: 'py-2.5',
-            cell: (group) => <GroupBadge group={group} size='sm' />,
-          },
-          {
-            id: 'ratio',
-            header: t('Ratio'),
-            className: thClass,
-            cellClassName: 'text-muted-foreground py-2.5 font-mono',
-            cell: (group) =>
-              `${getConfiguredGroupRatio(props.groupRatio, group)}x`,
-          },
-          ...(isTokenBased
-            ? [
-                {
-                  id: 'input',
-                  header: t('Input'),
-                  className: `${thClass} text-right`,
-                  cellClassName: 'py-2.5 text-right font-mono',
-                  cell: (group: string) => renderGroupPrice(group, 'input'),
-                },
-                {
-                  id: 'output',
-                  header: t('Output'),
-                  className: `${thClass} text-right`,
-                  cellClassName: 'py-2.5 text-right font-mono',
-                  cell: (group: string) => renderGroupPrice(group, 'output'),
-                },
-                ...extraPriceTypes.map((ep) => ({
-                  id: ep.type,
-                  header: ep.label,
-                  className: `${thClass} text-right`,
-                  cellClassName: 'py-2.5 text-right font-mono',
-                  cell: (group: string) => renderGroupPrice(group, ep.type),
-                })),
-              ]
-            : [
-                {
-                  id: 'price',
-                  header: t('Price'),
-                  className: `${thClass} text-right`,
-                  cellClassName: 'py-2.5 text-right font-mono',
-                  cell: renderFixedGroupPrice,
-                },
-              ]),
-        ]}
+        columns={props.columns}
       />
-      <div className='-mx-4 sm:mx-0'>
-        {isTokenBased && (
+      {props.footnote !== null && (
+        <div className='-mx-4 sm:mx-0'>
           <p className='text-muted-foreground/40 mt-1.5 px-4 text-[10px] sm:px-0'>
-            {t('Prices shown per')} {tokenUnitLabel} tokens
+            {props.footnote}
           </p>
-        )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * 走阶梯计费表达式的分组喵。
+ *
+ * 这些分组的价格完全由表达式描述，没法塞进「输入/输出」两列，所以逐个分组渲染成一张小卡片：
+ * 卡片头是分组与分组倍率，卡片体是该分组表达式算出的主要价格，底部附上原始表达式便于核对喵。
+ */
+function DynamicGroupPricingBlock(props: {
+  model: PricingModel
+  groups: string[]
+  groupRatio: Record<string, number>
+  tokenUnit: TokenUnit
+  priceRate: number
+  usdExchangeRate: number
+  showRechargePrice: boolean
+}) {
+  const { t } = useTranslation()
+  const tokenUnitLabel = props.tokenUnit === 'K' ? '1K' : '1M'
+  return (
+    <div>
+      <div className='text-muted-foreground mb-1.5 px-4 text-[10px] font-medium tracking-wider uppercase sm:px-0'>
+        {t('Dynamic Pricing')}
       </div>
-    </section>
+      <div className='space-y-3'>
+        {props.groups.map((group) => {
+          const groupModel = resolveGroupPricingModel(props.model, group)
+          const ratio = getConfiguredGroupRatio(props.groupRatio, group)
+          const summary = getDynamicPricingSummary(groupModel, {
+            tokenUnit: props.tokenUnit,
+            showRechargePrice: props.showRechargePrice,
+            priceRate: props.priceRate,
+            usdExchangeRate: props.usdExchangeRate,
+            groupRatioMultiplier: ratio,
+          })
+          return (
+            <div key={group} className='overflow-hidden rounded-lg border'>
+              <div className='bg-muted/20 flex items-center justify-between gap-3 border-b px-3 py-2'>
+                <GroupBadge group={group} size='sm' />
+                <span className='text-muted-foreground font-mono text-xs'>
+                  {ratio}x
+                </span>
+              </div>
+              <div className='space-y-1.5 px-3 py-2.5'>
+                {summary && summary.primaryEntries.length > 0 ? (
+                  summary.primaryEntries.map((entry) => {
+                    const unitLabelKey = getDynamicPriceUnitLabelKey(entry)
+                    return (
+                      <div
+                        key={entry.key}
+                        className='flex items-baseline justify-between gap-4'
+                      >
+                        <span className='text-muted-foreground/70 text-sm'>
+                          <DynamicPriceEntryLabel entry={entry} />
+                        </span>
+                        <span className='text-muted-foreground font-mono text-sm tabular-nums'>
+                          {entry.formattedRange ?? entry.formatted}
+                          <span className='text-muted-foreground/40 ml-1 text-xs font-normal'>
+                            / {unitLabelKey ? t(unitLabelKey) : tokenUnitLabel}
+                          </span>
+                        </span>
+                      </div>
+                    )
+                  })
+                ) : (
+                  <p className='text-muted-foreground text-sm'>
+                    {t('Dynamic Pricing')}
+                  </p>
+                )}
+                <code className='text-muted-foreground bg-background/80 mt-1 block max-h-24 overflow-auto rounded-md border px-2 py-1.5 font-mono text-[11px] break-all'>
+                  {groupModel.billing_expr}
+                </code>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
   )
 }
 

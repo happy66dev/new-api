@@ -42,6 +42,41 @@ func isPaymentComplianceOptionKey(key string) bool {
 	return strings.HasPrefix(key, "payment_setting.compliance_")
 }
 
+// smokeTestBillingExpressions 逐个编译并冒烟测试一批「模型 -> 计费表达式」配置喵。
+// 任务型模型要按插件声明的 usage schema 校验，普通模型走 token 向量冒烟测试；
+// 返回第一个出错的模型名与错误，全部通过时返回空字符串与 nil 喵。
+// 校验前先按模型名排序，保证同一份配置每次都报同一条错误，方便管理员定位问题喵。
+// 全局表达式与分组级表达式共用这段逻辑，两边的校验强度必须完全一致喵。
+func smokeTestBillingExpressions(expressions map[string]string) (string, error) {
+	models := make([]string, 0, len(expressions))
+	for modelName := range expressions {
+		models = append(models, modelName)
+	}
+	sort.Strings(models)
+	generation := jsplugin.DefaultRegistry.Generation()
+	for _, modelName := range models {
+		expression := expressions[modelName]
+		var err error
+		// 模型本身就是任务插件模型：按插件声明的 usage 字段校验 u() 引用喵。
+		if plugin, ok := generation.GetByModel(modelName); ok {
+			err = billing_setting.SmokeTestTaskExpr(expression, plugin.Meta.UsageSchema)
+		} else if target, resolved := model.ResolveTaskModelAlias(generation, modelName); resolved {
+			// 模型是任务插件的别名：能找到插件就按插件校验，找不到就退回普通 token 校验喵。
+			if plugin, ok := generation.Get(target.PluginKey); ok {
+				err = billing_setting.SmokeTestTaskExpr(expression, plugin.Meta.UsageSchema)
+			} else {
+				err = billing_setting.SmokeTestExpr(expression)
+			}
+		} else {
+			err = billing_setting.SmokeTestExpr(expression)
+		}
+		if err != nil {
+			return modelName, err
+		}
+	}
+	return "", nil
+}
+
 func isPositiveOptionValue(value string) bool {
 	intValue, err := strconv.Atoi(strings.TrimSpace(value))
 	if err == nil {
@@ -534,6 +569,16 @@ func UpdateOption(c *gin.Context) {
 			})
 			return
 		}
+	case "GroupModelPricing":
+		// 分组定制定价直接决定真实扣费，保存前必须校验计费方式合法、价格有限且非负喵。
+		err = ratio_setting.CheckGroupModelPricing(option.Value.(string))
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
 	case "GroupDefaultModel":
 		err = ratio_setting.CheckGroupModelMap(option.Value.(string))
 		if err != nil {
@@ -648,27 +693,26 @@ func UpdateOption(c *gin.Context) {
 			common.ApiErrorMsg(c, "计费表达式配置必须是模型到表达式的 JSON 对象: "+err.Error())
 			return
 		}
-		models := make([]string, 0, len(expressions))
-		for modelName := range expressions {
-			models = append(models, modelName)
+		if modelName, exprErr := smokeTestBillingExpressions(expressions); exprErr != nil {
+			common.ApiErrorMsg(c, fmt.Sprintf("模型 %s 的计费表达式无效: %v", modelName, exprErr))
+			return
 		}
-		sort.Strings(models)
-		generation := jsplugin.DefaultRegistry.Generation()
-		for _, modelName := range models {
-			expression := expressions[modelName]
-			if plugin, ok := generation.GetByModel(modelName); ok {
-				err = billing_setting.SmokeTestTaskExpr(expression, plugin.Meta.UsageSchema)
-			} else if target, resolved := model.ResolveTaskModelAlias(generation, modelName); resolved {
-				if plugin, ok := generation.Get(target.PluginKey); ok {
-					err = billing_setting.SmokeTestTaskExpr(expression, plugin.Meta.UsageSchema)
-				} else {
-					err = billing_setting.SmokeTestExpr(expression)
-				}
-			} else {
-				err = billing_setting.SmokeTestExpr(expression)
-			}
-			if err != nil {
-				common.ApiErrorMsg(c, fmt.Sprintf("模型 %s 的计费表达式无效: %v", modelName, err))
+	case "billing_setting.group_billing_expr":
+		// 分组级表达式是「分组 -> 模型 -> 表达式」两层结构，逐分组做同样的编译与冒烟校验喵。
+		groupExpressions := make(map[string]map[string]string)
+		if err = common.UnmarshalJsonStr(option.Value.(string), &groupExpressions); err != nil {
+			common.ApiErrorMsg(c, "分组计费表达式配置必须是「分组 -> 模型 -> 表达式」的 JSON 对象: "+err.Error())
+			return
+		}
+		groups := make([]string, 0, len(groupExpressions))
+		for groupName := range groupExpressions {
+			groups = append(groups, groupName)
+		}
+		// 排序后再校验，保证同一份配置每次都报同一条错误，便于管理员定位喵。
+		sort.Strings(groups)
+		for _, groupName := range groups {
+			if modelName, exprErr := smokeTestBillingExpressions(groupExpressions[groupName]); exprErr != nil {
+				common.ApiErrorMsg(c, fmt.Sprintf("分组 %s 模型 %s 的计费表达式无效: %v", groupName, modelName, exprErr))
 				return
 			}
 		}

@@ -43,6 +43,34 @@ export type BillingUsageExample = {
   facts: Record<string, string | number>
 }
 
+/**
+ * 某个分组对某个模型的定制定价喵。
+ *
+ * 同一个模型 id 在不同分组下可以有完全不同的计费方式和价格（比如 A 组按次、B 组按量），
+ * 后端只会下发「真的配过定制」的分组；没出现在 `group_pricing` 里的分组继续用模型顶层的
+ * 全局价格字段喵。
+ *
+ * 约定喵：
+ * - 这里的价格是「未乘分组倍率」的基础价，分组倍率仍由前端按 `group_ratio` 另乘，
+ *   与后端「分组定制价 × 分组倍率 = 最终价」的语义一致喵。
+ * - `billing_mode` 为空即代表「这个分组不是阶梯计费」，这条 entry 完全可信，
+ *   不需要再回落去看模型顶层的 `billing_mode` 喵。
+ */
+export type GroupPricingEntry = {
+  /** 0 表示按量计费，1 表示按次计费，与 PricingModel.quota_type 同义喵。 */
+  quota_type: number
+  model_ratio: number
+  model_price: number
+  completion_ratio: number
+  cache_ratio?: number | null
+  create_cache_ratio?: number | null
+  image_ratio?: number | null
+  audio_ratio?: number | null
+  audio_completion_ratio?: number | null
+  billing_mode?: string
+  billing_expr?: string
+}
+
 export type PricingModel = {
   id: number
   model_name: string
@@ -68,6 +96,8 @@ export type PricingModel = {
   supported_endpoint_types?: string[]
   key?: string
   group_ratio?: Record<string, number>
+  /** 分组名 -> 该分组的定制定价；只包含真的配过定制的分组喵。 */
+  group_pricing?: Record<string, GroupPricingEntry>
   /** Billing mode (e.g. "tiered_expr") used to flag dynamic pricing */
   billing_mode?: string
   /** Raw expression describing dynamic / tiered billing */

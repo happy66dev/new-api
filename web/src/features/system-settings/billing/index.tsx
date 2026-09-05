@@ -62,6 +62,10 @@ const defaultBillingSettings: BillingSettings = {
   'group_ratio_setting.group_special_usable_group': '{}',
   GroupDefaultModel: '{}',
   GroupRetryTimes: '{}',
+  // 分组定制定价三份配置的空态：都是「分组 -> 模型 -> ...」两层对象，空对象表示全站都没配定制喵。
+  GroupModelPricing: '{}',
+  'billing_setting.group_billing_mode': '{}',
+  'billing_setting.group_billing_expr': '{}',
   'console_setting.model_square_visible_groups': '[]',
   'console_setting.group_access_rules': '[]',
   PayAddress: '',

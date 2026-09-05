@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -19,19 +20,31 @@ const (
 	BillingModeTieredExpr = "tiered_expr"
 	BillingModeField      = "billing_mode"
 	BillingExprField      = "billing_expr"
+	// GroupBillingModeField 与 GroupBillingExprField 是分组级配置在上游价格同步载荷里的字段名喵。
+	GroupBillingModeField = "group_billing_mode"
+	GroupBillingExprField = "group_billing_expr"
 	maxTaskExprSmokeTests = 64
 )
 
 // BillingSetting is managed by config.GlobalConfig.Register.
-// DB keys: billing_setting.billing_mode, billing_setting.billing_expr
+// DB keys: billing_setting.billing_mode, billing_setting.billing_expr,
+// billing_setting.group_billing_mode, billing_setting.group_billing_expr
 type BillingSetting struct {
 	BillingMode map[string]string `json:"billing_mode"`
 	BillingExpr map[string]string `json:"billing_expr"`
+	// GroupBillingMode 是「分组 -> 模型 -> 计费方式」的分组级覆盖喵。
+	// 同一个模型 id 可以在 A 分组走阶梯表达式、在 B 分组回落成普通倍率计费喵。
+	GroupBillingMode map[string]map[string]string `json:"group_billing_mode"`
+	// GroupBillingExpr 是「分组 -> 模型 -> 计费表达式」的分组级覆盖喵。
+	// 各家上游对同一模型报价不同，用分组级表达式就能各自独立描述喵。
+	GroupBillingExpr map[string]map[string]string `json:"group_billing_expr"`
 }
 
 var billingSetting = BillingSetting{
-	BillingMode: make(map[string]string),
-	BillingExpr: make(map[string]string),
+	BillingMode:      make(map[string]string),
+	BillingExpr:      make(map[string]string),
+	GroupBillingMode: make(map[string]map[string]string),
+	GroupBillingExpr: make(map[string]map[string]string),
 }
 
 func init() {
@@ -62,13 +75,89 @@ func GetBillingExprCopy() map[string]string {
 	return lo.Assign(billingSetting.BillingExpr)
 }
 
+// GetBillingModeForGroup 返回「该分组下此模型」实际生效的计费方式喵。
+// 分组级配置优先，没配就回落到全局的 GetBillingMode，分组名为空时等价于只看全局喵。
+func GetBillingModeForGroup(group, model string) string {
+	if mode, ok := lookupGroupBillingValue(billingSetting.GroupBillingMode, group, model); ok {
+		return mode
+	}
+	return GetBillingMode(model)
+}
+
+// GetBillingExprForGroup 返回「该分组下此模型」实际生效的计费表达式喵。
+// 分组级表达式优先，没配就回落到全局表达式，让只定制了部分分组的模型继续可用喵。
+func GetBillingExprForGroup(group, model string) (string, bool) {
+	if expr, ok := lookupGroupBillingValue(billingSetting.GroupBillingExpr, group, model); ok {
+		return expr, true
+	}
+	return GetBillingExpr(model)
+}
+
+// lookupGroupBillingValue 在「分组 -> 模型 -> 值」两层映射里查一个非空字符串喵。
+// 这是分组级计费方式与分组级表达式共用的查表逻辑，空分组、空表、空值都视为没配喵。
+func lookupGroupBillingValue(source map[string]map[string]string, group, model string) (string, bool) {
+	// 喵~防御：分组名或模型名为空、整份配置为空时直接判为没配，交给调用方回落全局喵。
+	if group == "" || model == "" || len(source) == 0 {
+		return "", false
+	}
+	models, ok := source[group]
+	// 喵~防御：该分组没配过或配成空表时同样回落全局喵。
+	if !ok || len(models) == 0 {
+		return "", false
+	}
+	value, ok := models[model]
+	// 空字符串表示「这一项留空」，同样当作没配，避免用空表达式把模型算成 0 元喵。
+	if !ok || strings.TrimSpace(value) == "" {
+		return "", false
+	}
+	return value, true
+}
+
+// GetGroupBillingExpr 只查分组级表达式、不回落全局喵。
+// 用于判断「这条表达式到底是不是该分组的定制」，好在日志与前端里标出定价来源喵。
+func GetGroupBillingExpr(group, model string) (string, bool) {
+	return lookupGroupBillingValue(billingSetting.GroupBillingExpr, group, model)
+}
+
+// GetGroupBillingMode 只查分组级计费方式、不回落全局喵。
+// 模型广场靠它判断「这个分组是不是单独声明了阶梯计费」，从而决定要不要给该分组下发独立定价卡片喵。
+func GetGroupBillingMode(group, model string) (string, bool) {
+	return lookupGroupBillingValue(billingSetting.GroupBillingMode, group, model)
+}
+
+// GetGroupBillingModeCopy 返回分组级计费方式的浅拷贝，供管理端展示与保存前比对喵。
+func GetGroupBillingModeCopy() map[string]map[string]string {
+	return cloneGroupBillingMap(billingSetting.GroupBillingMode)
+}
+
+// GetGroupBillingExprCopy 返回分组级计费表达式的浅拷贝，供管理端展示与保存前比对喵。
+func GetGroupBillingExprCopy() map[string]map[string]string {
+	return cloneGroupBillingMap(billingSetting.GroupBillingExpr)
+}
+
+// cloneGroupBillingMap 深拷贝两层映射，避免调用方改动返回值污染全局配置喵。
+func cloneGroupBillingMap(source map[string]map[string]string) map[string]map[string]string {
+	cloned := make(map[string]map[string]string, len(source))
+	for group, models := range source {
+		cloned[group] = lo.Assign(models)
+	}
+	return cloned
+}
+
 func GetPricingSyncData(base map[string]any) map[string]any {
-	extra := make(map[string]any, 2)
+	extra := make(map[string]any, 4)
 	if modes := GetBillingModeCopy(); len(modes) > 0 {
 		extra[BillingModeField] = modes
 	}
 	if exprs := GetBillingExprCopy(); len(exprs) > 0 {
 		extra[BillingExprField] = exprs
+	}
+	// 分组级计费方式与表达式也一起同步，否则下游站点拉到的定价会漏掉分组定制部分喵。
+	if modes := GetGroupBillingModeCopy(); len(modes) > 0 {
+		extra[GroupBillingModeField] = modes
+	}
+	if exprs := GetGroupBillingExprCopy(); len(exprs) > 0 {
+		extra[GroupBillingExprField] = exprs
 	}
 	return lo.Assign(base, extra)
 }

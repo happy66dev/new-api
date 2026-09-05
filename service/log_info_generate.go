@@ -69,6 +69,23 @@ func appendRequestPath(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other
 	}
 }
 
+// appendPricingGroupOverrideToOther 把「这笔账用的是哪个分组的定制价」写进消费日志喵。
+// 放进 admin_info 是因为 model.formatUserLogs 会给普通用户剥掉整个 admin_info，
+// 分组定价结构属于站点运营信息，只给管理员看就够了喵。
+func appendPricingGroupOverrideToOther(other map[string]interface{}, pricingGroupOverride string) {
+	// 喵~防御：没命中分组定制价（绝大多数请求）时什么都不写，避免给日志塞无用字段喵。
+	if other == nil || pricingGroupOverride == "" {
+		return
+	}
+	adminInfo, ok := other["admin_info"].(map[string]interface{})
+	// 喵~防御：admin_info 不存在或类型不对时新建一个，绝不覆盖已有的合法内容喵。
+	if !ok || adminInfo == nil {
+		adminInfo = map[string]interface{}{}
+		other["admin_info"] = adminInfo
+	}
+	adminInfo["pricing_group_override"] = pricingGroupOverride
+}
+
 func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, modelRatio, groupRatio, completionRatio float64,
 	cacheTokens int, cacheRatio float64, modelPrice float64, userGroupRatio float64) map[string]interface{} {
 	other := make(map[string]interface{})
@@ -109,6 +126,8 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	AppendChannelAffinityAdminInfo(ctx, adminInfo)
 
 	other["admin_info"] = adminInfo
+	// 记下这笔账命中的分组定制定价来源，管理员才能核对「为什么这个分组是这个价」喵。
+	appendPricingGroupOverrideToOther(other, relayInfo.PriceData.PricingGroupOverride)
 	appendRequestPath(ctx, relayInfo, other)
 	appendRequestConversionChain(relayInfo, other)
 	appendFinalRequestFormat(relayInfo, other)
@@ -297,6 +316,8 @@ func GenerateMjOtherInfo(relayInfo *relaycommon.RelayInfo, priceData hosttypes.P
 	if priceData.GroupRatioInfo.HasSpecialRatio {
 		other["user_group_ratio"] = priceData.GroupRatioInfo.GroupSpecialRatio
 	}
+	// MJ 走独立的日志构造，这里同样补上分组定制定价来源，保持审计口径一致喵。
+	appendPricingGroupOverrideToOther(other, priceData.PricingGroupOverride)
 	appendRequestPath(nil, relayInfo, other)
 	return other
 }

@@ -208,6 +208,8 @@ func InitOptionMap() {
 	common.OptionMap["CreateCacheRatio"] = ratio_setting.CreateCacheRatio2JSONString()
 	common.OptionMap["GroupRatio"] = ratio_setting.GroupRatio2JSONString()
 	common.OptionMap["GroupGroupRatio"] = ratio_setting.GroupGroupRatio2JSONString()
+	// 分组定制定价：同一模型在不同分组下的按次/按量与各类倍率覆盖喵。
+	common.OptionMap["GroupModelPricing"] = ratio_setting.GroupModelPricing2JSONString()
 	common.OptionMap["GroupDefaultModel"] = ratio_setting.GroupDefaultModel2JSONString()
 	common.OptionMap["GroupRetryTimes"] = ratio_setting.GroupRetryTimes2JSONString()
 	common.OptionMap["UserUsableGroups"] = setting.UserUsableGroups2JSONString()
@@ -803,6 +805,13 @@ func updateOptionMap(key string, value string) (err error) {
 		err = ratio_setting.UpdateGroupRatioByJSONString(value)
 	case "GroupGroupRatio":
 		err = ratio_setting.UpdateGroupGroupRatioByJSONString(value)
+	case "GroupModelPricing":
+		err = ratio_setting.UpdateGroupModelPricingByJSONString(value)
+		// 分组定制价会进入模型广场下发内容，写入成功后必须立刻失效定价缓存，
+		// 否则管理端改完价，用户在模型广场最多还会看到一分钟的旧价喵。
+		if err == nil {
+			InvalidatePricingCache()
+		}
 	case "GroupDefaultModel":
 		err = ratio_setting.UpdateGroupDefaultModelByJSONString(value)
 	case "GroupRetryTimes":

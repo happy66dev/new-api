@@ -35,7 +35,10 @@ import {
 } from '../lib/dynamic-price'
 import { getTaskNumberFields } from '../lib/task-expr'
 import { parseTags } from '../lib/filters'
-import { isTokenBasedModel } from '../lib/model-helpers'
+import {
+  isTokenBasedModel,
+  resolveGroupPricingModel,
+} from '../lib/model-helpers'
 import { formatPrice, formatRequestPrice } from '../lib/price'
 import type { PricingModel, TokenUnit } from '../types'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
@@ -60,7 +63,10 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
   const priceRate = props.priceRate ?? 1
   const usdExchangeRate = props.usdExchangeRate ?? 1
   const showRechargePrice = props.showRechargePrice ?? false
-  const isTokenBased = isTokenBasedModel(props.model)
+  // 选中了具体分组时，卡片价格要按该分组的定制价展示，而不是模型的全局价喵。
+  // 没有定制的分组会原样返回同一个对象，行为与改造前完全一致喵。
+  const priceModel = resolveGroupPricingModel(props.model, props.selectedGroup)
+  const isTokenBased = isTokenBasedModel(priceModel)
   const tokenUnitLabel = tokenUnit === 'K' ? '1K' : '1M'
   const tags = parseTags(props.model.tags)
   const groups = props.model.enable_groups || []
@@ -69,10 +75,10 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
   const modelIcon = modelIconKey ? getLobeIcon(modelIconKey, 28) : null
   const initial = props.model.model_name?.charAt(0).toUpperCase() || '?'
   const isDynamicPricing =
-    props.model.billing_mode === 'tiered_expr' &&
-    Boolean(props.model.billing_expr)
-  const isUnconfiguredTaskUsage = isUnconfiguredTaskUsageModel(props.model)
-  const hasCachedPrice = isTokenBased && props.model.cache_ratio != null
+    priceModel.billing_mode === 'tiered_expr' &&
+    Boolean(priceModel.billing_expr)
+  const isUnconfiguredTaskUsage = isUnconfiguredTaskUsageModel(priceModel)
+  const hasCachedPrice = isTokenBased && priceModel.cache_ratio != null
   const dynamicPriceOptions = {
     tokenUnit,
     showRechargePrice,
@@ -84,14 +90,11 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
     ),
   }
   const dynamicSummary = isDynamicPricing
-    ? getDynamicPricingSummary(props.model, dynamicPriceOptions)
+    ? getDynamicPricingSummary(priceModel, dynamicPriceOptions)
     : null
-  const cardExamplePrice = getCardExamplePrice(
-    props.model,
-    dynamicPriceOptions
-  )
+  const cardExamplePrice = getCardExamplePrice(priceModel, dynamicPriceOptions)
   const showTaskFieldLabels =
-    getTaskNumberFields(props.model.billing_usage_schema).length > 1
+    getTaskNumberFields(priceModel.billing_usage_schema).length > 1
 
   const primaryGroup = groups[0]
   const bottomTags = [...endpoints.slice(0, 2), ...tags.slice(0, 2)]
@@ -184,7 +187,7 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
           {t('Input')}{' '}
           <span className='text-foreground font-mono font-semibold'>
             {formatPrice(
-              props.model,
+              priceModel,
               'input',
               tokenUnit,
               showRechargePrice,
@@ -198,7 +201,7 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
           {t('Output')}{' '}
           <span className='text-foreground font-mono font-semibold'>
             {formatPrice(
-              props.model,
+              priceModel,
               'output',
               tokenUnit,
               showRechargePrice,
@@ -213,7 +216,7 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
             {t('Cached')}{' '}
             <span className='text-foreground font-mono font-semibold'>
               {formatPrice(
-                props.model,
+                priceModel,
                 'cache',
                 tokenUnit,
                 showRechargePrice,
@@ -231,7 +234,7 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
       <span className='text-muted-foreground whitespace-nowrap'>
         <span className='text-foreground font-mono font-semibold'>
           {formatRequestPrice(
-            props.model,
+            priceModel,
             showRechargePrice,
             priceRate,
             usdExchangeRate,
@@ -325,7 +328,7 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
               {primaryGroup === 'user-shared' ? t('User Shared') : primaryGroup}
             </span>
           )}
-          <ModelBillingModeBadge model={props.model} />
+          <ModelBillingModeBadge model={priceModel} />
         </div>
         <ModelPerfBadge perf={props.perf} className='row-span-2 self-start' />
 

@@ -42,7 +42,11 @@ const claudeCacheCreation1hMultiplier = 6 / 3.75
 // the pre-consumed quota still reflects a plausible output cost in paid groups.
 const defaultTieredPreConsumeMaxTokens = 8192
 
-func resolveAutoRoutePricingModel(c *gin.Context, modelName string) string {
+// resolveAutoRoutePricingModel 决定 auto/xxx 这类虚拟模型名该用哪个模型名去查价喵。
+// 虚拟模型名自己配了价（按次价、倍率或该分组的定制价）就按虚拟名计价，
+// 否则退回到它的第一个真实路由目标去查价喵。
+// group 参与判断是因为分组定制价能让一个全局未定价的虚拟名在该分组下变成已定价喵。
+func resolveAutoRoutePricingModel(c *gin.Context, group string, modelName string) string {
 	if !strings.HasPrefix(modelName, "auto/") {
 		return modelName
 	}
@@ -54,10 +58,12 @@ func resolveAutoRoutePricingModel(c *gin.Context, modelName string) string {
 	if !ok || len(routes[modelName]) == 0 {
 		return modelName
 	}
-	if _, configured := ratio_setting.GetModelPrice(modelName, false); configured {
+	pricing := ratio_setting.ResolveModelPricing(group, modelName)
+	// 按次价可用（非哨兵值）说明虚拟名自己就有价，直接按虚拟名计价喵。
+	if pricing.UsePrice && pricing.ModelPrice >= 0 {
 		return modelName
 	}
-	if _, configured, _ := ratio_setting.GetModelRatio(modelName); configured {
+	if pricing.ModelRatioConfigured {
 		return modelName
 	}
 	return routes[modelName][0]
@@ -93,19 +99,25 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hostty
 }
 
 func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens int, meta *types.TokenCountMeta) (hosttypes.PriceData, error) {
+	// 必须先确定最终分组再读价格：分组定制定价允许同一个模型 id 在不同分组下用不同计费方式
+	// （比如 A 组按次、B 组按量），所以 UsingGroup 一定要在取任何价格之前定下来喵。
+	groupRatioInfo := HandleGroupRatio(c, info)
+
 	originModelName := info.OriginModelName
-	if pricingModelName := resolveAutoRoutePricingModel(c, originModelName); pricingModelName != originModelName {
+	if pricingModelName := resolveAutoRoutePricingModel(c, info.UsingGroup, originModelName); pricingModelName != originModelName {
 		info.OriginModelName = pricingModelName
 		defer func() { info.OriginModelName = originModelName }()
 	}
-	modelPrice, usePrice := ratio_setting.GetModelPrice(info.OriginModelName, false)
 
-	groupRatioInfo := HandleGroupRatio(c, info)
-
-	// Check if this model uses tiered_expr billing
-	if billing_setting.GetBillingMode(info.OriginModelName) == billing_setting.BillingModeTieredExpr {
+	// 阶梯计费表达式同样支持按分组覆盖，按最终分组判一次计费方式喵。
+	if billing_setting.GetBillingModeForGroup(info.UsingGroup, info.OriginModelName) == billing_setting.BillingModeTieredExpr {
 		return modelPriceHelperTiered(c, info, promptTokens, meta, groupRatioInfo)
 	}
+
+	// 合并分组定制价与全局价，得到该分组下此模型真正生效的定价快照喵。
+	pricing := ratio_setting.ResolveModelPricing(info.UsingGroup, info.OriginModelName)
+	modelPrice := pricing.ModelPrice
+	usePrice := pricing.UsePrice
 
 	var preConsumedQuota int
 	var modelRatio float64
@@ -123,27 +135,20 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		if meta.MaxTokens != 0 {
 			preConsumedTokens += meta.MaxTokens
 		}
-		var success bool
-		var matchName string
-		modelRatio, success, matchName = ratio_setting.GetModelRatio(info.OriginModelName)
-		if !success {
-			acceptUnsetRatio := false
-			if info.UserSetting.AcceptUnsetRatioModel {
-				acceptUnsetRatio = true
-			}
-			if !acceptUnsetRatio {
-				return hosttypes.PriceData{}, modelPriceNotConfiguredError(matchName, info.UserId)
-			}
+		modelRatio = pricing.ModelRatio
+		// 该分组与全局都没给这个模型配倍率时，除非用户开了「接受未定价模型」，否则直接拒绝请求喵。
+		if !pricing.ModelRatioConfigured && !info.UserSetting.AcceptUnsetRatioModel {
+			return hosttypes.PriceData{}, modelPriceNotConfiguredError(pricing.MatchedModelName, info.UserId)
 		}
-		completionRatio = ratio_setting.GetCompletionRatio(info.OriginModelName)
-		cacheRatio, _ = ratio_setting.GetCacheRatio(info.OriginModelName)
-		cacheCreationRatio, _ = ratio_setting.GetCreateCacheRatio(info.OriginModelName)
+		completionRatio = pricing.CompletionRatio
+		cacheRatio = pricing.CacheRatioValue()
+		cacheCreationRatio = pricing.CreateCacheRatioValue()
 		cacheCreationRatio5m = cacheCreationRatio
 		// 固定1h和5min缓存写入价格的比例
 		cacheCreationRatio1h = cacheCreationRatio * claudeCacheCreation1hMultiplier
-		imageRatio, _ = ratio_setting.GetImageRatio(info.OriginModelName)
-		audioRatio = ratio_setting.GetAudioRatio(info.OriginModelName)
-		audioCompletionRatio = ratio_setting.GetAudioCompletionRatio(info.OriginModelName)
+		imageRatio = pricing.ImageRatioValue()
+		audioRatio = pricing.AudioRatioValue()
+		audioCompletionRatio = pricing.AudioCompletionRatioValue()
 		ratio := modelRatio * groupRatioInfo.GroupRatio
 		quota, err := common.QuotaFromFloatStrict(float64(preConsumedTokens) * ratio)
 		if err != nil {
@@ -190,6 +195,8 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		CacheCreation5mRatio: cacheCreationRatio5m,
 		CacheCreation1hRatio: cacheCreationRatio1h,
 		QuotaToPreConsume:    preConsumedQuota,
+		// 记下命中的分组定制价来源，供消费日志审计「这笔为什么是这个价」喵。
+		PricingGroupOverride: pricing.OverrideGroup,
 	}
 	if usePrice {
 		for name, ratio := range meta.BillingRatios {
@@ -212,32 +219,34 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 
 // ModelPriceHelperPerCall 按次/按量计费的 PriceHelper (MJ、Task)
 func ModelPriceHelperPerCall(c *gin.Context, info *relaycommon.RelayInfo) (hosttypes.PriceData, error) {
+	// 同 ModelPriceHelper：先定分组再取价，否则分组定制价会按错误的分组解析喵。
+	groupRatioInfo := HandleGroupRatio(c, info)
+
 	originModelName := info.OriginModelName
-	if pricingModelName := resolveAutoRoutePricingModel(c, originModelName); pricingModelName != originModelName {
+	if pricingModelName := resolveAutoRoutePricingModel(c, info.UsingGroup, originModelName); pricingModelName != originModelName {
 		info.OriginModelName = pricingModelName
 		defer func() { info.OriginModelName = originModelName }()
 	}
-	groupRatioInfo := HandleGroupRatio(c, info)
 
-	modelPrice, success := ratio_setting.GetModelPrice(info.OriginModelName, true)
-	usePrice := success
+	// 合并分组定制价与全局价：任务 / MJ 这类按次场景同样支持某个分组单独定价喵。
+	pricing := ratio_setting.ResolveModelPricing(info.UsingGroup, info.OriginModelName)
+	modelPrice := pricing.ModelPrice
+	usePrice := pricing.UsePrice
 	var modelRatio float64
 
-	if !success {
-		defaultPrice, ok := ratio_setting.GetDefaultModelPriceMap()[info.OriginModelName]
-		if ok {
+	if !usePrice {
+		// 分组与全局都没配按次价时，再退一步看内置默认价表（MJ 等老模型靠它兜底）喵。
+		if defaultPrice, ok := ratio_setting.GetDefaultModelPriceMap()[info.OriginModelName]; ok {
 			modelPrice = defaultPrice
 			usePrice = true
 		} else {
-			var ratioSuccess bool
-			var matchName string
-			modelRatio, ratioSuccess, matchName = ratio_setting.GetModelRatio(info.OriginModelName)
-			acceptUnsetRatio := false
-			if info.UserSetting.AcceptUnsetRatioModel {
-				acceptUnsetRatio = true
-			}
-			if !ratioSuccess && !acceptUnsetRatio {
-				return hosttypes.PriceData{}, modelPriceNotConfiguredError(matchName, info.UserId)
+			// 沿用旧版 GetModelPrice(printErr=true) 的这条日志，方便管理员发现漏配喵。
+			// 与旧版的唯一差别：内置默认价表能兜住的模型不再刷这条日志，噪音更少喵。
+			common.SysError("model price not found: " + pricing.MatchedModelName)
+			modelRatio = pricing.ModelRatio
+			// 倍率也没配且用户没开「接受未定价模型」时直接拒绝，避免静默按兜底倍率扣费喵。
+			if !pricing.ModelRatioConfigured && !info.UserSetting.AcceptUnsetRatioModel {
+				return hosttypes.PriceData{}, modelPriceNotConfiguredError(pricing.MatchedModelName, info.UserId)
 			}
 		}
 	}
@@ -280,26 +289,40 @@ func ModelPriceHelperPerCall(c *gin.Context, info *relaycommon.RelayInfo) (hostt
 		UsePrice:       usePrice,
 		Quota:          quota,
 		GroupRatioInfo: groupRatioInfo,
+		// 记下命中的分组定制价来源，供任务日志审计「这笔为什么是这个价」喵。
+		PricingGroupOverride: pricing.OverrideGroup,
 	}
 	return priceData, nil
 }
 
+// HasModelBillingConfig 判断某个模型有没有任何可用的计费配置（全局口径）喵。
+// 只在拿不到分组上下文时使用；能确定分组时请用 HasModelBillingConfigForGroup 喵。
 func HasModelBillingConfig(modelName string) bool {
-	if _, ok := ratio_setting.GetModelPrice(modelName, false); ok {
+	return HasModelBillingConfigForGroup("", modelName)
+}
+
+// HasModelBillingConfigForGroup 判断「某分组下某模型」有没有可用的计费配置喵。
+// 分组定制价能让一个全局未定价的模型在该分组下变成已定价，所以模型可见性判断必须带上分组，
+// 否则用户在自己分组明明有价的模型会被当成未定价而从模型列表里消失喵。
+func HasModelBillingConfigForGroup(group string, modelName string) bool {
+	pricing := ratio_setting.ResolveModelPricing(group, modelName)
+	// 按次价可用（非哨兵值）即视为已定价喵。
+	if pricing.UsePrice && pricing.ModelPrice >= 0 {
 		return true
 	}
-	if _, ok, _ := ratio_setting.GetModelRatio(modelName); ok {
+	if pricing.ModelRatioConfigured {
 		return true
 	}
-	if billing_setting.GetBillingMode(modelName) != billing_setting.BillingModeTieredExpr {
+	if billing_setting.GetBillingModeForGroup(group, modelName) != billing_setting.BillingModeTieredExpr {
 		return false
 	}
-	expr, ok := billing_setting.GetBillingExpr(modelName)
+	expr, ok := billing_setting.GetBillingExprForGroup(group, modelName)
 	return ok && strings.TrimSpace(expr) != ""
 }
 
 func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, promptTokens int, meta *types.TokenCountMeta, groupRatioInfo hosttypes.GroupRatioInfo) (hosttypes.PriceData, error) {
-	exprStr, ok := billing_setting.GetBillingExpr(info.OriginModelName)
+	// 表达式按最终分组解析：分组级表达式优先，没配再回落全局表达式喵。
+	exprStr, ok := billing_setting.GetBillingExprForGroup(info.UsingGroup, info.OriginModelName)
 	if !ok {
 		return hosttypes.PriceData{}, fmt.Errorf("model %s is configured as tiered_expr but has no billing expression", info.OriginModelName)
 	}
@@ -360,6 +383,10 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, promptT
 		FreeModel:         freeModel,
 		GroupRatioInfo:    groupRatioInfo,
 		QuotaToPreConsume: preConsumedQuota,
+	}
+	// 表达式来自分组定制时记下来源分组，供日志审计「这笔为什么按这个表达式算」喵。
+	if _, fromGroup := billing_setting.GetGroupBillingExpr(info.UsingGroup, info.OriginModelName); fromGroup {
+		priceData.PricingGroupOverride = info.UsingGroup
 	}
 
 	logger.LogDebug(c, "model_price_helper_tiered result: model=%s preConsume=%d quotaBeforeGroup=%.2f groupRatio=%.2f tier=%s", info.OriginModelName, preConsumedQuota, quotaBeforeGroup, groupRatioInfo.GroupRatio, trace.MatchedTier)

@@ -376,6 +376,12 @@ export type BillingSettings = {
   GroupRetryTimes: string
   'console_setting.model_square_visible_groups': string
   'console_setting.group_access_rules': string
+  /** 分组定制定价：分组 -> 模型 -> 定价覆盖项的 JSON 字符串喵。 */
+  GroupModelPricing: string
+  /** 分组级计费方式：分组 -> 模型 -> tiered_expr 的 JSON 字符串喵。 */
+  'billing_setting.group_billing_mode': string
+  /** 分组级阶梯计费表达式：分组 -> 模型 -> 表达式的 JSON 字符串喵。 */
+  'billing_setting.group_billing_expr': string
   PayAddress: string
   EpayId: string
   EpayKey: string

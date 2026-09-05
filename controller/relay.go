@@ -588,7 +588,11 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 		return nil, types.NewError(fmt.Errorf("分组 %s 下模型 %s 的可用渠道不存在（retry）", selectGroup, info.OriginModelName), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
 
-	info.PriceData.GroupRatioInfo = helper.HandleGroupRatio(c, info)
+	// 分组可能因 auto 跨分组重试而变化：按最终分组整体刷新定价口径（计费方式、价格、倍率、
+	// 阶梯表达式），否则会拿旧分组的价格去结算实际由新分组上游完成的请求喵。
+	if repriceErr := helper.RefreshPriceDataForSelectedGroup(c, info); repriceErr != nil {
+		return nil, types.NewError(repriceErr, types.ErrorCodeModelPriceError, types.ErrOptionWithSkipRetry())
+	}
 
 	selectedModel := retryParam.SelectedModel
 	if selectedModel == "" {
