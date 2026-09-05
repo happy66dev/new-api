@@ -373,10 +373,34 @@ candidateRelayLoop:
 			newAPIError = service.NormalizeViolationFeeError(newAPIError)
 			relayInfo.LastError = newAPIError
 
+			// 多 key 故障转移规则（上游引入）：命中禁用规则时自动禁用当前 key，并允许同渠道多 key 自动重试喵。
+			multiKeyRuleMatched := channel.MatchesMultiKeyDisableRule(
+				newAPIError.StatusCode,
+				newAPIError.Error(),
+			)
+			if multiKeyRuleMatched {
+				usingKey := common.GetContextKeyString(c, constant.ContextKeyChannelKey)
+				model.UpdateChannelStatus(channel.Id, usingKey, common.ChannelStatusAutoDisabled, newAPIError.ErrorWithStatusCode())
+				if channel.ChannelInfo.MultiKeyStatusList == nil {
+					channel.ChannelInfo.MultiKeyStatusList = make(map[int]int)
+				}
+				for index, key := range channel.GetKeys() {
+					if key == usingKey {
+						channel.ChannelInfo.MultiKeyStatusList[index] = common.ChannelStatusAutoDisabled
+						break
+					}
+				}
+			}
+
 			processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
 
 			retryTimes := getRetryTimesForCurrentGroup(c, relayInfo.TokenGroup)
-			if !shouldRetry(c, newAPIError, retryTimes-retryParam.GetRetry()) {
+			shouldRetryRequest := shouldRetry(c, newAPIError, retryTimes-retryParam.GetRetry())
+			if multiKeyRuleMatched && channel.ChannelInfo.MultiKeyAutoRetry && !types.IsSkipRetryError(newAPIError) && channel.HasEnabledMultiKey() {
+				shouldRetryRequest = true
+				retryParam.PinnedChannelID = channel.Id
+			}
+			if !shouldRetryRequest {
 				break
 			}
 		}
@@ -417,6 +441,7 @@ candidateRelayLoop:
 			}
 		}
 
+		// 候选链重试渠道诊断日志：记录本候选链实际经过的渠道序列喵。
 		useChannel := c.GetStringSlice("use_channel")
 		if len(useChannel) > 1 {
 			retryLogStr := fmt.Sprintf("重试：%s", strings.Trim(strings.Join(strings.Fields(fmt.Sprint(useChannel)), "->"), "[]"))

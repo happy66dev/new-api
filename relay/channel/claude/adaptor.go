@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -101,6 +102,11 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 	if err != nil {
 		return nil, err
 	}
+	if helper.ApplyEffortModelRoute(info) {
+		if converted, ok := result.Value.(*dto.ClaudeRequest); ok {
+			converted.SetModelName(info.UpstreamModelName)
+		}
+	}
 	return result.Value, nil
 }
 
@@ -121,6 +127,9 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 	claudeRequest, ok := result.Value.(*dto.ClaudeRequest)
 	if !ok {
 		return nil, fmt.Errorf("expected Anthropic Messages request, got %T", result.Value)
+	}
+	if helper.ApplyEffortModelRoute(info) {
+		claudeRequest.SetModelName(info.UpstreamModelName)
 	}
 	return claudeRequest, nil
 }

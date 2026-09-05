@@ -58,6 +58,10 @@ const MODELS_SECTIONS = [
               settings['global.responses_to_chat_completions_policy'],
               '{}'
             ),
+            effort_model_routes: formatJsonForEditor(
+              settings['global.effort_model_routes'],
+              '{}'
+            ),
           },
           general_setting: {
             ping_interval_enabled:

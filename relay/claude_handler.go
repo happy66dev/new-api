@@ -111,6 +111,9 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 			info.SetReasoningEffort(effort)
 		}
 	}
+	if helper.ApplyEffortModelRoute(info) {
+		request.SetModelName(info.UpstreamModelName)
+	}
 
 	if info.ChannelSetting.SystemPrompt != "" {
 		if request.System == nil {

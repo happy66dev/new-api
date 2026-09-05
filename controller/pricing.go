@@ -79,6 +79,11 @@ func GetPricing(c *gin.Context) {
 	pricing = filterPricingByUsableGroups(pricing, pricingGroups)
 	// 追加共享中的用户上游模型条目，供模型广场在 user-shared 分组展示喵。
 	pricing = appendSharedUpstreamPricing(pricing, userId)
+	// 收集分组描述：以系统全局描述为底，再叠加当前用户可用分组的描述（上游引入 group 描述）喵。
+	groupDescriptions := setting.GetGroupDescriptionsCopy()
+	for groupName, description := range usableGroup {
+		groupDescriptions[groupName] = description
+	}
 	// check groupRatio contains usableGroup
 	for group := range ratio_setting.GetGroupRatioCopy() {
 		if _, ok := pricingGroups[group]; !ok {
@@ -92,6 +97,7 @@ func GetPricing(c *gin.Context) {
 		"vendors":             model.GetVendors(),
 		"group_ratio":         groupRatio,
 		"usable_group":        usableGroup,
+		"group_descriptions":  groupDescriptions,
 		"model_square_groups": visibleGroups,
 		"supported_endpoint":  model.GetSupportedEndpointMap(),
 		"auto_groups":         service.GetUserAutoGroupForUser(userID, group),

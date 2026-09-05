@@ -33,7 +33,7 @@ import {
   ModelCardGrid,
   ModelDetailsDrawer,
 } from './components'
-import { EXCLUDED_GROUPS, VIEW_MODES } from './constants'
+import { EXCLUDED_GROUPS, FILTER_ALL, VIEW_MODES } from './constants'
 import { useFilters } from './hooks/use-filters'
 import { usePricingData } from './hooks/use-pricing-data'
 
@@ -49,6 +49,7 @@ export function Pricing() {
     vendors,
     groupRatio,
     usableGroup,
+    groupDescriptions,
     modelSquareGroups,
     endpointMap,
     autoGroups,
@@ -115,6 +116,9 @@ export function Pricing() {
     clearFilters()
     clearSearch()
   }, [clearFilters, clearSearch])
+
+  const selectedGroupDescription =
+    groupFilter !== FILTER_ALL ? groupDescriptions[groupFilter]?.trim() : ''
 
   const renderPricingContent = () => {
     if (filteredModels.length === 0) {
@@ -249,6 +253,17 @@ export function Pricing() {
                 activeFilterCount={activeFilterCount}
                 onClearFilters={clearFilters}
               />
+
+              {selectedGroupDescription && (
+                <div className='rounded-lg border border-border/70 bg-muted/20 px-4 py-3'>
+                  <div className='text-muted-foreground mb-1 text-xs font-medium uppercase'>
+                    {t('Group description')}
+                  </div>
+                  <p className='text-foreground whitespace-pre-wrap break-words text-sm leading-relaxed'>
+                    {selectedGroupDescription}
+                  </p>
+                </div>
+              )}
 
               {renderPricingContent()}
             </main>

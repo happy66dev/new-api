@@ -66,7 +66,6 @@ func ModelMappedHelper(c *gin.Context, info *relaycommon.RelayInfo, request dto.
 			info.UpstreamModelName = currentModel
 		}
 	}
-
 	if request != nil {
 		request.SetModelName(info.UpstreamModelName)
 	}

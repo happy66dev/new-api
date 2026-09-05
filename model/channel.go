@@ -67,6 +67,13 @@ type ChannelInfo struct {
 	MultiKeyDisabledTime   map[int]int64         `json:"multi_key_disabled_time,omitempty"`   // key禁用时间列表，key index -> time
 	MultiKeyPollingIndex   int                   `json:"multi_key_polling_index"`             // 多Key模式下轮询的key索引
 	MultiKeyMode           constant.MultiKeyMode `json:"multi_key_mode"`
+	MultiKeyDisableRules   []MultiKeyDisableRule `json:"multi_key_disable_rules,omitempty"`
+	MultiKeyAutoRetry      bool                  `json:"multi_key_auto_retry,omitempty"`
+}
+
+type MultiKeyDisableRule struct {
+	StatusCode int    `json:"status_code,omitempty"`
+	Message    string `json:"message,omitempty"`
 }
 
 type ChannelSortOptions struct {
@@ -289,6 +296,39 @@ func (channel *Channel) GetNextEnabledKey() (string, int, *types.NewAPIError) {
 
 func (channel *Channel) SaveChannelInfo() error {
 	return DB.Model(channel).Update("channel_info", channel.ChannelInfo).Error
+}
+
+func (channel *Channel) MatchesMultiKeyDisableRule(statusCode int, message string) bool {
+	if channel == nil || !channel.ChannelInfo.IsMultiKey {
+		return false
+	}
+	lowerMessage := strings.ToLower(message)
+	for _, rule := range channel.ChannelInfo.MultiKeyDisableRules {
+		if rule.StatusCode == 0 && strings.TrimSpace(rule.Message) == "" {
+			continue
+		}
+		if rule.StatusCode != 0 && rule.StatusCode != statusCode {
+			continue
+		}
+		if expected := strings.TrimSpace(rule.Message); expected != "" && !strings.Contains(lowerMessage, strings.ToLower(expected)) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func (channel *Channel) HasEnabledMultiKey() bool {
+	if channel == nil || !channel.ChannelInfo.IsMultiKey {
+		return false
+	}
+	keys := channel.GetKeys()
+	for index := range keys {
+		if channel.ChannelInfo.MultiKeyStatusList == nil || channel.ChannelInfo.MultiKeyStatusList[index] == common.ChannelStatusEnabled || channel.ChannelInfo.MultiKeyStatusList[index] == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (channel *Channel) GetModels() []string {

@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -278,7 +279,7 @@ func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 
 func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 
-	if model_setting.GetGeminiSettings().ThinkingAdapterEnabled &&
+	if !info.EffortModelRouted && model_setting.GetGeminiSettings().ThinkingAdapterEnabled &&
 		!model_setting.ShouldPreserveThinkingSuffix(info.OriginModelName) {
 		// 新增逻辑：处理 -thinking-<budget> 格式
 		if strings.Contains(info.UpstreamModelName, "-thinking-") {
@@ -332,6 +333,11 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 	result, err := relayconvert.ConvertRequest(c, info, types.RelayFormatGemini, request)
 	if err != nil {
 		return nil, err
+	}
+	if helper.ApplyEffortModelRoute(info) {
+		if converted, ok := result.Value.(*dto.GeminiChatRequest); ok {
+			converted.SetModelName(info.UpstreamModelName)
+		}
 	}
 	return result.Value, nil
 }
@@ -392,6 +398,9 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 	geminiRequest, ok := result.Value.(*dto.GeminiChatRequest)
 	if !ok {
 		return nil, fmt.Errorf("expected Gemini generateContent request, got %T", result.Value)
+	}
+	if helper.ApplyEffortModelRoute(info) {
+		geminiRequest.SetModelName(info.UpstreamModelName)
 	}
 	return geminiRequest, nil
 }
