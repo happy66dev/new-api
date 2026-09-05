@@ -433,6 +433,10 @@ func ReplaceVirtualModelCandidates(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// 候选路由目标变更时，收集需要清理 perf 内存热桶的候选探测键，待事务成功提交后统一清除喵。
+	ownerUserID := c.GetInt("id")
+	virtualModelName := virtualModel.VirtualModelName()
+	resetProbeModelNames := make([]string, 0)
 	var input virtualModelCandidatesReplaceInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		common.ApiError(c, err)
@@ -501,8 +505,21 @@ func ReplaceVirtualModelCandidates(c *gin.Context) {
 			if currentCandidate.SourceType != candidateInput.SourceType {
 				return errors.New("保留候选不能变更来源类型")
 			}
+			// 目标变更即重置：先读取旧来源配置判断候选路由目标是否变化，必须在写入新目标前判定喵。
+			identityChanged, identityError := virtualModelCandidateRoutingIdentityChanged(tx, &currentCandidate, candidateInput)
+			if identityError != nil {
+				return identityError
+			}
 			if err := updateVirtualModelCandidateWithConfig(tx, &currentCandidate, candidateIndex, candidateInput); err != nil {
 				return err
+			}
+			// 路由目标变化（如内部候选把真实模型从 A 改成 B）时，清除旧目标累积到该候选 id 上的
+			// 冻结与探测状态，避免旧模型 A 的失败记录继续作用到新模型 B 上喵。
+			if identityChanged {
+				if resetError := model.DeleteVirtualModelCandidateRuntimeState(tx, ownerUserID, virtualModelName, currentCandidate.ID); resetError != nil {
+					return resetError
+				}
+				resetProbeModelNames = append(resetProbeModelNames, fmt.Sprintf("%s/candidate/%d", virtualModelName, currentCandidate.ID))
 			}
 		}
 		removedCandidateIDs := make([]int, 0)
@@ -513,6 +530,13 @@ func ReplaceVirtualModelCandidates(c *gin.Context) {
 		}
 		if err := deleteVirtualModelCandidatesWithAssociations(tx, removedCandidateIDs); err != nil {
 			return err
+		}
+		// 候选移除后补清其内部自动冻结与候选探测状态，避免孤儿行在 perf/探测表长期残留喵。
+		for _, removedCandidateID := range removedCandidateIDs {
+			if resetError := model.DeleteVirtualModelCandidateRuntimeState(tx, ownerUserID, virtualModelName, removedCandidateID); resetError != nil {
+				return resetError
+			}
+			resetProbeModelNames = append(resetProbeModelNames, fmt.Sprintf("%s/candidate/%d", virtualModelName, removedCandidateID))
 		}
 		// 喵~防御：默认 action 与摘要只含资源编号，审计中禁止写入 URL、API Key 或规则正文喵。
 		if err := tx.Create(&model.VirtualModelAuditLog{VirtualModelID: modelID, OwnerUserID: c.GetInt("id"), OperatorID: c.GetInt("id"), Action: "candidate_chain_replace", SummaryDigest: fmt.Sprintf("candidate_count:%d", len(input.Candidates)), CreatedTime: common.GetTimestamp()}).Error; err != nil {
@@ -528,6 +552,10 @@ func ReplaceVirtualModelCandidates(c *gin.Context) {
 		}
 		common.ApiError(c, err)
 		return
+	}
+	// perf 热桶清空必须等事务成功提交后再执行：先删持久化行再清内存残留，防止 flush 把旧目标样本重新写回喵。
+	for _, probeModelName := range resetProbeModelNames {
+		perfmetrics.ClearEntityProbeHotBucket(probeModelName, perfmetrics.EntityProbeGroupSelf)
 	}
 	response, err := buildVirtualModelResponse(virtualModel)
 	if err != nil {
@@ -726,6 +754,88 @@ func deleteVirtualModelCandidatesWithAssociations(tx *gorm.DB, candidateIDs []in
 		return err
 	}
 	return tx.Unscoped().Where("id IN ?", candidateIDs).Delete(&model.VirtualModelCandidate{}).Error
+}
+
+// virtualModelCandidateRoutingIdentityChanged 判断本次保存是否会改变候选实际路由目标喵。
+// 只对比会影响「请求真正打到哪个上游」的字段；仅改 enabled/stable_order/失败规则/hedge 参数
+// 不算目标变化，返回 false 以免误清运行态喵。
+func virtualModelCandidateRoutingIdentityChanged(tx *gorm.DB, candidate *model.VirtualModelCandidate, input virtualModelCandidateInput) (bool, error) {
+	// 喵~防御：缺少事务或候选编号时无法读取旧配置，保守按无变化处理避免误清喵。
+	if tx == nil || candidate == nil || candidate.ID <= 0 {
+		return false, nil
+	}
+	// 内部候选的路由目标 = 固定分组 + 真实模型喵。
+	if candidate.SourceType == model.VirtualModelSourceInternal {
+		var stored model.VirtualModelInternalCandidate
+		if err := tx.Where("candidate_id = ?", candidate.ID).First(&stored).Error; err != nil {
+			// 喵~防御：记录不存在或读取失败时按无变化处理，绝不因探测失败清空运行态喵。
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return false, nil
+			}
+			return false, err
+		}
+		// 新老分组或真实模型任一不同即认为路由目标已变化喵。
+		newGroupName := strings.TrimSpace(input.GroupName)
+		newRealModelName := strings.TrimSpace(input.RealModelName)
+		return newGroupName != strings.TrimSpace(stored.GroupName) || newRealModelName != strings.TrimSpace(stored.RealModelName), nil
+	}
+	// 未知来源类型不可能到达此处（保存入口已拒绝），保守返回无变化喵。
+	if candidate.SourceType != model.VirtualModelSourceCustom {
+		return false, nil
+	}
+	var stored model.VirtualModelCustomCandidate
+	if err := tx.Where("candidate_id = ?", candidate.ID).First(&stored).Error; err != nil {
+		// 喵~防御：同内部候选，来源配置缺失时按无变化处理喵。
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	// 引用用户上游模型时，路由目标 = 被引用的上游条目喵。
+	if input.UpstreamModelID != nil && *input.UpstreamModelID > 0 {
+		// 旧配置无引用或引用了不同条目即视为目标变化喵。
+		return stored.UpstreamModelID == nil || *stored.UpstreamModelID != *input.UpstreamModelID, nil
+	}
+	// 引用状态互切（旧为引用、新为直填，或反之）一律视为目标变化喵。
+	if stored.UpstreamModelID != nil {
+		return true, nil
+	}
+	// 直填自定义候选：对比身份摘要材料字段，与 CustomCandidateIdentityDigest 口径一致喵。
+	if strings.TrimSpace(input.RealModelName) != strings.TrimSpace(stored.RealModelName) {
+		return true, nil
+	}
+	// 认证方式经归一化后对比，避免新旧合法枚举仅写法不同被误判为变化喵。
+	newAuthStyle, authError := model.NormalizeVirtualModelAuthStyle(input.AuthStyle)
+	if authError != nil {
+		return false, authError
+	}
+	if newAuthStyle != model.VirtualModelAuthStyleFromStorage(stored.AuthStyle) {
+		return true, nil
+	}
+	// 地址只在新提供时比较指纹；省略 = 沿用旧密文，不视为变化喵。
+	if trimmedBaseURL := strings.TrimSpace(input.BaseURL); trimmedBaseURL != "" {
+		parsedBaseURL, validateError := virtualmodelservice.ValidateCustomBaseURL(trimmedBaseURL)
+		if validateError != nil {
+			return false, validateError
+		}
+		newBaseURLFingerprint := virtualmodelservice.CredentialFingerprint(parsedBaseURL.String())
+		// 喵~防御：历史行可能只存摘要没有指纹，缺指纹时回退比较摘要避免把合法重存误判为变化喵。
+		storedBaseIdentity := strings.TrimSpace(stored.BaseURLFingerprint)
+		if storedBaseIdentity == "" {
+			storedBaseIdentity = strings.TrimSpace(stored.BaseURLSummary)
+		}
+		if newBaseURLFingerprint != storedBaseIdentity {
+			return true, nil
+		}
+	}
+	// 凭据只在新提供时比较指纹；省略 = 沿用旧密文，不视为变化喵。
+	if trimmedAPIKey := strings.TrimSpace(input.APIKey); trimmedAPIKey != "" {
+		newAPIKeyFingerprint := virtualmodelservice.CredentialFingerprint(trimmedAPIKey)
+		if newAPIKeyFingerprint != strings.TrimSpace(stored.APIKeyFingerprint) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // ReplaceVirtualModelCandidateFailureRules 原子替换一个候选的排序失败规则，并通过父模型版本避免并发覆盖喵。

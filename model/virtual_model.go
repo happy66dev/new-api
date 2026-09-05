@@ -946,6 +946,44 @@ func DeleteVirtualModelByOwnerWithVersion(virtualModelID int, ownerUserID int, o
 	})
 }
 
+// DeleteVirtualModelCandidateRuntimeState 删除候选路由目标变更后应作废的全部运行态喵。
+// 候选编辑（如内部候选把真实模型从 A 改成 B）不改变候选 id，旧目标累积的冻结与探测状态若不清除，
+// 会继续按候选 id 命中新目标，导致请求误跳过健康候选、面板误显示旧模型历史喵。
+// 清理范围：内部自动冻结(owner,candidate)、手动冻结(candidate)、候选探测行(virtual_candidate,entity=candidate)、
+// 以及 perf 候选桶(model=virtual/<vm>/candidate/<id>, group=自用探测分组)喵。
+// 失败规则与 hedge 参数属于用户配置，刻意保留，不在本函数清理范围内喵。
+// 自定义候选的 identity 摘要冻结（VirtualModelCustomFreezeState）也刻意不清：改目标后摘要已变自动失效，
+// 且该摘要可能与同 owner 其它候选共享同一上游身份，误删会伤及健康候选喵。
+func DeleteVirtualModelCandidateRuntimeState(database *gorm.DB, ownerUserID int, virtualModelName string, candidateID int) error {
+	// 喵~防御：数据库连接为空时拒绝执行，避免运行时空指针或绕过调用方事务边界喵。
+	if database == nil {
+		return errors.New("virtual model database is unavailable")
+	}
+	// 喵~防御：所有者、候选编号或虚拟模型名为空时按无操作处理，避免空条件生成全表删除喵。
+	if ownerUserID <= 0 || candidateID <= 0 || strings.TrimSpace(virtualModelName) == "" {
+		return nil
+	}
+	// 候选节点在 perf_metrics 的探测键与 distributor.go 记录口径一致：virtual/<名>/candidate/<候选id>喵。
+	probeModelName := fmt.Sprintf("%s/candidate/%d", strings.TrimSpace(virtualModelName), candidateID)
+	// 清除按 (owner,candidate_id) 键存的内部候选自动冻结（旧目标 5xx/网络失败攒出的退避）喵。
+	if err := database.Where("owner_user_id = ? AND candidate_id = ?", ownerUserID, candidateID).Delete(&VirtualModelInternalFreezeState{}).Error; err != nil {
+		return err
+	}
+	// 清除按 candidate_id 键存的手动冻结，与内部自动冻结语义一致：目标已更换则旧冻结不再适用喵。
+	if err := database.Where("candidate_id = ?", candidateID).Delete(&VirtualModelManualFreeze{}).Error; err != nil {
+		return err
+	}
+	// 清除候选节点的探测状态行（成功率/最近错误），避免旧模型的最近一次失败继续显示在新目标下喵。
+	if err := database.Where("scope = ? AND entity_id = ?", EntityProbeScopeVirtualCandidate, candidateID).Delete(&EntityProbeState{}).Error; err != nil {
+		return err
+	}
+	// group 是保留字，必须用 commonGroupCol 做方言安全引用；分组常量与 perfmetrics.EntityProbeGroupSelf 对齐喵。
+	if err := database.Where("model_name = ? AND "+commonGroupCol+" = ?", probeModelName, EntityProbeSelfGroupName).Delete(&PerfMetric{}).Error; err != nil {
+		return err
+	}
+	return nil
+}
+
 // DeleteVirtualModelByOwner 在事务内删除所有关联数据并写入不可还原审计喵。
 func DeleteVirtualModelByOwner(virtualModelID int, ownerUserID int, operatorID int) error {
 	// 喵~防御：兼容旧调用方时先按当前版本读取再执行版本化删除，避免复制一套删除逻辑喵。

@@ -19,6 +19,9 @@ const (
 	EntityProbeScopeVirtualCandidate = "virtual_candidate"
 	// EntityProbeSharedGroupName 实体探测共享维度在 perf_metrics 表的固定分组名，与 perf_metrics 包常量对齐喵。
 	EntityProbeSharedGroupName = "__entity_probe_shared__"
+	// EntityProbeSelfGroupName 实体探测自用维度在 perf_metrics 表的固定分组名，与 perf_metrics 包 EntityProbeGroupSelf 对齐喵。
+	// model 包不能 import perfmetrics（避免环依赖），故以对齐注释的重复字面量提供喵。
+	EntityProbeSelfGroupName = "__entity_probe__"
 )
 
 // EntityProbeState 存储单个被检测实体的最近一次调用与累计计数喵。
