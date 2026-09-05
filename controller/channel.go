@@ -1500,12 +1500,14 @@ func CopyChannel(c *gin.Context) {
 
 // MultiKeyManageRequest represents the request for multi-key management operations
 type MultiKeyManageRequest struct {
-	ChannelId int    `json:"channel_id"`
-	Action    string `json:"action"`              // "disable_key", "enable_key", "delete_key", "delete_disabled_keys", "get_key_status"
-	KeyIndex  *int   `json:"key_index,omitempty"` // for disable_key, enable_key, and delete_key actions
-	Page      int    `json:"page,omitempty"`      // for get_key_status pagination
-	PageSize  int    `json:"page_size,omitempty"` // for get_key_status pagination
-	Status    *int   `json:"status,omitempty"`    // for get_key_status filtering: 1=enabled, 2=manual_disabled, 3=auto_disabled, nil=all
+	ChannelId    int                         `json:"channel_id"`
+	Action       string                      `json:"action"`              // "disable_key", "enable_key", "delete_key", "delete_disabled_keys", "get_key_status"
+	KeyIndex     *int                        `json:"key_index,omitempty"` // for disable_key, enable_key, and delete_key actions
+	Page         int                         `json:"page,omitempty"`      // for get_key_status pagination
+	PageSize     int                         `json:"page_size,omitempty"` // for get_key_status pagination
+	Status       *int                        `json:"status,omitempty"`    // for get_key_status filtering: 1=enabled, 2=manual_disabled, 3=auto_disabled, nil=all
+	DisableRules []model.MultiKeyDisableRule `json:"disable_rules,omitempty"`
+	AutoRetry    *bool                       `json:"auto_retry,omitempty"`
 }
 
 // MultiKeyStatusResponse represents the response for key status query
@@ -1516,9 +1518,11 @@ type MultiKeyStatusResponse struct {
 	PageSize   int         `json:"page_size"`
 	TotalPages int         `json:"total_pages"`
 	// Statistics
-	EnabledCount        int `json:"enabled_count"`
-	ManualDisabledCount int `json:"manual_disabled_count"`
-	AutoDisabledCount   int `json:"auto_disabled_count"`
+	EnabledCount        int                         `json:"enabled_count"`
+	ManualDisabledCount int                         `json:"manual_disabled_count"`
+	AutoDisabledCount   int                         `json:"auto_disabled_count"`
+	DisableRules        []model.MultiKeyDisableRule `json:"disable_rules,omitempty"`
+	AutoRetry           bool                        `json:"auto_retry"`
 }
 
 type KeyStatus struct {
@@ -1685,6 +1689,42 @@ func ManageMultiKeys(c *gin.Context) {
 				EnabledCount:        enabledCount,        // Overall statistics
 				ManualDisabledCount: manualDisabledCount, // Overall statistics
 				AutoDisabledCount:   autoDisabledCount,   // Overall statistics
+				DisableRules:        channel.ChannelInfo.MultiKeyDisableRules,
+				AutoRetry:           channel.ChannelInfo.MultiKeyAutoRetry,
+			},
+		})
+		return
+
+	case "update_rules":
+		if len(request.DisableRules) > 50 {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "禁用规则数量不能超过 50 条"})
+			return
+		}
+		for _, rule := range request.DisableRules {
+			if rule.StatusCode < 0 || rule.StatusCode > 599 || (rule.StatusCode == 0 && strings.TrimSpace(rule.Message) == "") {
+				c.JSON(http.StatusOK, gin.H{"success": false, "message": "禁用规则必须包含有效状态码或响应文本"})
+				return
+			}
+			if len(rule.Message) > 4096 {
+				c.JSON(http.StatusOK, gin.H{"success": false, "message": "禁用规则响应文本过长"})
+				return
+			}
+		}
+		channel.ChannelInfo.MultiKeyDisableRules = request.DisableRules
+		if request.AutoRetry != nil {
+			channel.ChannelInfo.MultiKeyAutoRetry = *request.AutoRetry
+		}
+		if err := channel.SaveChannelInfo(); err != nil {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
+			return
+		}
+		model.CacheUpdateChannel(channel)
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "多密钥规则已更新",
+			"data": gin.H{
+				"disable_rules": channel.ChannelInfo.MultiKeyDisableRules,
+				"auto_retry":    channel.ChannelInfo.MultiKeyAutoRetry,
 			},
 		})
 		return
@@ -2004,7 +2044,7 @@ func ManageMultiKeys(c *gin.Context) {
 }
 
 func multiKeyActionRequiresSensitiveWrite(action string) bool {
-	return action == "delete_key" || action == "delete_disabled_keys"
+	return action == "delete_key" || action == "delete_disabled_keys" || action == "update_rules"
 }
 
 // OllamaPullModel 拉取 Ollama 模型

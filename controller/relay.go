@@ -259,10 +259,33 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		newAPIError = service.NormalizeViolationFeeError(newAPIError)
 		relayInfo.LastError = newAPIError
 
+		multiKeyRuleMatched := channel.MatchesMultiKeyDisableRule(
+			newAPIError.StatusCode,
+			newAPIError.Error(),
+		)
+		if multiKeyRuleMatched {
+			usingKey := common.GetContextKeyString(c, constant.ContextKeyChannelKey)
+			model.UpdateChannelStatus(channel.Id, usingKey, common.ChannelStatusAutoDisabled, newAPIError.ErrorWithStatusCode())
+			if channel.ChannelInfo.MultiKeyStatusList == nil {
+				channel.ChannelInfo.MultiKeyStatusList = make(map[int]int)
+			}
+			for index, key := range channel.GetKeys() {
+				if key == usingKey {
+					channel.ChannelInfo.MultiKeyStatusList[index] = common.ChannelStatusAutoDisabled
+					break
+				}
+			}
+		}
+
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
 
 		retryTimes := getRetryTimesForCurrentGroup(c, relayInfo.TokenGroup)
-		if !shouldRetry(c, newAPIError, retryTimes-retryParam.GetRetry()) {
+		shouldRetryRequest := shouldRetry(c, newAPIError, retryTimes-retryParam.GetRetry())
+		if multiKeyRuleMatched && channel.ChannelInfo.MultiKeyAutoRetry && !types.IsSkipRetryError(newAPIError) && channel.HasEnabledMultiKey() {
+			shouldRetryRequest = true
+			retryParam.PinnedChannelID = channel.Id
+		}
+		if !shouldRetryRequest {
 			break
 		}
 	}

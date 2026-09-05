@@ -97,6 +97,21 @@ const responsesToChatCompletionsPolicyAllChannelsExample = JSON.stringify(
   2
 )
 
+const effortModelRoutesExample = JSON.stringify(
+  {
+    gemini: {
+      'gemini-3.1-flash-lite': {
+        high: 'gemini-3.1-flash-lite-high',
+        low: 'gemini-3.1-flash-lite-low',
+      },
+    },
+    anthropic: {},
+    openai: {},
+  },
+  null,
+  2
+)
+
 const jsonString = z.string().refine((value) => {
   const trimmed = value.trim()
   if (!trimmed) return true
@@ -114,6 +129,7 @@ const schema = z.object({
     thinking_model_blacklist: jsonString,
     chat_completions_to_responses_policy: jsonString,
     responses_to_chat_completions_policy: jsonString,
+    effort_model_routes: jsonString,
   }),
   general_setting: z.object({
     ping_interval_enabled: z.boolean(),
@@ -129,6 +145,7 @@ type FlatGlobalModelSettings = {
   'global.thinking_model_blacklist': string
   'global.chat_completions_to_responses_policy': string
   'global.responses_to_chat_completions_policy': string
+  'global.effort_model_routes': string
   'general_setting.ping_interval_enabled': boolean
   'general_setting.ping_interval_seconds': number
 }
@@ -148,6 +165,10 @@ const flattenGlobalValues = (
   ),
   'global.responses_to_chat_completions_policy': normalizeJsonText(
     values.global.responses_to_chat_completions_policy,
+    '{}'
+  ),
+  'global.effort_model_routes': normalizeJsonText(
+    values.global.effort_model_routes,
     '{}'
   ),
   'general_setting.ping_interval_enabled':
@@ -273,6 +294,34 @@ export function GlobalSettingsCard({ defaultValues }: GlobalSettingsCardProps) {
                 <FormDescription>
                   {t(
                     'Models listed here will not automatically append or remove -thinking / -nothinking suffixes.'
+                  )}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <Separator />
+
+          <FormField
+            control={form.control}
+            name='global.effort_model_routes'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Effort model routes')}</FormLabel>
+                <FormControl>
+                  <JsonCodeEditor
+                    value={field.value}
+                    onChange={field.onChange}
+                    name={field.name}
+                    onBlur={field.onBlur}
+                    textareaRef={field.ref}
+                    placeholder={effortModelRoutesExample}
+                  />
+                </FormControl>
+                <FormDescription>
+                  {t(
+                    'Route models by channel type and reasoning effort. Keys are openai, anthropic, or gemini; each effort maps to an explicit upstream model.'
                   )}
                 </FormDescription>
                 <FormMessage />

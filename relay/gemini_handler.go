@@ -87,6 +87,9 @@ func GeminiHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 			relayconvert.ApplyGeminiThinkingConfig(request, info)
 		}
 	}
+	if helper.ApplyEffortModelRoute(info) {
+		request.SetModelName(info.UpstreamModelName)
+	}
 
 	adaptor := GetAdaptor(info.ApiType)
 	if adaptor == nil {

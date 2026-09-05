@@ -27,6 +27,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/common_handler"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/model_setting"
@@ -362,6 +363,12 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 			}
 		}
 	}
+	if info.GetReasoningEffort() == "" {
+		info.SetReasoningEffort(request.ReasoningEffort)
+	}
+	if helper.ApplyEffortModelRoute(info) {
+		request.Model = info.UpstreamModelName
+	}
 
 	return request, nil
 }
@@ -620,6 +627,9 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 	}
 	if info != nil && request.Reasoning != nil && request.Reasoning.Effort != "" {
 		info.SetReasoningEffort(request.Reasoning.Effort)
+	}
+	if helper.ApplyEffortModelRoute(info) {
+		request.Model = info.UpstreamModelName
 	}
 	return request, nil
 }

@@ -70,6 +70,7 @@ type GroupFormValues = {
   GroupRatio: string
   TopupGroupRatio: string
   UserUsableGroups: string
+  GroupDescriptions: string
   GroupGroupRatio: string
   AutoGroups: string
   AutoGroupDescription: string
@@ -205,6 +206,32 @@ export const GroupRatioForm = memo(function GroupRatioForm({
               onChange={(field, value) =>
                 handleFieldChange(field as keyof GroupFormValues, value)
               }
+            />
+
+            <FormField
+              control={form.control}
+              name='GroupDescriptions'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Group descriptions')}</FormLabel>
+                  <FormControl>
+                    <JsonCodeEditor
+                      value={field.value}
+                      onChange={field.onChange}
+                      name={field.name}
+                      onBlur={field.onBlur}
+                      textareaRef={field.ref}
+                      heightClassName='h-40 min-h-40 max-h-40'
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      'JSON map of group → description. Descriptions support multiple lines and can be set for groups users cannot select.'
+                    )}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
             />
 
             <GroupSpecialUsableRulesEditor
@@ -362,6 +389,32 @@ export const GroupRatioForm = memo(function GroupRatioForm({
                   <FormDescription>
                     {t(
                       'JSON map of group → description exposed when users create API keys.'
+                    )}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name='GroupDescriptions'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Group descriptions')}</FormLabel>
+                  <FormControl>
+                    <JsonCodeEditor
+                      value={field.value}
+                      onChange={field.onChange}
+                      name={field.name}
+                      onBlur={field.onBlur}
+                      textareaRef={field.ref}
+                      heightClassName='h-40 min-h-40 max-h-40'
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      'JSON map of group → description. Descriptions support multiple lines and can be set for groups users cannot select.'
                     )}
                   </FormDescription>
                   <FormMessage />

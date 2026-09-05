@@ -38,14 +38,15 @@ func AppendTaskPluginIdentityFilter(c *gin.Context, pluginKey string) {
 }
 
 type RetryParam struct {
-	Ctx           *gin.Context
-	TokenGroup    string
-	ModelName     string
-	SelectedModel string
-	RequestPath   string
-	Retry         *int
-	Attempt       int
-	resetNextTry  bool
+	Ctx             *gin.Context
+	TokenGroup      string
+	ModelName       string
+	SelectedModel   string
+	RequestPath     string
+	Retry           *int
+	Attempt         int
+	PinnedChannelID int
+	resetNextTry    bool
 }
 
 func (p *RetryParam) GetRetry() int {
@@ -150,6 +151,14 @@ func ChannelSupportsVirtualModel(channel *model.Channel, modelName string) bool 
 //	Retry=3: GroupB, priority1 (startRetryIndex=2, priorityRetry=1)
 //	         分组B, 优先级1
 func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, error) {
+	if param.PinnedChannelID > 0 {
+		channel, err := model.CacheGetChannel(param.PinnedChannelID)
+		param.PinnedChannelID = 0
+		if err != nil {
+			return nil, param.TokenGroup, err
+		}
+		return channel, param.TokenGroup, nil
+	}
 	var channel *model.Channel
 	var err error
 	selectGroup := param.TokenGroup
