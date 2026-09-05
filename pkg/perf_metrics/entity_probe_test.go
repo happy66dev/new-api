@@ -111,11 +111,11 @@ func TestQueryEntityProbeStatusDetailed(t *testing.T) {
 	require.Equal(t, int64(50), detailed.AvgTtftMs)
 	// 缓存命中率 = 50 / (200+100) = 16.67% 喵。
 	require.InDelta(t, 16.67, detailed.CacheHitRate, 0.01)
-	// 总 token = 输入 300 + 输出 50 喵。
+	// 总 token = 新输入 250 + 缓存读取 50 + 输出 50 = 350 喵。
 	require.Equal(t, int64(350), detailed.TotalTokens)
 	require.Len(t, detailed.Series, 1)
-	// 逐桶明细应反映输入/输出/缓存 token 喵。
-	require.Equal(t, int64(300), detailed.Series[0].InputTokens)
+	// 逐桶明细应反映输入/输出/缓存 token；输入按新口径扣除缓存读取（300 含缓存 → 250 新输入）喵。
+	require.Equal(t, int64(250), detailed.Series[0].InputTokens)
 	require.Equal(t, int64(50), detailed.Series[0].OutputTokens)
 	require.Equal(t, int64(50), detailed.Series[0].CachedTokens)
 	require.InDelta(t, 16.67, detailed.Series[0].CacheHitRate, 0.01)

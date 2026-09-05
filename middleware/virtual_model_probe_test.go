@@ -215,12 +215,13 @@ func TestRecordVirtualModelProbeSuccessAccumulatesOutputTokens(t *testing.T) {
 	usage := &dto.Usage{PromptTokens: 100, CompletionTokens: 20, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 30}}
 	recordVirtualModelProbeSuccess(ctx, executionState, 72, usage, 88)
 
-	// 候选层富系列聚合应累计输出 token（输入 100 + 输出 20）喵。
+	// 候选层富系列聚合应累计输出 token，输入按新口径扣除缓存读取（100 含缓存 → 70 新输入）喵。
 	detailed, err := perfmetrics.QueryEntityProbeStatusDetailed("vm-probe/candidate/72", perfmetrics.EntityProbeGroupSelf, 1)
 	require.NoError(t, err)
 	require.Len(t, detailed.Series, 1)
 	require.Equal(t, int64(20), detailed.Series[0].OutputTokens)
-	require.Equal(t, int64(100), detailed.Series[0].InputTokens)
+	require.Equal(t, int64(70), detailed.Series[0].InputTokens)
 	require.Equal(t, int64(30), detailed.Series[0].CachedTokens)
+	// 总 token = 新输入 70 + 缓存读取 30 + 输出 20 = 120 喵。
 	require.Equal(t, int64(120), detailed.TotalTokens)
 }

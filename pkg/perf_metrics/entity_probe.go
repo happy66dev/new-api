@@ -221,8 +221,13 @@ func QueryEntityProbeStatusDetailed(modelName string, group string, hours int) (
 	for _, ts := range timestamps {
 		value := merged[ts]
 		mergeStatusCounters(&total, value)
-		// 缓存命中率口径：Σ缓存命中 ÷ Σ输入，与内部模型缓存命中率语义对齐喵。
+		// 缓存命中率口径：Σ缓存读取 ÷（缓存读取 + 新输入），等价于 Σ缓存读取 ÷ Σ输入（原含缓存口径）喵。
 		cacheRate := cacheTokenRate(value)
+		// 新输入（不含缓存读取）：缓存命中已归属缓存分类，不再计入输入段喵。
+		nonCacheInput := value.inputTokens - value.cachedTokens
+		if nonCacheInput < 0 {
+			nonCacheInput = 0
+		}
 		detailed.Series = append(detailed.Series, EntityProbeBucket{
 			Ts:           ts,
 			RequestCount: value.requestCount,
@@ -230,7 +235,8 @@ func QueryEntityProbeStatusDetailed(modelName string, group string, hours int) (
 			AvgLatencyMs: avg(value.totalLatencyMs, value.requestCount),
 			AvgTtftMs:    avg(value.ttftSumMs, value.ttftCount),
 			CacheHitRate: math.Round(cacheRate*100) / 100,
-			InputTokens:  value.inputTokens,
+			// 输入字段按新口径展示新输入（不含缓存读取），缓存命中单列于 CachedTokens 喵。
+			InputTokens:  nonCacheInput,
 			OutputTokens: value.outputTokens,
 			CachedTokens: value.cachedTokens,
 			CacheCreation5mTokens: value.cacheCreation5mTokens,
@@ -245,6 +251,7 @@ func QueryEntityProbeStatusDetailed(modelName string, group string, hours int) (
 	detailed.AvgLatencyMs = avg(total.totalLatencyMs, total.requestCount)
 	detailed.AvgTtftMs = avg(total.ttftSumMs, total.ttftCount)
 	detailed.CacheHitRate = math.Round(cacheTokenRate(total)*100) / 100
+	// 总 token = 新输入 + 缓存读取 + 输出；数值上等于原总输入（含缓存）+ 输出喵。
 	detailed.TotalTokens = total.inputTokens + total.outputTokens
 	detailed.TotalCacheCreation5mTokens = total.cacheCreation5mTokens
 	detailed.TotalCacheCreation1hTokens = total.cacheCreation1hTokens

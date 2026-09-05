@@ -270,6 +270,8 @@ type EntityProbeBucket struct {
 	AvgLatencyMs int64   `json:"avg_latency_ms"`
 	AvgTtftMs    int64   `json:"avg_ttft_ms"`
 	CacheHitRate float64 `json:"cache_hit_rate"`
+	// InputTokens 是该小时桶的新输入 token（不含缓存读取）；缓存读取单列于 CachedTokens，
+	// 保证堆叠图里「输入/缓存/输出」三段互不重叠喵。
 	InputTokens  int64   `json:"input_tokens"`
 	OutputTokens int64   `json:"output_tokens"`
 	CachedTokens int64   `json:"cached_tokens"`
