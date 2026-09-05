@@ -108,6 +108,19 @@ func (s *textQuotaSummary) hasBillableUsage() bool {
 	return s.TotalTokens > 0 || !s.ToolCallSurchargeQuota.IsZero()
 }
 
+// dashboardTokenUsed 返回应记入数据看板/排行榜（quota_data.token_used）的 token 计数喵。
+// 常规请求按 prompt+completion；anthropic 语义上游把 input_tokens 与缓存读取分开上报，
+// 排行榜若只按日志列统计会少算缓存命中，所以这里把缓存读取补进输入，
+// 与 OpenAI/Gemini（prompt_tokens 已含缓存命中）口径对齐喵。
+// 注意只补缓存读取，不补缓存写入；消费日志行的输入列仍保持 anthropic 原始语义（缓存列单独展示）喵。
+func (s textQuotaSummary) dashboardTokenUsed() int {
+	tokenUsed := s.PromptTokens + s.CompletionTokens
+	if s.IsClaudeUsageSemantic {
+		tokenUsed += s.CacheTokens
+	}
+	return tokenUsed
+}
+
 func cacheWriteTokensTotal(summary textQuotaSummary) int {
 	if summary.CacheCreationTokens5m > 0 || summary.CacheCreationTokens1h > 0 {
 		splitCacheWriteTokens := summary.CacheCreationTokens5m + summary.CacheCreationTokens1h
@@ -594,18 +607,20 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		ChannelId:        relayInfo.ChannelId,
 		PromptTokens:     summary.PromptTokens,
 		CompletionTokens: summary.CompletionTokens,
-		ModelName:        logModel,
-		TokenName:        summary.TokenName,
-		Quota:            summary.Quota,
-		Content:          logContent,
-		TokenId:          relayInfo.TokenId,
-		UseTimeSeconds:   int(summary.UseTimeSeconds),
+		// anthropic 语义把缓存读取 token 补进看板/排行榜计数；日志行输入列仍为不含缓存的原始值喵。
+		DataTokenUsed:  summary.dashboardTokenUsed(),
+		ModelName:      logModel,
+		TokenName:      summary.TokenName,
+		Quota:          summary.Quota,
+		Content:        logContent,
+		TokenId:        relayInfo.TokenId,
+		UseTimeSeconds: int(summary.UseTimeSeconds),
 		// 候选级毫秒耗时与首字耗时供虚拟模型 internal 候选尝试序列展示该候选自己的耗时喵。
 		UseTimeMs:   candidateUseTimeMs,
 		FirstByteMs: firstByteMs,
-		IsStream:         relayInfo.IsStream,
-		Group:            relayInfo.UsingGroup,
-		Other:            other,
+		IsStream:    relayInfo.IsStream,
+		Group:       relayInfo.UsingGroup,
+		Other:       other,
 	})
 	gopool.Go(func() {
 		perfmetrics.RecordRelaySample(relayInfo, true, int64(summary.CompletionTokens), billingUsage)

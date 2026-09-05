@@ -379,15 +379,19 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 }
 
 type RecordConsumeLogParams struct {
-	ChannelId        int    `json:"channel_id"`
-	PromptTokens     int    `json:"prompt_tokens"`
-	CompletionTokens int    `json:"completion_tokens"`
-	ModelName        string `json:"model_name"`
-	TokenName        string `json:"token_name"`
-	Quota            int    `json:"quota"`
-	Content          string `json:"content"`
-	TokenId          int    `json:"token_id"`
-	UseTimeSeconds   int    `json:"use_time_seconds"`
+	ChannelId        int `json:"channel_id"`
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	// DataTokenUsed 是记入数据看板/排行榜（quota_data.token_used）的 token 计数喵。
+	// 为 0 时回退为 PromptTokens+CompletionTokens；anthropic 语义请求由计费层把
+	// 缓存读取 token 补进此值，但消费日志行的输入列仍保持 input_tokens（不含缓存）语义喵。
+	DataTokenUsed  int    `json:"-"`
+	ModelName      string `json:"model_name"`
+	TokenName      string `json:"token_name"`
+	Quota          int    `json:"quota"`
+	Content        string `json:"content"`
+	TokenId        int    `json:"token_id"`
+	UseTimeSeconds int    `json:"use_time_seconds"`
 	// UseTimeMs 请求级总耗时的毫秒精确值，仅虚拟模型 internal 候选注入候选尝试序列使用，普通请求为零喵。
 	UseTimeMs int64 `json:"-"`
 	// FirstByteMs 请求级首字耗时（毫秒），仅虚拟模型 internal 候选注入候选尝试序列使用，普通请求为零喵。
@@ -497,6 +501,12 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	if err != nil {
 		logger.LogError(c, "failed to record log: "+err.Error())
 	}
+	// 看板/排行榜 token 计数：默认同日志列（prompt+completion）；
+	// 计费层显式给出 DataTokenUsed（anthropic 补了缓存读取）时以其为准喵。
+	tokenUsed := params.PromptTokens + params.CompletionTokens
+	if params.DataTokenUsed > 0 {
+		tokenUsed = params.DataTokenUsed
+	}
 	if common.DataExportEnabled {
 		LogQuotaData(QuotaDataLogParams{
 			UserID:    userId,
@@ -504,7 +514,7 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 			ModelName: params.ModelName,
 			Quota:     params.Quota,
 			CreatedAt: createdAt,
-			TokenUsed: params.PromptTokens + params.CompletionTokens,
+			TokenUsed: tokenUsed,
 			UseGroup:  params.Group,
 			TokenID:   params.TokenId,
 			ChannelID: params.ChannelId,

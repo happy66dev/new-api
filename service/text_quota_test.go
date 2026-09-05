@@ -1186,3 +1186,35 @@ func TestVirtualModelRequestLevelTiming(t *testing.T) {
 	require.InDelta(t, 5000, elapsedMs, 300, "总耗时应为请求级（约 5 秒）喵")
 	require.Zero(t, firstByteMs, "未写响应时首字必须为零喵")
 }
+
+// TestTextQuotaSummaryDashboardTokenUsedCountsAnthropicCacheReadOnly 验证看板/排行榜 token 计数口径喵：
+// anthropic 语义只把缓存读取补进输入（与 OpenAI/Gemini 的 prompt 已含缓存命中对齐），缓存写入不参与喵。
+func TestTextQuotaSummaryDashboardTokenUsedCountsAnthropicCacheReadOnly(t *testing.T) {
+	// anthropic 语义：输入 70 + 缓存读取 30 + 输出 7 = 107；缓存写入 20 不入看板喵。
+	claude := textQuotaSummary{
+		PromptTokens:          70,
+		CompletionTokens:      7,
+		CacheTokens:           30,
+		CacheCreationTokens:   20,
+		CacheCreationTokens5m: 12,
+		CacheCreationTokens1h: 8,
+		IsClaudeUsageSemantic: true,
+	}
+	require.Equal(t, 107, claude.dashboardTokenUsed())
+
+	// openai/gemini 语义：prompt_tokens 已含缓存命中，不得重复累加喵。
+	openAI := textQuotaSummary{
+		PromptTokens:     100,
+		CompletionTokens: 10,
+		CacheTokens:      30,
+	}
+	require.Equal(t, 110, openAI.dashboardTokenUsed())
+
+	// 无缓存命中时 anthropic 语义与默认口径一致，不额外加数喵。
+	plainClaude := textQuotaSummary{
+		PromptTokens:          5,
+		CompletionTokens:      2,
+		IsClaudeUsageSemantic: true,
+	}
+	require.Equal(t, 7, plainClaude.dashboardTokenUsed())
+}
