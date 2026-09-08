@@ -49,6 +49,13 @@ func Distribute() func(c *gin.Context) {
 			abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidRequest, map[string]any{"Error": err.Error()}))
 			return
 		}
+		// 回环自递归拦截：本实例发出的回环请求若再次命中 user/ 或 virtual/ 命名空间，极可能构成无限递归风暴，
+		// 在预扣与转发前直接拒绝；再入的是普通模型则视为「导入本实例模型单跳即终止」的合法调用，放行正常服务喵。
+		if shouldRejectSelfRecursionLoop(c, modelRequest.Model) {
+			logger.LogWarn(c.Request.Context(), fmt.Sprintf("request loop detected (self-recursion), guard=%s model=%s remote=%s", loopGuardValueOf(c), modelRequest.Model, c.ClientIP()))
+			abortWithOpenAiMessage(c, http.StatusTooManyRequests, "request loop detected", types.ErrorCode("request_loop_detected"))
+			return
+		}
 		// 虚拟模型请求（virtual/ 命名空间）：进入独立执行链管理候选/失败重试/计费，多数情况在内部完成路由喵。
 		if shouldSelectChannel && isVirtualModelRequest(modelRequest.Model) {
 			handled := handleVirtualModelRequest(c, modelRequest)
@@ -100,6 +107,10 @@ func Distribute() func(c *gin.Context) {
 			// relay 请求链执行完成：退出自定义上游活跃计数（handle 阶段注册）喵。
 			if relayCtx := getUserUpstreamModelRelayContext(c); relayCtx != nil && relayCtx.upstreamModel != nil {
 				ExitUpstreamModelInflight(relayCtx.upstreamModel.ID, relayCtx.isShared)
+			}
+			// relay 链已结束：释放硬超时取消函数，避免请求级定时器悬挂到 600s 才释放喵。
+			if relayCtx := getUserUpstreamModelRelayContext(c); relayCtx != nil && relayCtx.requestCancelFunc != nil {
+				relayCtx.requestCancelFunc()
 			}
 			return
 		}
@@ -178,12 +189,6 @@ func Distribute() func(c *gin.Context) {
 				if preferredChannelID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, usingGroup); found {
 					affinityUsable := false
 					affinityModel := modelRequest.Model
-					if usingGroup == "auto" {
-						if route, ok := service.GetRequestAutoRoute(c, modelRequest.Model); ok && len(route) > 0 {
-							affinityModel = route[0]
-							selectedModel = affinityModel
-						}
-					}
 					preferred, err := model.CacheGetChannel(preferredChannelID)
 					affinitySatisfied := false
 					if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled {
@@ -195,7 +200,7 @@ func Distribute() func(c *gin.Context) {
 							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
 							autoGroups := service.GetRequestAutoGroups(c, userGroup)
 							for _, g := range autoGroups {
-								if model.IsChannelEnabledForGroupModel(g, affinityModel, preferred.Id) && service.ChannelSupportsVirtualModel(preferred, modelRequest.Model) {
+								if model.IsChannelEnabledForGroupModel(g, affinityModel, preferred.Id) {
 									selectGroup = g
 									common.SetContextKey(c, constant.ContextKeyAutoGroup, g)
 									channel = preferred
@@ -281,6 +286,17 @@ func Distribute() func(c *gin.Context) {
 // isVirtualModelRequest 判断请求模型是否进入独立虚拟模型命名空间喵。
 func isVirtualModelRequest(modelName string) bool {
 	return strings.HasPrefix(strings.TrimSpace(modelName), "virtual/")
+}
+
+// shouldRejectSelfRecursionLoop 判断一次携带本实例回环标记的再入请求是否构成真实递归风暴喵。
+// 只有再入模型仍是 user/ 或 virtual/（具备继续向本实例转发的可能）才需要拦截；
+// 再入的是普通模型（导入本实例站点模型、单跳即终止）时放行，避免误伤合法的同实例共享/引用喵。
+func shouldRejectSelfRecursionLoop(c *gin.Context, modelName string) bool {
+	// 喵~防御：未携带本实例标记或缺少上下文时不拦截喵。
+	if !isLoopGuardFromSelfRequest(c) {
+		return false
+	}
+	return isVirtualModelRequest(modelName) || isUserUpstreamModelRequest(modelName)
 }
 
 // virtualModelExecutionState 保存单个请求不可变的候选、规则、冻结和原始 JSON 请求体喵。
@@ -645,7 +661,7 @@ type VirtualModelCandidateAttempt struct {
 }
 
 // GetActiveVirtualModelCandidateAttempt 返回当前已激活候选尝试的身份摘要喵。
-// 普通模型请求、Token AutoRoutes 请求以及候选尚未激活时都返回 false，
+// 普通模型请求以及候选尚未激活时都返回 false，
 // 调用方必须在该情况下保留原有的请求级计费与日志语义喵。
 func GetActiveVirtualModelCandidateAttempt(c *gin.Context) (VirtualModelCandidateAttempt, bool) {
 	executionState, foundState := getVirtualModelExecutionState(c)

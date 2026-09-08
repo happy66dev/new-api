@@ -21,6 +21,7 @@ import {
   sideDrawerHeaderClassName,
 } from '@/components/drawer-layout'
 import { SectionPageLayout } from '@/components/layout'
+import { Alert } from '@/components/ui/alert'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -42,6 +43,7 @@ import { getLobeIcon } from '@/lib/lobe-icon'
 import { unitsToYuan, yuanToUnits } from '@/lib/upstream-model-units'
 import { EntityStatusDot, type EntityStatusSummary } from '@/features/status-check/entity-status-dot'
 import { EntityPerformanceDrawer } from '@/features/status-check/entity-performance-drawer'
+import { useStatus } from '@/hooks/use-status'
 
 import {
   clearUpstreamModelUserUsage,
@@ -101,6 +103,9 @@ function UpstreamModelDrawer({
 }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
+  // 共享开关关闭时，抽屉隐藏所有共享相关控件并展示说明，用户无法再开启共享喵。
+  const { status } = useStatus()
+  const sharingFeatureDisabled = status?.user_upstream_sharing_enabled === false
   // 表单受控状态集中管理，字符串字段避免输入中间态被过早截断喵。
   const [normalizedName, setNormalizedName] = useState('')
   const [displayName, setDisplayName] = useState('')
@@ -136,7 +141,7 @@ function UpstreamModelDrawer({
   // 请求定制：自定义请求头与字段替换的 JSON 文本，保存时校验合法性喵。
   const [customHeadersJSON, setCustomHeadersJSON] = useState('')
   const [fieldReplacementsJSON, setFieldReplacementsJSON] = useState('')
-  // timeoutSeconds 自用调用超时（秒），空串表示使用默认 60 秒喵。
+  // timeoutSeconds 自用调用超时（秒），空串表示使用默认 600 秒硬顶喵。
   const [timeoutSeconds, setTimeoutSeconds] = useState('')
   const [isSaving, setIsSaving] = useState(false)
 
@@ -300,6 +305,25 @@ function UpstreamModelDrawer({
     } finally {
       setIsSaving(false)
     }
+  }
+
+  // 共享策略说明：用 if-else 取代嵌套三元，便于阅读与 lint 检查喵。
+  let sharingPolicyHint: string
+  if (shareListMode === 'whitelist') {
+    sharingPolicyHint = t('Only whitelisted users can view and call this model. The owner is always allowed.')
+  } else if (shareListMode === 'blacklist') {
+    sharingPolicyHint = t('All users except the blacklist can view and call this model.')
+  } else {
+    sharingPolicyHint = t('All users can view and call this model.')
+  }
+  // 保存按钮文案按状态取用：加载/编辑/新建三种分支各归一位，避免嵌套三元喵。
+  let saveButtonLabel: string
+  if (isSaving) {
+    saveButtonLabel = t('Saving')
+  } else if (model) {
+    saveButtonLabel = t('Save changes')
+  } else {
+    saveButtonLabel = t('Create upstream model')
   }
 
   return (
@@ -584,6 +608,12 @@ function UpstreamModelDrawer({
                 rows={3}
               />
             </label>
+            {sharingFeatureDisabled ? (
+              <p className='text-muted-foreground text-xs'>
+                {t('Sharing of upstream models is disabled by the administrator')}
+              </p>
+            ) : (
+              <>
             <label className='flex items-center justify-between gap-3 text-sm'>
               <span>{t('Share to all users')}</span>
               <Switch checked={shareEnabled} onCheckedChange={setShareEnabled} disabled={isSaving} />
@@ -627,12 +657,10 @@ function UpstreamModelDrawer({
               </label>
             )}
             <p className='text-muted-foreground text-xs'>
-              {shareListMode === 'whitelist'
-                ? t('Only whitelisted users can view and call this model. The owner is always allowed.')
-                : shareListMode === 'blacklist'
-                  ? t('All users except the blacklist can view and call this model.')
-                  : t('All users can view and call this model.')}
+              {sharingPolicyHint}
             </p>
+              </>
+            )}
           </SideDrawerSection>
         </div>
 
@@ -837,6 +865,8 @@ export function UpstreamModelUsageDrawer({
 export function UpstreamModels() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
+  // 公开状态里的总开关：关闭时本页只展示禁用提示，前端"入口"随之关闭喵。
+  const { status } = useStatus()
   const [isDrawerOpen, setIsDrawerOpen] = useState(false)
   const [editingModel, setEditingModel] = useState<UserUpstreamModel | null>(null)
   const [deletingModel, setDeletingModel] = useState<UserUpstreamModel | null>(null)
@@ -908,6 +938,18 @@ export function UpstreamModels() {
     }
   }
 
+  // 总开关关闭时整页只展示禁用提示，避免出现"可编辑但保存必失败"的困惑界面喵。
+  if (status?.user_upstream_enabled === false) {
+    return (
+      <SectionPageLayout fixedContent>
+        <SectionPageLayout.Title>{t('Upstream Models')}</SectionPageLayout.Title>
+        <SectionPageLayout.Content>
+          <Alert>{t('User upstream models have been disabled by the administrator')}</Alert>
+        </SectionPageLayout.Content>
+      </SectionPageLayout>
+    )
+  }
+
   return (
     <SectionPageLayout fixedContent>
       <SectionPageLayout.Title>{t('Upstream Models')}</SectionPageLayout.Title>
@@ -924,6 +966,9 @@ export function UpstreamModels() {
         </Button>
       </SectionPageLayout.Actions>
       <SectionPageLayout.Content>
+        <Alert className='mb-3'>
+          {t('You can also invoke your own upstream through virtual models.')}
+        </Alert>
         <div className='overflow-auto rounded-md border'>
           {upstreamModelsQuery.isLoading && <p className='p-4 text-sm text-muted-foreground'>{t('Loading')}</p>}
           {upstreamModelsQuery.isError && <p className='p-4 text-sm text-destructive'>{t('Unable to load upstream models')}</p>}

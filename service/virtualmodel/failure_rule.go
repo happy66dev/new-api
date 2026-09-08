@@ -428,7 +428,19 @@ const (
 	DefaultProbeMinContentChars = 10
 	// DefaultProbeTotalTimeoutSeconds 探测阶段总预算，只管放流前的健康确认喵。
 	DefaultProbeTotalTimeoutSeconds = 300
+	// CandidateRequestTimeoutHardCapSeconds 单候选单次上游请求的墙钟硬超时上限，单位：秒喵。
+	// 用户未配置或配置值超出硬顶时统一按此值执行，超过该值无论是否仍在产出流式数据都强制断开喵。
+	CandidateRequestTimeoutHardCapSeconds = 600
 )
+
+// NormalizeCandidateTimeoutSeconds 把候选配置的请求超时（秒）规整到合法范围喵。
+// 未配置（<=0）或超出硬顶时统一回退 600s 硬顶，保证长推理/连续流式最迟在硬顶被强制断开喵。
+func NormalizeCandidateTimeoutSeconds(configuredTimeoutSeconds int) int {
+	if configuredTimeoutSeconds > 0 && configuredTimeoutSeconds <= CandidateRequestTimeoutHardCapSeconds {
+		return configuredTimeoutSeconds
+	}
+	return CandidateRequestTimeoutHardCapSeconds
+}
 
 // ProbeParameters 描述流式候选放流前的健康探测参数喵。
 type ProbeParameters struct {

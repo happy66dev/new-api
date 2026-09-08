@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -21,8 +22,33 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// userUpstreamModelDefaultTimeoutSeconds 独立上游调用的默认超时，单位：秒喵。
-const userUpstreamModelDefaultTimeoutSeconds = 60
+// resolveUserUpstreamModelTimeoutSeconds 解析一次上游模型调用的墙钟超时（秒）喵。
+// 复用虚拟模型候选的统一规整：配置值落在 (0,600] 内时原样返回（显式更短超时会提前断开）；
+// 未配置或配置值超出硬顶时统一回退到 600s 硬顶，保证长推理/连续流式最迟 600s 被强制断开喵。
+func resolveUserUpstreamModelTimeoutSeconds(configuredTimeoutSeconds int) int {
+	return virtualmodelservice.NormalizeCandidateTimeoutSeconds(configuredTimeoutSeconds)
+}
+
+// applyUserUpstreamModelDeadline 给当前请求注入一次上游调用的墙钟硬超时喵。
+// 返回取消函数（请求上下文为空时返回 nil）；调用方必须在对应请求阶段结束后调用以释放计时器喵。
+func applyUserUpstreamModelDeadline(c *gin.Context, configuredTimeoutSeconds int) context.CancelFunc {
+	// 喵~防御：空请求上下文不需要注入截止，返回 nil 取消函数喵。
+	if c == nil || c.Request == nil {
+		return nil
+	}
+	timeoutDuration := time.Duration(resolveUserUpstreamModelTimeoutSeconds(configuredTimeoutSeconds)) * time.Second
+	// 虚拟模型上下文：候选墙钟超时不得越过模型总 deadline 的剩余预算，避免单候选吃掉超出总预算的时长喵。
+	if executionState, foundState := getVirtualModelExecutionState(c); foundState && executionState != nil && !executionState.requestDeadline.IsZero() {
+		remainingDuration := time.Until(executionState.requestDeadline)
+		if remainingDuration > 0 && timeoutDuration > remainingDuration {
+			timeoutDuration = remainingDuration
+		}
+	}
+	// 用子上下文绑定截止：原生 relay 外发请求与自定义透传都从 c.Request.Context() 派生，截止到达即自动取消并断开喵。
+	requestCtx, cancelRequest := context.WithTimeout(c.Request.Context(), timeoutDuration)
+	c.Request = c.Request.WithContext(requestCtx)
+	return cancelRequest
+}
 
 // defaultUserUpstreamGroupName 自用日志的兜底分组，保证日志可按分组筛选喵。
 const defaultUserUpstreamGroupName = "default"
@@ -47,6 +73,8 @@ type userUpstreamModelRelayContext struct {
 	startTime        time.Time
 	// settled 标记本次请求是否已完成差额结算，未结算时由 Distribute 兜底 defer 退还预扣喵。
 	settled bool
+	// requestCancelFunc 保存请求级硬超时的取消函数，由 Distribute relay 分支在整条 relay 链结束后统一释放喵。
+	requestCancelFunc context.CancelFunc
 }
 
 // getUserUpstreamModelRelayContext 读取自定义上游 relay 的结算上下文，不存在时返回 nil 喵。
@@ -273,6 +301,12 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 	if c == nil || modelRequest == nil {
 		return false
 	}
+	// 系统设置总开关（UserUpstreamEnabled）关闭时，user/xxx 一律拒绝调用，
+	// 实现"完全冻结、数据存档"：已有数据行保留，但自用/共享/虚拟引用全部不可再执行喵。
+	if !model.UserUpstreamFeatureEnabled() {
+		abortWithOpenAiMessage(c, http.StatusNotFound, "user upstream model disabled", types.ErrorCode("upstream_model_disabled"))
+		return false
+	}
 	startTime := time.Now()
 	normalizedName, normalizeError := model.NormalizeUserUpstreamModelName(modelRequest.Model)
 	// 喵~防御：无效名称不触发数据库查询，避免异常输入扩大资源占用或泄露校验细节喵。
@@ -345,14 +379,28 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 	// 虚拟模型 user/xxx 候选：保持哑代理透传（候选链编排依赖同步执行），请求同步结束后退出活跃计数喵。
 	if _, inVirtualModelContext := getVirtualModelExecutionState(c); inVirtualModelContext {
 		defer ExitUpstreamModelInflight(upstreamModel.ID, isShared)
+		// 注入候选墙钟硬超时：透传执行与失败规则 retry 共享同一截止，超过默认 600s（或更短配置）即由上下文取消强制断开喵。
+		if cancelDeadline := applyUserUpstreamModelDeadline(c, upstreamModel.TimeoutSeconds); cancelDeadline != nil {
+			defer cancelDeadline()
+		}
 		return executeUserUpstreamModelPassthrough(c, upstreamModel, modelRequest, baseURL, apiKey, isShared, preConsumedCents, startTime, &settled)
 	}
 	// 非虚拟 user/xxx 直调：注入临时渠道走原生 relay 中转链（自动格式转换与流式处理）喵。
 	requestGroup := modelRequest.Group
+	// 注入墙钟硬超时：原生 relay 外发请求继承 c.Request.Context()，截止到达即取消外发并断开流式喵。
+	cancelDeadline := applyUserUpstreamModelDeadline(c, upstreamModel.TimeoutSeconds)
 	if !setupUserUpstreamModelRelay(c, upstreamModel, baseURL, apiKey, isShared, requestGroup, preConsumedCents, startTime) {
-		// 注入失败：请求已终结，退出活跃计数喵。
+		// 注入失败：请求已终结，退出活跃计数并释放超时计时器喵。
 		ExitUpstreamModelInflight(upstreamModel.ID, isShared)
+		if cancelDeadline != nil {
+			cancelDeadline()
+		}
 		return false
+	}
+	// 把取消函数挂到结算上下文：由 Distribute relay 分支在整条 relay 链执行完毕后统一释放，
+	// 保证硬超时在原生 relay 的整个请求与流式读取期间持续生效喵。
+	if relayCtx := getUserUpstreamModelRelayContext(c); relayCtx != nil {
+		relayCtx.requestCancelFunc = cancelDeadline
 	}
 	// 注入成功：返回 false，Distribute 检测到 relay 标记后继续走 controller.Relay；活跃计数由 Distribute relay 分支执行完毕后统一退出喵。
 	return false
@@ -367,11 +415,8 @@ func executeUserUpstreamModelPassthrough(c *gin.Context, upstreamModel *model.Us
 	if c == nil || upstreamModel == nil {
 		return false
 	}
-	// 超时：模型配置了超时秒数时使用配置值，否则回退默认 60 秒喵。
-	requestTimeoutSeconds := userUpstreamModelDefaultTimeoutSeconds
-	if upstreamModel.TimeoutSeconds > 0 {
-		requestTimeoutSeconds = upstreamModel.TimeoutSeconds
-	}
+	// 超时：使用上游模型配置的墙钟超时，未配置或超出硬顶时回退默认 600s 硬顶喵。
+	requestTimeoutSeconds := resolveUserUpstreamModelTimeoutSeconds(upstreamModel.TimeoutSeconds)
 	// 构造可复用的上游执行输入：失败规则 retry 重放同一请求时复用，避免重复解密与构造喵。
 	upstreamExecutionInput := virtualmodelservice.CustomCandidateExecutionInput{
 		BaseURL:        baseURL,

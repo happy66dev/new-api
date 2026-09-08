@@ -40,6 +40,10 @@ const (
 	ContextKeyUpstreamModelRelayContext ContextKey = "upstream_model_relay_context"
 	// ContextKeyUpstreamModelUsage 保存自定义上游 relay 执行成功后的 usage，供 middleware 独立 RMB 结算喵。
 	ContextKeyUpstreamModelUsage ContextKey = "upstream_model_usage"
+	// ContextKeyLoopGuardFromSelf 标记入站请求携带本实例发出的回环标记，等待分发层按命名空间裁定是否为真实递归喵。
+	ContextKeyLoopGuardFromSelf ContextKey = "loop_guard_from_self"
+	// ContextKeyLoopGuardValue 保存本实例发出的回环标记原文，供回环诊断日志排查喵。
+	ContextKeyLoopGuardValue ContextKey = "loop_guard_value"
 
 	/* token related keys */
 	ContextKeyTokenUnlimited         ContextKey = "token_unlimited_quota"
@@ -52,7 +56,6 @@ const (
 	ContextKeyTokenModelLimit        ContextKey = "token_model_limit"
 	ContextKeyTokenCrossGroupRetry   ContextKey = "token_cross_group_retry"
 	ContextKeyTokenAutoGroups        ContextKey = "token_auto_groups"
-	ContextKeyTokenAutoRoutes        ContextKey = "token_auto_routes"
 
 	/* channel related keys */
 	ContextKeyChannelId                ContextKey = "channel_id"

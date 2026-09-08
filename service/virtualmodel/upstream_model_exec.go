@@ -85,13 +85,13 @@ func fakeStreamCommitResponse(c *gin.Context, responseReader *bufio.Reader, resp
 	var responseTextBuilder strings.Builder
 	if !usageHasTokens(usage) {
 		appendResponseContentFromSSEBytes(&responseTextBuilder, fakeStreamBuffer)
-		// 伪流按流式口径估计（prompt 原生计数、completion 启发式）喵。
-		return service.EstimateUsageFromTexts(c, input.RealModelName, requestBody, responseTextBuilder.String(), true), nil
+		// 伪流按流式口径估计（prompt 原生计数、completion 启发式），随后规范到与原生同源口径喵。
+		return canonicalizeUpstreamUsage(c, service.EstimateUsageFromTexts(c, input.RealModelName, requestBody, responseTextBuilder.String(), true)), nil
 	}
 	// 上游只给了部分 token：用全量缓存响应文本估算缺失侧，避免输出 token 为 0 喵。
 	appendResponseContentFromSSEBytes(&responseTextBuilder, fakeStreamBuffer)
 	usage = fillEstimatedUsageIfMissing(c, input.RealModelName, usage, requestBody, responseTextBuilder.String(), true)
-	return usage, nil
+	return canonicalizeUpstreamUsage(c, usage), nil
 }
 
 // bufferCustomStreamToDone 在伪流模式下读取整个 SSE 流直到 [DONE]，返回完整行字节缓冲喵。
@@ -159,11 +159,8 @@ func ExecuteUserUpstreamModel(c *gin.Context, input CustomCandidateExecutionInpu
 		return &UserUpstreamModelExecutionResult{Err: customCandidatePrecommitFailure(targetURLError)}
 	}
 	requestContext := c.Request.Context()
-	candidateTimeout := time.Duration(input.TimeoutSeconds) * time.Second
-	// 喵~防御：超时必须落在固定安全范围，防止错误配置占用连接或立即取消请求喵。
-	if candidateTimeout < time.Second || candidateTimeout > 10*time.Minute {
-		candidateTimeout = 60 * time.Second
-	}
+	// 候选超时统一规整：未配置或超出 600s 硬顶回退硬顶，保证调用最迟在硬顶被强制断开喵。
+	candidateTimeout := time.Duration(NormalizeCandidateTimeoutSeconds(input.TimeoutSeconds)) * time.Second
 	requestContext, cancelRequest := context.WithTimeout(requestContext, candidateTimeout)
 	defer cancelRequest()
 	upstreamRequest, requestError := http.NewRequestWithContext(requestContext, c.Request.Method, upstreamURL.String(), strings.NewReader(string(requestBody)))
@@ -282,7 +279,8 @@ func ExecuteUserUpstreamModel(c *gin.Context, input CustomCandidateExecutionInpu
 			// 上游只给了部分 token（如只有 prompt 无 completion）：用响应文本估算缺失侧，避免输出 token 为 0 喵。
 			usage = fillEstimatedUsageIfMissing(c, input.RealModelName, usage, requestBody, responseTextBuilder.String(), true)
 		}
-		return &UserUpstreamModelExecutionResult{Usage: usage, TtftMs: ttftMs}
+		// 返回前规范成与 new-api 原生计费/日志同源口径（anthropic 缓存读/写单独拆分等）喵。
+		return &UserUpstreamModelExecutionResult{Usage: canonicalizeUpstreamUsage(c, usage), TtftMs: ttftMs}
 	}
 	// 非流式：读完整正文并解析顶层 usage 后原样转发喵。
 	responseBody, readBodyError := io.ReadAll(io.LimitReader(response.Body, userUpstreamNonStreamingBodyLimit+1))
@@ -298,6 +296,8 @@ func ExecuteUserUpstreamModel(c *gin.Context, input CustomCandidateExecutionInpu
 		return &UserUpstreamModelExecutionResult{Err: customCandidatePrecommitFailure(errors.New("user upstream returned an empty success response")), TtftMs: ttftMs}
 	}
 	usage := normalizeUpstreamModelUsage(extractUsageFromOpenAIBody(responseBody))
+	// 补充 Anthropic 非流式正文 usage 顶层缓存字段（cache_read/cache_creation），避免缓存价漏计喵。
+	captureAnthropicCacheFields([]byte(gjson.GetBytes(responseBody, "usage").Raw), usage)
 	// 上游未提供 token 时按响应文本估计 completion，配合请求体估计 prompt 参与计费（非流式走 tiktoken 口径）喵。
 	if !usageHasTokens(usage) {
 		usage = service.EstimateUsageFromTexts(c, input.RealModelName, requestBody, responseContentFromBody(responseBody), false)
@@ -312,7 +312,8 @@ func ExecuteUserUpstreamModel(c *gin.Context, input CustomCandidateExecutionInpu
 	if _, writeError := c.Writer.Write(responseBody); writeError != nil {
 		return &UserUpstreamModelExecutionResult{Err: fmt.Errorf("write committed user upstream response: %w", writeError), TtftMs: ttftMs}
 	}
-	return &UserUpstreamModelExecutionResult{Usage: usage, TtftMs: ttftMs}
+	// 返回前规范成与 new-api 原生计费/日志同源口径（anthropic 缓存读/写单独拆分等）喵。
+	return &UserUpstreamModelExecutionResult{Usage: canonicalizeUpstreamUsage(c, usage), TtftMs: ttftMs}
 }
 
 // readLimitedSSELine 读取一行 SSE 数据并限制最大长度，超长时截断返回喵。
@@ -384,8 +385,9 @@ func extractUsageFromSSELine(lineBytes []byte, target *dto.Usage) {
 	// 顶层 usage：OpenAI 流式末尾 + Anthropic message_delta 的用法喵。
 	if usageRaw := gjson.GetBytes(dataPayload, "usage"); usageRaw.Exists() {
 		var usage dto.Usage
-		// 喵~防御：解析失败只丢弃该事件，不影响后续事件喵。
 		if err := common.Unmarshal([]byte(usageRaw.Raw), &usage); err == nil {
+			// 补充 Anthropic 顶层缓存读/写字段：dto.Usage 没有对应顶层 tag，需显式搬运到标准缓存分类喵。
+			captureAnthropicCacheFields([]byte(usageRaw.Raw), &usage)
 			mergeUpstreamModelUsage(target, &usage)
 		}
 	}
@@ -393,9 +395,60 @@ func extractUsageFromSSELine(lineBytes []byte, target *dto.Usage) {
 	if nestedUsageRaw := gjson.GetBytes(dataPayload, "message.usage"); nestedUsageRaw.Exists() {
 		var usage dto.Usage
 		if err := common.Unmarshal([]byte(nestedUsageRaw.Raw), &usage); err == nil {
+			// 补充 Anthropic 顶层缓存读/写字段，使缓存命中/写入进入规范分类并参与缓存价计费喵。
+			captureAnthropicCacheFields([]byte(nestedUsageRaw.Raw), &usage)
 			mergeUpstreamModelUsage(target, &usage)
 		}
 	}
+}
+
+// captureAnthropicCacheFields 从 Anthropic usage JSON 补充缓存读取/写入字段喵。
+// Anthropic 把 cache_read_input_tokens / cache_creation_input_tokens 放在 usage 顶层，
+// 而 dto.Usage 只有 input_tokens/output_tokens 顶层映射；这里显式搬运到规范分类
+// （CachedTokens / CachedCreationTokens），使缓存价计费与状态页缓存命中统计对齐 new-api 内部机制喵。
+func captureAnthropicCacheFields(raw []byte, target *dto.Usage) {
+	// 喵~防御：空原始字节或非 JSON 直接返回喵。
+	if target == nil || len(raw) == 0 || !gjson.ValidBytes(raw) {
+		return
+	}
+	// 缓存读取：只写入 CachedTokens，避免与 CacheReadInputTokens 重复累加造成双计喵。
+	if cacheRead := gjson.GetBytes(raw, "cache_read_input_tokens"); cacheRead.Exists() {
+		readTokens := int(cacheRead.Int())
+		if readTokens > target.PromptTokensDetails.CachedTokens {
+			target.PromptTokensDetails.CachedTokens = readTokens
+		}
+	}
+	// 缓存写入：只写入 CachedCreationTokens，避免与 CacheCreationInputTokens 重复累加造成双计喵。
+	if cacheCreation := gjson.GetBytes(raw, "cache_creation_input_tokens"); cacheCreation.Exists() {
+		creationTokens := int(cacheCreation.Int())
+		if creationTokens > target.PromptTokensDetails.CachedCreationTokens {
+			target.PromptTokensDetails.CachedCreationTokens = creationTokens
+		}
+	}
+}
+
+// requestUsageSemantic 根据请求路径判定自定义上游透传的 usage 语义喵。
+// /v1/messages 按 anthropic（input_tokens 不含缓存读取），其余路径一律按 OpenAI 兼容处理喵。
+func requestUsageSemantic(c *gin.Context) string {
+	// 喵~防御：空请求上下文按 OpenAI 兜底喵。
+	if c == nil || c.Request == nil {
+		return dto.BillingUsageSemanticOpenAI
+	}
+	requestPath := strings.ToLower(strings.TrimSpace(c.Request.URL.Path))
+	if strings.HasPrefix(requestPath, "/v1/messages") {
+		return dto.BillingUsageSemanticAnthropic
+	}
+	return dto.BillingUsageSemanticOpenAI
+}
+
+// canonicalizeUpstreamUsage 把透传解析出的 usage 规范成与 new-api 原生计费/日志同源的口径喵。
+// 语义取自请求路径，估算标记由转换保留喵。
+func canonicalizeUpstreamUsage(c *gin.Context, usage *dto.Usage) *dto.Usage {
+	// 喵~防御：空 usage 直接返回，避免空指针喵。
+	if usage == nil {
+		return nil
+	}
+	return service.CanonicalizeUpstreamUsageBySemantic(usage, requestUsageSemantic(c))
 }
 
 // mergeUpstreamModelUsage 把候选 usage 合并进目标：候选非零字段覆盖目标，全零候选不改动任何字段喵。
@@ -428,6 +481,9 @@ func mergeUpstreamModelUsage(target *dto.Usage, candidate *dto.Usage) {
 	// 缓存/推理细节字段：候选非零同样覆盖，保证后到的完整值生效喵。
 	if candidate.PromptTokensDetails.CachedTokens > 0 {
 		target.PromptTokensDetails.CachedTokens = candidate.PromptTokensDetails.CachedTokens
+	}
+	if candidate.PromptTokensDetails.CachedCreationTokens > 0 {
+		target.PromptTokensDetails.CachedCreationTokens = candidate.PromptTokensDetails.CachedCreationTokens
 	}
 	if candidate.PromptTokensDetails.CacheCreationInputTokens > 0 {
 		target.PromptTokensDetails.CacheCreationInputTokens = candidate.PromptTokensDetails.CacheCreationInputTokens

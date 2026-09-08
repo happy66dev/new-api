@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -73,8 +74,10 @@ func TestExecuteUserUpstreamModelUsageNonStreaming(t *testing.T) {
 	require.NotNil(t, result.Usage)
 	assert.Equal(t, 10, result.Usage.PromptTokens)
 	assert.Equal(t, 5, result.Usage.CompletionTokens)
-	// 上游真实提供 usage 时不得误标为估计喵。
-	assert.Nil(t, result.Usage.BillingUsage)
+	// 上游真实提供 usage 时带 openai 语义标记但不得误标为估计喵。
+	require.NotNil(t, result.Usage.BillingUsage)
+	assert.False(t, result.Usage.BillingUsage.Estimated)
+	assert.Equal(t, dto.BillingUsageSemanticOpenAI, result.Usage.BillingUsage.Semantic)
 }
 
 // TestExecuteUserUpstreamModelNoUsage 验证上游不返回 usage 时结果不带 nil 混淆喵。

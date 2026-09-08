@@ -308,11 +308,8 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 		return &CustomCandidateExecutionResult{Err: customCandidatePrecommitFailure(targetURLError)}
 	}
 	requestContext := c.Request.Context()
-	candidateTimeout := time.Duration(input.TimeoutSeconds) * time.Second
-	// 喵~防御：候选超时必须落在固定安全范围，防止错误配置占用连接或立即取消请求喵。
-	if candidateTimeout < time.Second || candidateTimeout > 10*time.Minute {
-		candidateTimeout = 60 * time.Second
-	}
+	// 候选超时统一规整：未配置或超出 600s 硬顶回退硬顶，保证调用最迟在硬顶被强制断开喵。
+	candidateTimeout := time.Duration(NormalizeCandidateTimeoutSeconds(input.TimeoutSeconds)) * time.Second
 	requestContext, cancelRequest := context.WithTimeout(requestContext, candidateTimeout)
 	defer cancelRequest()
 	upstreamRequest, requestError := http.NewRequestWithContext(requestContext, c.Request.Method, upstreamURL.String(), strings.NewReader(string(requestBody)))
@@ -431,7 +428,8 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 			// 上游只给了部分 token（如只有 prompt 无 completion）：用响应文本估算缺失侧，避免输出 token 为 0 喵。
 			usage = fillEstimatedUsageIfMissing(c, input.RealModelName, usage, requestBody, responseTextBuilder.String(), true)
 		}
-		return &CustomCandidateExecutionResult{Usage: usage, TtftMs: ttftMs}
+		// 返回前规范成与 new-api 原生计费/日志同源口径（anthropic 缓存读/写单独拆分等）喵。
+		return &CustomCandidateExecutionResult{Usage: canonicalizeUpstreamUsage(c, usage), TtftMs: ttftMs}
 	}
 	// 非流式：先尝试缓冲读取并解析顶层 usage，超过上限时退回流式原样转发喵。
 	responseBody, readBodyError := io.ReadAll(io.LimitReader(responseReader, userUpstreamNonStreamingBodyLimit+1))
@@ -454,6 +452,8 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 		return &CustomCandidateExecutionResult{Err: customCandidatePrecommitFailure(errors.New("custom upstream returned an empty success response")), TtftMs: ttftMs}
 	}
 	usage := normalizeUpstreamModelUsage(extractUsageFromOpenAIBody(responseBody))
+	// 补充 Anthropic 非流式正文 usage 顶层缓存字段（cache_read/cache_creation），避免缓存价漏计喵。
+	captureAnthropicCacheFields([]byte(gjson.GetBytes(responseBody, "usage").Raw), usage)
 	// 上游未提供 token 时按响应文本估计 completion，配合请求体估计 prompt 参与计费（非流式走 tiktoken 口径）喵。
 	if !usageHasTokens(usage) {
 		usage = service.EstimateUsageFromTexts(c, input.RealModelName, requestBody, responseContentFromBody(responseBody), false)
@@ -468,7 +468,8 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 	if _, writeError := c.Writer.Write(responseBody); writeError != nil {
 		return &CustomCandidateExecutionResult{Err: fmt.Errorf("write committed custom upstream response: %w", writeError), TtftMs: ttftMs}
 	}
-	return &CustomCandidateExecutionResult{Usage: usage, TtftMs: ttftMs}
+	// 返回前规范成与 new-api 原生计费/日志同源口径（anthropic 缓存读/写单独拆分等）喵。
+	return &CustomCandidateExecutionResult{Usage: canonicalizeUpstreamUsage(c, usage), TtftMs: ttftMs}
 }
 
 // rewrittenCustomRequestBody 读取可复用 JSON 请求并改写 model 字段与配置的请求字段替换喵。
