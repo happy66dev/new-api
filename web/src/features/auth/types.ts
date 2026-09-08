@@ -221,6 +221,8 @@ export interface SystemStatus {
   notice_popup_on_dashboard?: boolean
   notice_header_button_mode?: 'popover' | 'dialog'
   support_enabled?: boolean
+  user_upstream_enabled?: boolean
+  user_upstream_sharing_enabled?: boolean
   status_check_announcement?: string
   playground?: PlaygroundPublicSettings
   custom_tabs?: string

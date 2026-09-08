@@ -55,12 +55,10 @@ import {
   syncUserUpstreamModelAvailable,
   syncUserUpstreamModelBalance,
   updateUserUpstreamModel,
-} from './api'
-import type {
-  UpstreamModelStatus,
-  UpstreamModelUserUsage,
-  UserUpstreamModel,
-  UserUpstreamModelInput,
+  type UpstreamModelStatus,
+  type UpstreamModelUserUsage,
+  type UserUpstreamModel,
+  type UserUpstreamModelInput,
 } from './api'
 
 // 金额换算统一走 lib/upstream-model-units：用户以元输入、后端以 10^-5 元单位存储喵。
@@ -669,7 +667,7 @@ function UpstreamModelDrawer({
             {t('Close')}
           </SheetClose>
           <Button type='button' onClick={() => void saveModel()} disabled={isSaving} className='w-full sm:w-auto'>
-            {isSaving ? t('Saving') : model ? t('Save changes') : t('Create upstream model')}
+            {saveButtonLabel}
           </Button>
         </SheetFooter>
       </SheetContent>

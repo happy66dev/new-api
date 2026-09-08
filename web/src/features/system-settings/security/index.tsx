@@ -25,6 +25,8 @@ import {
 } from './section-registry.tsx'
 
 const defaultSecuritySettings: SecuritySettings = {
+  UserUpstreamEnabled: true,
+  UserUpstreamSharingEnabled: true,
   ModelRequestRateLimitEnabled: false,
   ModelRequestRateLimitCount: 0,
   ModelRequestRateLimitSuccessCount: 1000,

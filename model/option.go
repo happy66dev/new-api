@@ -181,6 +181,9 @@ func InitOptionMap() {
 	common.OptionMap["MaxTokenAutoGroups"] = strconv.Itoa(setting.GetMaxTokenAutoGroups())
 	// 虚拟模型执行总开关默认开启，自用部署无需额外配置即可调用虚拟模型喵。
 	common.OptionMap["VirtualModelEnabled"] = "true"
+	// 用户上游模型总开关与共享开关默认开启，保证升级后既有自建/共享功能不回归喵。
+	common.OptionMap[UserUpstreamEnabledKey] = "true"
+	common.OptionMap[UserUpstreamSharingEnabledKey] = "true"
 	common.OptionMap["PayMethods"] = operation_setting.PayMethods2JsonString()
 	common.OptionMap["GitHubClientId"] = ""
 	common.OptionMap["GitHubClientSecret"] = ""
@@ -346,6 +349,10 @@ func UpdateOption(key string, value string) error {
 	value = normalizedValue
 	if err := validateOptionValue(key, value); err != nil {
 		return err
+	}
+	// 用户上游模型功能开关走专用事务写入：除落库外，还要在"关闭"跃迁时做全站引用清理与停共享喵。
+	if key == UserUpstreamEnabledKey || key == UserUpstreamSharingEnabledKey {
+		return SetUserUpstreamFeatureOption(key, value)
 	}
 	// Save to database first
 	option := Option{

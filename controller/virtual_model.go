@@ -627,6 +627,10 @@ func validateVirtualModelCandidateSourceInput(sourceType model.VirtualModelSourc
 	}
 	// 引用用户上游模型时，真实模型名与凭据以该条目为准，不要求直填字段喵。
 	if candidateInput.UpstreamModelID != nil && *candidateInput.UpstreamModelID > 0 {
+		// 系统总开关(UserUpstreamEnabled)关闭时不允许新增对用户上游的引用，避免绕过完全冻结喵。
+		if !model.UserUpstreamFeatureEnabled() {
+			return errors.New("系统已关闭用户上游模型功能，无法引用用户上游")
+		}
 		return nil
 	}
 	if strings.TrimSpace(candidateInput.RealModelName) == "" {

@@ -494,6 +494,8 @@ export type OperationsSettings = {
 }
 
 export type SecuritySettings = {
+  UserUpstreamEnabled: boolean
+  UserUpstreamSharingEnabled: boolean
   ModelRequestRateLimitEnabled: boolean
   ModelRequestRateLimitCount: number
   ModelRequestRateLimitSuccessCount: number

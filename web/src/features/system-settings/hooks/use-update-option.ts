@@ -38,6 +38,8 @@ const STATUS_RELATED_KEYS = new Set([
   'NoticePopupOnDashboardEnabled',
   'NoticeHeaderButtonMode',
   'SupportEnabled',
+  'UserUpstreamEnabled',
+  'UserUpstreamSharingEnabled',
   'LogConsumeEnabled',
   'QuotaPerUnit',
   'USDExchangeRate',

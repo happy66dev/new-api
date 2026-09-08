@@ -95,6 +95,22 @@ func writeUpstreamModelSharedNameConflict(c *gin.Context) {
 	c.JSON(http.StatusConflict, gin.H{"success": false, "code": "upstream_model_shared_name_conflict", "message": "共享模型名称已被其他用户占用，请更换名称"})
 }
 
+// upstreamModelFeatureGate 在系统总开关或共享开关关闭时按场景拒绝上游模型写入喵。
+// 返回 true 表示请求已被拒绝，调用方应立即 return；false 表示可以继续处理喵。
+func upstreamModelFeatureGate(c *gin.Context, wantShare bool) bool {
+	// 总开关(UserUpstreamEnabled)关闭 = 完全冻结，新增/编辑一律拒绝，数据仅保留存档喵。
+	if !model.UserUpstreamFeatureEnabled() {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "code": "upstream_model_disabled", "message": "系统已关闭用户自建上游功能，无法保存"})
+		return true
+	}
+	// 共享开关(UserUpstreamSharingEnabled)关闭时，不允许把共享开启，防止绕过停共享喵。
+	if wantShare && !model.UserUpstreamSharingFeatureEnabled() {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "code": "upstream_model_sharing_disabled", "message": "系统已关闭用户上游共享功能，无法开启共享"})
+		return true
+	}
+	return false
+}
+
 // validateSharedNameGlobalUniqueness 校验共享模型名称在全局共享命名池中唯一喵。
 // 共享池按 user/<name> 全局命名，两个不同属主共享同名模型会造成调用路由与广场展示歧义喵。
 func validateSharedNameGlobalUniqueness(ownerUserID int, normalizedName string, excludingID int64) error {
@@ -335,6 +351,11 @@ func buildUpstreamModelResponse(upstreamModel *model.UserUpstreamModel) (*upstre
 
 // GetUserUpstreamModels 返回当前登录用户拥有的全部上游模型喵。
 func GetUserUpstreamModels(c *gin.Context) {
+	// 总开关(UserUpstreamEnabled)关闭时返回空列表：数据仍存档不删除，但前端入口与虚拟模型引用下拉不再展示喵。
+	if !model.UserUpstreamFeatureEnabled() {
+		common.ApiSuccess(c, make([]*upstreamModelResponse, 0))
+		return
+	}
 	upstreamModels, err := model.GetUserUpstreamModelsByOwner(c.GetInt("id"))
 	if err != nil {
 		common.ApiError(c, err)
@@ -360,6 +381,10 @@ func CreateUserUpstreamModel(c *gin.Context) {
 		return
 	}
 	upstreamModel := &model.UserUpstreamModel{}
+	// 功能门禁：总开关关闭时不允许新增；共享开关关闭时不允许创建共享中的上游喵。
+	if upstreamModelFeatureGate(c, input.ShareEnabled) {
+		return
+	}
 	if err := saveUpstreamModelFields(input, c.GetInt("id"), upstreamModel); err != nil {
 		common.ApiError(c, err)
 		return
@@ -419,6 +444,10 @@ func UpdateUserUpstreamModel(c *gin.Context) {
 	// 喵~防御：更新必须携带读取版本，缺失版本视为无效请求喵。
 	if input.Version <= 0 {
 		common.ApiError(c, errors.New("用户上游模型版本无效"))
+		return
+	}
+	// 功能门禁：总开关关闭时不允许编辑；共享开关关闭时不允许把共享重新开启喵。
+	if upstreamModelFeatureGate(c, input.ShareEnabled) {
 		return
 	}
 	// 在覆盖输入字段前保存数据库版本，作为乐观锁 WHERE 条件的基准喵。

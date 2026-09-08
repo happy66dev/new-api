@@ -61,6 +61,8 @@ export function useSidebarData(): SidebarData {
   const user = useAuthStore((state) => state.auth.user)
   const isAdmin = (user?.role ?? ROLE.GUEST) >= ROLE.ADMIN
   const supportEnabled = status !== null && status.support_enabled !== false
+  // 用户自建上游总开关：关闭时隐藏"上游模型"入口（默认开启，状态未加载前不闪烁隐藏）喵。
+  const userUpstreamEnabled = status?.user_upstream_enabled !== false
   const supportUnreadQuery = useQuery({
     queryKey: ['support-unread', user?.id, isAdmin],
     queryFn: getSupportUnreadCount,
@@ -135,11 +137,15 @@ export function useSidebarData(): SidebarData {
               url: '/virtual-models',
               icon: Radio,
             },
-            {
-              title: t('Upstream Models'),
-              url: '/upstream-models',
-              icon: Globe,
-            },
+            ...(userUpstreamEnabled
+              ? [
+                  {
+                    title: t('Upstream Models'),
+                    url: '/upstream-models',
+                    icon: Globe,
+                  },
+                ]
+              : []),
             {
               title: t('Usage Logs'),
               url: '/usage-logs/common',
@@ -243,5 +249,5 @@ export function useSidebarData(): SidebarData {
         },
       ],
     }
-  }, [customTabs, supportEnabled, supportUnreadCount, t])
+  }, [customTabs, supportEnabled, supportUnreadCount, userUpstreamEnabled, t])
 }

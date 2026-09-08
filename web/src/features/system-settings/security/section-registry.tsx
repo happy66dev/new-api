@@ -20,6 +20,7 @@ import { RateLimitSection } from '../request-limits/rate-limit-section'
 import { SensitiveWordsSection } from '../request-limits/sensitive-words-section'
 import { SSRFSection } from '../request-limits/ssrf-section'
 import { TokenLimitSection } from '../request-limits/token-limit-section'
+import { UserUpstreamSection } from '../user-upstream/user-upstream-section'
 import type { SecuritySettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
 
@@ -86,6 +87,18 @@ const SECURITY_SECTIONS = [
         defaultValues={{
           'token_setting.max_user_tokens':
             settings['token_setting.max_user_tokens'],
+        }}
+      />
+    ),
+  },
+  {
+    id: 'user-upstream',
+    titleKey: 'User Upstream Models',
+    build: (settings: SecuritySettings) => (
+      <UserUpstreamSection
+        defaultValues={{
+          UserUpstreamEnabled: settings.UserUpstreamEnabled,
+          UserUpstreamSharingEnabled: settings.UserUpstreamSharingEnabled,
         }}
       />
     ),

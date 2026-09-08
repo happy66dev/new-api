@@ -112,6 +112,8 @@ func GetStatus(c *gin.Context) {
 		"password_register_enabled":     common.PasswordRegisterEnabled,
 		"default_use_auto_group":        setting.DefaultUseAutoGroup,
 		"support_enabled":               common.SupportEnabled,
+		"user_upstream_enabled":         common.OptionMap["UserUpstreamEnabled"] == "true",
+		"user_upstream_sharing_enabled": common.OptionMap["UserUpstreamSharingEnabled"] == "true",
 		"site_appearance":               console_setting.GetAppearanceSetting(),
 		"homepage":                      console_setting.GetHomepageSetting(),
 		"spa_meta":                      console_setting.GetSPAMetaSetting(),

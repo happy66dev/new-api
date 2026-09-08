@@ -107,6 +107,11 @@ func GetPricing(c *gin.Context) {
 
 // appendSharedUpstreamPricing 把共享中的用户上游模型追加为定价条目喵。
 func appendSharedUpstreamPricing(pricing []model.Pricing, viewerUserID any) []model.Pricing {
+	// 共享开关(UserUpstreamSharingEnabled)关闭时不注入任何共享条目（关闭瞬间已全站撤销共享标志，
+	// 此处再加一层门禁，防止个别绕过写库的脏数据把共享模型展示出来）喵。
+	if !model.UserUpstreamSharingFeatureEnabled() {
+		return pricing
+	}
 	viewerID := -1
 	if viewerUserID != nil {
 		if id, ok := viewerUserID.(int); ok {
