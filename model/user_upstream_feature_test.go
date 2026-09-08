@@ -10,6 +10,10 @@ import (
 
 // TestUserUpstreamFeatureAccessors 验证两个功能开关的默认读取行为喵。
 func TestUserUpstreamFeatureAccessors(t *testing.T) {
+	// 单测环境没有调用 InitOptionMap，OptionMap 可能为 nil，先补一个空 map 保证可写喵。
+	if common.OptionMap == nil {
+		common.OptionMap = make(map[string]string)
+	}
 	// 保存旧值并在结束后恢复，避免污染其它测试喵。
 	oldMaster, oldShare := common.OptionMap[UserUpstreamEnabledKey], common.OptionMap[UserUpstreamSharingEnabledKey]
 	defer func() {
@@ -39,23 +43,31 @@ func migrateFeatureTestTables(t *testing.T) {
 		&VirtualModelCandidate{},
 		&VirtualModelCustomCandidate{},
 		&VirtualModelFailureRule{},
+		&VirtualModelManualFreeze{},
+		&VirtualModelInternalFreezeState{},
 		&EntityProbeState{},
 	} {
 		require.NoError(t, DB.AutoMigrate(table), "自动迁移表失败")
 	}
 	// 清空各表旧数据，保证断言只看本次插入喵；options 只清理本功能的两把开关行，避免破坏其它测试依赖喵。
 	require.NoError(t, DB.Where("key IN ?", []string{UserUpstreamEnabledKey, UserUpstreamSharingEnabledKey}).Delete(&Option{}).Error)
+	// 候选等表是软删除模型，必须用 Unscoped 硬清，否则已删行仍占唯一索引导致重建冲突喵。
 	for _, target := range []any{
 		&UserUpstreamModel{}, &VirtualModelCandidate{},
-		&VirtualModelCustomCandidate{}, &VirtualModelFailureRule{}, &EntityProbeState{},
+		&VirtualModelCustomCandidate{}, &VirtualModelFailureRule{},
+		&VirtualModelManualFreeze{}, &VirtualModelInternalFreezeState{}, &EntityProbeState{},
 	} {
-		require.NoError(t, DB.Where("1 = 1").Delete(target).Error, "清空表失败")
+		require.NoError(t, DB.Unscoped().Where("1 = 1").Delete(target).Error, "清空表失败")
 	}
 }
 
 // saveFeatureOptionState 记录并设置两开关为指定值，返回恢复旧值的闭包喵。
 func saveFeatureOptionState(t *testing.T, master string, share string) func() {
 	t.Helper()
+	// 单测环境 OptionMap 可能为 nil，先补空 map 避免写入 panic 喵。
+	if common.OptionMap == nil {
+		common.OptionMap = make(map[string]string)
+	}
 	oldMaster, oldShare := common.OptionMap[UserUpstreamEnabledKey], common.OptionMap[UserUpstreamSharingEnabledKey]
 	common.OptionMap[UserUpstreamEnabledKey] = master
 	common.OptionMap[UserUpstreamSharingEnabledKey] = share
