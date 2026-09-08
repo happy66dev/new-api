@@ -513,6 +513,81 @@ func TransferAffQuota(c *gin.Context) {
 	common.ApiSuccessI18n(c, i18n.MsgUserTransferSuccess, nil)
 }
 
+// TransferQuotaRequest 是用户间转账的请求体：目标用户ID + 要转出的内部额度数
+type TransferQuotaRequest struct {
+	ToUserId int `json:"to_user_id" binding:"required"`
+	Quota    int `json:"quota" binding:"required"`
+}
+
+// TransferQuotaToUser 处理 POST /api/user/transfer：把当前登录用户的主余额额度转给指定用户。
+// 该操作受“额度设置→用户间转账”开关（quota_setting.enable_user_transfer）控制喵。
+func TransferQuotaToUser(c *gin.Context) {
+	// 开关未开启时直接拒绝，返回中性提示给前端喵
+	if !operation_setting.GetQuotaSetting().EnableUserTransfer {
+		common.ApiErrorI18n(c, i18n.MsgUserTransferDisabled)
+		return
+	}
+
+	// 从 JWT/会话上下文读取当前登录用户ID（UserAuth 中间件写入）
+	senderId := c.GetInt("id")
+
+	// 解析并校验请求体，字段缺失或类型错误直接返回参数错误
+	var req TransferQuotaRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ApiErrorMsg(c, "参数错误")
+		return
+	}
+
+	// 防御：目标ID必须是正整数，避免误把负数/0当用户ID查询喵~防御
+	if req.ToUserId <= 0 {
+		common.ApiErrorMsg(c, "参数错误")
+		return
+	}
+
+	// 调用模型层事务完成扣款、入账与双方额度缓存同步；返回双方用户名供前端展示
+	_, _, err := model.TransferQuotaBetweenUsers(senderId, req.ToUserId, req.Quota)
+	if err != nil {
+		// 余额不足/最小额度/用户不存在等业务错误统一包一层“划转失败”文案返回
+		common.ApiErrorI18n(c, i18n.MsgUserTransferFailed, map[string]any{"Error": err.Error()})
+		return
+	}
+	common.ApiSuccessI18n(c, i18n.MsgUserTransferSuccess, nil)
+}
+
+// SearchTransferTargets 处理 GET /api/user/transfer/search：普通用户按关键词实时搜索可转账的接收人。
+// 同样受开关控制，开关关闭时不让普通用户枚举用户名单喵。
+func SearchTransferTargets(c *gin.Context) {
+	// 开关未开启时直接拒绝，与转账入口一起隐藏，避免枚举用户喵
+	if !operation_setting.GetQuotaSetting().EnableUserTransfer {
+		common.ApiErrorI18n(c, i18n.MsgUserTransferDisabled)
+		return
+	}
+
+	// 当前登录用户ID，用于从搜索结果中排除自己
+	selfId := c.GetInt("id")
+	// 读取用户输入的搜索关键词（用户名/显示名/用户ID）
+	keyword := c.Query("keyword")
+
+	// 调用模型层做限量轻量搜索，只返回 id/username/display_name 等必要字段
+	users, err := model.SearchTransferTargets(selfId, keyword)
+	if err != nil {
+		// 关键词为空等错误统一返回，供前端 toast 提示
+		common.ApiErrorMsg(c, err.Error())
+		return
+	}
+
+	// 把搜索结果转成精简的 JSON 数组（含 id/username/display_name），供下拉实时预览使用
+	targets := make([]gin.H, 0, len(users))
+	for _, user := range users {
+		targets = append(targets, gin.H{
+			"id":           user.Id,
+			"username":     user.Username,
+			"display_name": user.DisplayName,
+		})
+	}
+	common.ApiSuccess(c, targets)
+}
+
 func GetAffCode(c *gin.Context) {
 	id := c.GetInt("id")
 	affCode, err := model.EnsureUserAffCode(id)

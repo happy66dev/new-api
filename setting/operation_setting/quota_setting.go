@@ -4,11 +4,13 @@ import "github.com/QuantumNous/new-api/setting/config"
 
 type QuotaSetting struct {
 	EnableFreeModelPreConsume bool `json:"enable_free_model_pre_consume"` // 是否对免费模型启用预消耗
+	EnableUserTransfer        bool `json:"enable_user_transfer"`          // 是否允许用户之间互相转账主余额额度（默认开启）
 }
 
 // 默认配置
 var quotaSetting = QuotaSetting{
 	EnableFreeModelPreConsume: true,
+	EnableUserTransfer:        true,
 }
 
 func init() {

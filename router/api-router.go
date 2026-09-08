@@ -485,3 +485,5 @@ func SetApiRouter(router *gin.Engine) {
 		}
 	}
 }
+				selfRoute.GET("/transfer/search", middleware.UserCriticalRateLimit("transfer-search"), controller.SearchTransferTargets)
+				selfRoute.POST("/transfer", middleware.UserCriticalRateLimit("user-transfer"), controller.TransferQuotaToUser)

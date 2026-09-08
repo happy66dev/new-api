@@ -107,6 +107,7 @@ const (
 	MsgUserTransferQuotaMinimum      = "user.transfer_quota_minimum"
 	MsgUserTransferSuccess           = "user.transfer_success"
 	MsgUserTransferFailed            = "user.transfer_failed"
+	MsgUserTransferDisabled          = "user.transfer_disabled"
 	MsgUserTopUpProcessing           = "user.topup_processing"
 	MsgUserRegisterFailed            = "user.register_failed"
 	MsgUserDefaultTokenFailed        = "user.default_token_failed"

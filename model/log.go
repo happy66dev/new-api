@@ -125,8 +125,9 @@ const (
 	LogTypeError          = 5
 	LogTypeRefund         = 6
 	LogTypeLogin          = 7
-	LogTypeCustomUpstream = 8 // 自定上游：用户上游模型的使用日志（自用与共享都归入此类型）喵。
-	LogTypeVirtualModel   = 9 // 虚拟模型：所有虚拟模型请求（internal 与 custom 候选）都归入此类型喵。
+	LogTypeCustomUpstream = 8  // 自定上游：用户上游模型的使用日志（自用与共享都归入此类型）喵。
+	LogTypeVirtualModel   = 9  // 虚拟模型：所有虚拟模型请求（internal 与 custom 候选）都归入此类型喵。
+	LogTypeTransfer       = 10 // 用户间转账：转出方与收款方各记一条，便于双方与管理端查看明细喵。
 )
 
 func ensureLogRequestId(log *Log) {

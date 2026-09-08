@@ -149,6 +149,7 @@ func GetStatus(c *gin.Context) {
 		"checkin_enabled":             operation_setting.GetCheckinSetting().Enabled,
 		"checkin_min_user_quota":      operation_setting.GetCheckinSetting().MinUserQuota,
 		"checkin_deductible_groups":   operation_setting.GetCheckinSetting().DeductibleGroups,
+		"quota_transfer_enabled":      operation_setting.GetQuotaSetting().EnableUserTransfer,
 	}
 
 	// 根据启用状态注入可选内容
