@@ -294,6 +294,26 @@ export interface AffiliateTransferRequest {
 }
 
 /**
+ * User-to-user main balance transfer request
+ */
+export interface UserTransferRequest {
+  /** Recipient user ID */
+  to_user_id: number
+  /** Quota amount to transfer */
+  quota: number
+}
+
+/** Basic recipient user info returned by the transfer-target search */
+export interface TransferTarget {
+  id: number
+  username: string
+  display_name: string
+}
+
+export type UserTransferResponse = ApiResponse
+export type TransferTargetResponse = ApiResponse<TransferTarget[]>
+
+/**
  * User wallet data
  */
 export interface UserWalletData {

@@ -102,6 +102,8 @@ export const LOG_TYPES = [
   { value: 8, label: 'Custom Upstream', color: 'indigo' },
   // 所有虚拟模型请求（internal 与 custom 候选）的使用日志类型喵。
   { value: 9, label: 'Virtual Model', color: 'violet' },
+  // 用户间转账：转出方与收款方各一条明细，双方与管理端都能看到喵。
+  { value: 10, label: 'Transfer', color: 'pink' },
 ] as const
 
 /**

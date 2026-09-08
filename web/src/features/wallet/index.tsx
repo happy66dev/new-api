@@ -37,6 +37,7 @@ import { CreemConfirmDialog } from './components/dialogs/creem-confirm-dialog'
 import { MoneroPaymentDialog } from './components/dialogs/monero-payment-dialog'
 import { PaymentConfirmDialog } from './components/dialogs/payment-confirm-dialog'
 import { TransferDialog } from './components/dialogs/transfer-dialog'
+import { TransferToUserDialog } from './components/dialogs/transfer-to-user-dialog'
 import { RechargeFormCard } from './components/recharge-form-card'
 import { RedemptionPurchaseCard } from './components/redemption-purchase-card'
 import { SubscriptionPlansCard } from './components/subscription-plans-card'
@@ -84,6 +85,7 @@ export function Wallet(props: WalletProps) {
   const [paymentLoading, setPaymentLoading] = useState<string | null>(null)
   const [confirmDialogOpen, setConfirmDialogOpen] = useState(false)
   const [transferDialogOpen, setTransferDialogOpen] = useState(false)
+  const [userTransferOpen, setUserTransferOpen] = useState(false)
   const [billingDialogOpen, setBillingDialogOpen] = useState(false)
   const [redemptionCode, setRedemptionCode] = useState('')
   const [redemptionCaptchaOpen, setRedemptionCaptchaOpen] = useState(false)
@@ -97,6 +99,11 @@ export function Wallet(props: WalletProps) {
 
   const { status } = useStatus()
   const { currency } = useSystemConfig()
+  // 用户间转账开关：管理员在“额度设置”里开启后，普通用户钱包才显示转账入口喵
+  const userTransferEnabled = Boolean(
+    (status as { quota_transfer_enabled?: boolean } | null | undefined)
+      ?.quota_transfer_enabled
+  )
   const { topupInfo, presetAmounts, loading: topupLoading } = useTopupInfo()
   const {
     isRequired: isRedemptionCaptchaRequired,
@@ -454,6 +461,8 @@ export function Wallet(props: WalletProps) {
                   priceRatio={(status?.price as number) || 1}
                   usdExchangeRate={effectiveUsdExchangeRate}
                   onOpenBilling={() => setBillingDialogOpen(true)}
+                  enableUserTransfer={userTransferEnabled}
+                  onOpenUserTransfer={() => setUserTransferOpen(true)}
                   creemProducts={topupInfo?.creem_products}
                   enableCreemTopup={topupInfo?.enable_creem_topup}
                   onCreemProductSelect={handleCreemProductSelect}
@@ -522,6 +531,13 @@ export function Wallet(props: WalletProps) {
         onConfirm={handleTransfer}
         availableQuota={user?.aff_quota ?? 0}
         transferring={transferring}
+      />
+
+      <TransferToUserDialog
+        open={userTransferOpen}
+        onOpenChange={setUserTransferOpen}
+        availableQuota={user?.quota ?? 0}
+        onSuccess={fetchUser}
       />
 
       <BillingHistoryDialog

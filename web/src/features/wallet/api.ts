@@ -23,6 +23,7 @@ import type {
   PaymentRequest,
   AmountRequest,
   AffiliateTransferRequest,
+  UserTransferRequest,
   ApiResponse,
   TopupInfoResponse,
   RedemptionResponse,
@@ -31,6 +32,8 @@ import type {
   StripePaymentResponse,
   AffiliateCodeResponse,
   AffiliateTransferResponse,
+  UserTransferResponse,
+  TransferTargetResponse,
   BillingHistoryResponse,
   CompleteOrderRequest,
   CreemPaymentRequest,
@@ -263,6 +266,28 @@ export async function transferAffiliateQuota(
   request: AffiliateTransferRequest
 ): Promise<AffiliateTransferResponse> {
   const res = await api.post('/api/user/aff_transfer', request)
+  return res.data
+}
+
+/**
+ * Search for users that the current user can transfer balance to.
+ * Supports keyword = username fragment or exact user id.
+ */
+export async function searchUserTransferTargets(
+  keyword: string
+): Promise<TransferTargetResponse> {
+  const params = new URLSearchParams({ keyword })
+  const res = await api.get(`/api/user/transfer/search?${params.toString()}`)
+  return res.data
+}
+
+/**
+ * Transfer main balance quota from the current user to another user.
+ */
+export async function transferQuotaToUser(
+  request: UserTransferRequest
+): Promise<UserTransferResponse> {
+  const res = await api.post('/api/user/transfer', request)
   return res.data
 }
 
