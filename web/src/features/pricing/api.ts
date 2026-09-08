@@ -29,3 +29,16 @@ export async function getPricing(): Promise<PricingData> {
   const res = await api.get('/api/pricing')
   return res.data
 }
+
+// 管理员停止某个用户共享模型：关闭其共享开关，属主自用保留喵。
+// 入参取自模型广场条目的 share_owner_user_id 与对外调用名 model_name（形如 user/<name>）喵。
+export async function stopSharingUserUpstreamModel(
+  ownerUserId: number,
+  modelName: string
+): Promise<{ success: boolean; message?: string }> {
+  const res = await api.post('/api/upstream-models/admin/stop-sharing', {
+    owner_user_id: ownerUserId,
+    model_name: modelName,
+  })
+  return res.data
+}

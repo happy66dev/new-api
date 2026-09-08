@@ -389,6 +389,38 @@ func GetEnabledSharedUserUpstreamModelByName(normalizedName string, viewerID int
 	return &upstreamModel, nil
 }
 
+// ErrUpstreamModelNotSharing 表示目标模型存在但当前未处于共享状态喵。
+// 供管理员停共享接口区分"模型不存在"与"本来就没在共享"，从而给出精确提示喵。
+var ErrUpstreamModelNotSharing = errors.New("upstream_model_not_sharing")
+
+// StopSharingUserUpstreamModel 管理员停用某属主名下指定名称上游模型的共享（share_enabled 置 false）喵。
+// 只关共享开关：不动 enabled、不动余额/共享额度，属主自用不受影响，之后可自行重新开启共享喵。
+// 仅影响后续的共享调用；已在途的共享请求会在启动时定格 isShared，结束后正常结算喵。
+func StopSharingUserUpstreamModel(ownerUserID int, normalizedName string) error {
+	// 喵~防御：属主非正或名称为空时按记录不存在处理，避免空值进入 SQL 查询喵。
+	if ownerUserID <= 0 || strings.TrimSpace(normalizedName) == "" {
+		return gorm.ErrRecordNotFound
+	}
+	// 先按属主+名称定位模型：命名池只保证共享中模型全局唯一，非共享同名可能多属主共存，故必须带属主过滤喵。
+	var upstreamModel UserUpstreamModel
+	if err := DB.Where("owner_user_id = ? AND normalized_name = ?", ownerUserID, normalizedName).First(&upstreamModel).Error; err != nil {
+		// 喵~防御：查询失败原样上抛，不存在则统一映射为记录不存在喵。
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return gorm.ErrRecordNotFound
+		}
+		return err
+	}
+	// 喵~防御：当前本就没共享时无需写库，返回专门错误让调用方给精确提示喵。
+	if !upstreamModel.ShareEnabled {
+		return ErrUpstreamModelNotSharing
+	}
+	// 用 map 写布尔置 false（map 更新不因零值被跳过），并顺带刷新更新时间喵。
+	return DB.Model(&upstreamModel).Updates(map[string]interface{}{
+		"share_enabled": false,
+		"updated_time":  time.Now().Unix(),
+	}).Error
+}
+
 // SharedModelUserUsage 描述某个共享上游模型按用户聚合的使用量喵。
 type SharedModelUserUsage struct {
 	UserID       int    `json:"user_id"`

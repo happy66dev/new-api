@@ -7,6 +7,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 // TestNormalizeUserUpstreamModelName 验证上游模型名规范化的边界喵。
@@ -693,4 +694,71 @@ func TestAdjustUserUpstreamModelCharge(t *testing.T) {
 	// 无效属主或 ID 返回记录不存在，避免跨用户结算喵。
 	require.Error(t, AdjustUserUpstreamModelCharge(created.ID, 8, 10, false))
 	require.Error(t, AdjustUserUpstreamModelCharge(0, 7, 10, false))
+}
+
+// TestStopSharingUserUpstreamModel 验证管理员停共享的写库语义喵。
+func TestStopSharingUserUpstreamModel(t *testing.T) {
+	truncateTables(t)
+	require.NoError(t, DB.AutoMigrate(&UserUpstreamModel{}))
+	require.NoError(t, DB.Exec("DELETE FROM user_upstream_models").Error)
+
+	// 准备一条共享中的模型：余额/可用/共享额度均大于 0，符合"共享中"判定喵。
+	shared := &UserUpstreamModel{
+		OwnerUserID:        9,
+		NormalizedName:     "shared-stop",
+		DisplayName:        "待停共享模型",
+		Enabled:            true,
+		BalanceCents:       5000,
+		AvailableCents:     4000,
+		ShareEnabled:       true,
+		ShareLimitCents:    3000,
+		ShowBalanceEnabled: true,
+		Version:            3,
+		CreatedTime:        100,
+		UpdatedTime:        100,
+	}
+	require.NoError(t, DB.Create(shared).Error)
+
+	// 停共享成功：share_enabled 置 false，属主自用（enabled、余额、可用、共享额度）一律保留喵。
+	require.NoError(t, StopSharingUserUpstreamModel(9, "shared-stop"))
+	stopped, err := GetUserUpstreamModelByOwnerID(shared.ID, 9)
+	require.NoError(t, err)
+	assert.False(t, stopped.ShareEnabled, "停共享后共享开关应为 false")
+	assert.True(t, stopped.Enabled, "停共享不应影响属主自用启用状态")
+	assert.Equal(t, int64(5000), stopped.BalanceCents, "停共享不应扣减余额")
+	assert.Equal(t, int64(4000), stopped.AvailableCents, "停共享不应扣减可用额度")
+	assert.Equal(t, int64(3000), stopped.ShareLimitCents, "停共享不应扣减共享额度")
+
+	// 停共享后该模型立即从共享池消失，他人不再可见可调用喵。
+	_, err = GetSharedUserUpstreamModelByNormalizedName("shared-stop")
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+
+	// 重复停共享：模型仍在但已不在共享中，返回专门错误喵。
+	require.ErrorIs(t, StopSharingUserUpstreamModel(9, "shared-stop"), ErrUpstreamModelNotSharing)
+
+	// 模型不存在：返回记录不存在喵。
+	require.ErrorIs(t, StopSharingUserUpstreamModel(9, "no-such-model"), gorm.ErrRecordNotFound)
+
+	// 其他属主的共享模型不受影响：停属主 9 的模型不会误伤属主 10 的共享模型喵。
+	other := &UserUpstreamModel{
+		OwnerUserID:      10,
+		NormalizedName:   "other-shared",
+		DisplayName:      "他属主共享模型",
+		Enabled:          true,
+		ShareEnabled:     true,
+		ShareLimitCents:  1000,
+		BalanceCents:     1000,
+		AvailableCents:   1000,
+		Version:          1,
+		CreatedTime:      100,
+		UpdatedTime:      100,
+	}
+	require.NoError(t, DB.Create(other).Error)
+	stillShared, err := GetUserUpstreamModelByOwnerID(other.ID, 10)
+	require.NoError(t, err)
+	assert.True(t, stillShared.ShareEnabled, "停属主 9 的模型不应影响属主 10 的共享模型")
+
+	// 无效参数：属主非正或名称为空统一按记录不存在返回，避免空值进 SQL 喵。
+	require.ErrorIs(t, StopSharingUserUpstreamModel(0, "shared-stop"), gorm.ErrRecordNotFound)
+	require.ErrorIs(t, StopSharingUserUpstreamModel(10, "  "), gorm.ErrRecordNotFound)
 }

@@ -1,11 +1,16 @@
 package controller
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
@@ -399,4 +404,64 @@ func TestSaveUpstreamModelFieldsRoundTrip(t *testing.T) {
 	require.Equal(t, "whitelist", refreshed.ShareListMode)
 	require.Equal(t, "11,22", refreshed.ShareWhitelist)
 	require.Equal(t, "", refreshed.ShareBlacklist)
+}
+
+// TestAdminStopSharingUserUpstreamModel 验证管理员停共享接口的判定与写库语义喵。
+func TestAdminStopSharingUserUpstreamModel(t *testing.T) {
+	// 自建内存库并恢复调用前的全局 DB，避免污染同包后续测试喵。
+	oldDB := model.DB
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	model.DB = db
+	// 喵~防御：清理时关闭自建库并恢复原全局 DB 喵。
+	t.Cleanup(func() {
+		sqlDB, dbErr := db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+		model.DB = oldDB
+	})
+	require.NoError(t, db.AutoMigrate(&model.UserUpstreamModel{}))
+
+	// 请求封装：以给定 body 与操作者身份调用停共享接口并解析响应，便于多场景复用喵。
+	call := func(requestBody string, actorID int) (*httptest.ResponseRecorder, map[string]any) {
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/api/upstream-models/admin/stop-sharing", strings.NewReader(requestBody))
+		ctx.Set("id", actorID)
+		AdminStopSharingUserUpstreamModel(ctx)
+		var payload map[string]any
+		require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &payload))
+		return recorder, payload
+	}
+
+	// 准备属主 7 的一条共享中模型（余额/可用/共享额度均大于 0）喵。
+	require.NoError(t, model.DB.Create(&model.UserUpstreamModel{OwnerUserID: 7, NormalizedName: "alpha", Enabled: true, ShareEnabled: true, BalanceCents: 5000, AvailableCents: 5000, ShareLimitCents: 1000, Version: 1}).Error)
+
+	// 管理员停共享成功：success=true，写库后共享关闭、属主自用保留喵。
+	recorder, payload := call(`{"model_name":"user/alpha","owner_user_id":7}`, 1)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.Equal(t, true, payload["success"])
+	var stopped model.UserUpstreamModel
+	require.NoError(t, model.DB.Where("owner_user_id = ? AND normalized_name = ?", 7, "alpha").First(&stopped).Error)
+	assert.False(t, stopped.ShareEnabled, "停共享后共享开关应为 false")
+	assert.True(t, stopped.Enabled, "停共享不应影响属主自用启用状态")
+	assert.Equal(t, int64(5000), stopped.BalanceCents, "停共享不应扣减余额")
+
+	// 重复停止：模型存在但已不在共享，返回 409 受控错误喵。
+	recorder, payload = call(`{"model_name":"user/alpha","owner_user_id":7}`, 1)
+	require.Equal(t, http.StatusConflict, recorder.Code)
+	assert.Equal(t, false, payload["success"])
+
+	// 属主 id 非正数：请求被拒绝喵。
+	_, payload = call(`{"model_name":"user/alpha","owner_user_id":0}`, 1)
+	assert.Equal(t, false, payload["success"])
+
+	// 模型不存在：按资源不存在返回 404，避免枚举属主模型喵。
+	recorder, _ = call(`{"model_name":"user/missing","owner_user_id":7}`, 1)
+	require.Equal(t, http.StatusNotFound, recorder.Code)
+
+	// 名称含非法字符：归一化阶段被拒绝喵。
+	_, payload = call(`{"model_name":"user/中文模型","owner_user_id":7}`, 1)
+	assert.Equal(t, false, payload["success"])
 }

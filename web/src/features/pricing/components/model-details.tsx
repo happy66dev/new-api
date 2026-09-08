@@ -100,6 +100,7 @@ import { DynamicPricingBreakdown } from './dynamic-pricing-breakdown'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
 import { ModelDetailsApi } from './model-details-api'
 import { ModelDetailsPerformance } from './model-details-performance'
+import { UserSharedStopPanel } from './user-shared-stop-panel'
 
 // ----------------------------------------------------------------------------
 // Local UI helpers
@@ -1490,6 +1491,8 @@ export interface ModelDetailsContentProps {
   usdExchangeRate: number
   tokenUnit: TokenUnit
   showRechargePrice?: boolean
+  /** 管理员停止共享成功后的回调：用于宿主收起当前视图（抽屉关闭/详情页返回）喵。 */
+  onStopSharingSuccess?: () => void
 }
 
 export function ModelDetailsContent(props: ModelDetailsContentProps) {
@@ -1522,6 +1525,12 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
         </TabsList>
 
         <TabsContent value='overview' className='space-y-6 outline-none'>
+          {/* 管理员专属：用户共享模型的停共享入口，仅登录的管理员对 user-shared 条目可见喵。 */}
+          <UserSharedStopPanel
+            model={props.model}
+            onStopSharingSuccess={props.onStopSharingSuccess}
+          />
+
           <OverviewSummaryGrid model={props.model} />
 
           <section className='bg-card/60 space-y-5 rounded-xl border p-4 shadow-sm'>
@@ -1699,6 +1708,7 @@ export function ModelDetails() {
           usdExchangeRate={usdExchangeRate ?? 1}
           tokenUnit={tokenUnit}
           showRechargePrice={search.rechargePrice ?? false}
+          onStopSharingSuccess={handleBack}
           endpointMap={
             (endpointMap as Record<
               string,

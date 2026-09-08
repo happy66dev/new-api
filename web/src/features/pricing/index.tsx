@@ -290,6 +290,7 @@ export function Pricing() {
               usdExchangeRate={usdExchangeRate ?? 1}
               tokenUnit={tokenUnit}
               showRechargePrice={showRechargePrice}
+              onStopSharingSuccess={() => setSelectedModelName(null)}
             />
           )}
         </PageTransition>

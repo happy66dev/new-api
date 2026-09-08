@@ -328,6 +328,12 @@ func SetApiRouter(router *gin.Engine) {
 			upstreamModelRoute.GET("/:id/usage", controller.GetUpstreamModelUserUsage)
 			upstreamModelRoute.DELETE("/:id/usage", controller.ClearUpstreamModelUserUsage)
 		}
+		// 管理员操作上游模型的接口：与属主自管理接口隔离，仅 AdminAuth 可达喵。
+		upstreamAdminRoute := apiRouter.Group("/upstream-models/admin")
+		upstreamAdminRoute.Use(middleware.AdminAuth())
+		{
+			upstreamAdminRoute.POST("/stop-sharing", controller.AdminStopSharingUserUpstreamModel)
+		}
 
 		tokenRoute := apiRouter.Group("/token")
 		tokenRoute.Use(middleware.UserAuth())

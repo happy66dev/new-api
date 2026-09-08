@@ -2,6 +2,7 @@ package controller
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -454,6 +455,54 @@ func UpdateUserUpstreamModel(c *gin.Context) {
 		return
 	}
 	common.ApiSuccess(c, response)
+}
+
+// adminStopSharingUpstreamModelRequest 描述管理员停止某用户共享模型的入参喵。
+type adminStopSharingUpstreamModelRequest struct {
+	// ModelName 共享模型对外调用名（形如 user/<name>，也兼容直接传归一化名）喵。
+	ModelName string `json:"model_name"`
+	// OwnerUserID 该共享模型属主的用户 id，取自模型广场条目的 share_owner_user_id 喵。
+	OwnerUserID int `json:"owner_user_id"`
+}
+
+// AdminStopSharingUserUpstreamModel 管理员停止指定用户上游模型的共享，仅关闭共享开关，属主自用不受影响喵。
+func AdminStopSharingUserUpstreamModel(c *gin.Context) {
+	// 解析请求体：JSON 非法视为无效请求喵。
+	var request adminStopSharingUpstreamModelRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	// 喵~防御：属主 id 必须为正数，防止对无效属主误操作喵。
+	if request.OwnerUserID <= 0 {
+		common.ApiError(c, errors.New("共享模型属主用户无效"))
+		return
+	}
+	// 归一化模型名：user/<name>、upstream/<name> 与裸名入参都可，非法名称在此被拒绝喵。
+	normalizedName, err := model.NormalizeUserUpstreamModelName(request.ModelName)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	// 执行停共享：只影响后续共享调用，已在途共享请求按启动时定格的状态正常结算喵。
+	err = model.StopSharingUserUpstreamModel(request.OwnerUserID, normalizedName)
+	if err != nil {
+		// 喵~防御：目标模型不存在按资源不存在返回，避免让管理员枚举属主模型喵。
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			upstreamModelNotFound(c)
+			return
+		}
+		// 喵~防御：模型存在但当前本就没在共享，返回专门受控错误让操作可解释喵。
+		if errors.Is(err, model.ErrUpstreamModelNotSharing) {
+			c.JSON(http.StatusConflict, gin.H{"success": false, "code": "upstream_model_not_sharing", "message": "该模型当前未处于共享状态"})
+			return
+		}
+		common.ApiError(c, err)
+		return
+	}
+	// 记系统日志便于管理员审计：谁停了哪个属主的哪个共享模型喵。
+	common.SysLog(fmt.Sprintf("admin user %d stopped sharing upstream model user/%s owned by user %d", c.GetInt("id"), normalizedName, request.OwnerUserID))
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": gin.H{"normalized_name": normalizedName, "owner_user_id": request.OwnerUserID}})
 }
 
 // DeleteUserUpstreamModel 删除用户上游模型喵。
