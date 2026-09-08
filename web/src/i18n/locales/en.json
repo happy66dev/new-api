@@ -6549,6 +6549,7 @@
     "Billing expression is required": "Billing expression is required",
     "Pricing values must be finite numbers": "Pricing values must be finite numbers",
     "Pricing values cannot be negative": "Pricing values cannot be negative",
-    "Per-request price is required": "Per-request price is required"
+    "Per-request price is required": "Per-request price is required",
+    "Input price is required to convert per-token prices.": "Input price is required to convert per-token prices."
   }
 }

@@ -36,6 +36,11 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+} from '@/components/ui/input-group'
 import { Label } from '@/components/ui/label'
 import {
   Select,
@@ -54,7 +59,8 @@ import {
   GROUP_BILLING_MODE_PER_CALL,
   GROUP_BILLING_MODE_PER_TOKEN,
   GROUP_BILLING_MODE_TIERED,
-  GROUP_PRICING_NUMERIC_FIELDS,
+  GROUP_PRICING_PRICE_FIELDS,
+  type GlobalPricingBasesMap,
   type GroupModelPricingFormValues,
   type GroupModelPricingMap,
   type GroupPricingDraft,
@@ -65,6 +71,7 @@ import {
   parseGroupBillingText,
   stringifyGroupPricing,
 } from './group-model-pricing-utils'
+import { PriceInput } from './model-pricing-inputs'
 
 type GroupModelPricingFormProps = {
   form: UseFormReturn<GroupModelPricingFormValues>
@@ -72,6 +79,8 @@ type GroupModelPricingFormProps = {
   isSaving: boolean
   /** 站点已配置的分组名列表，来自分组倍率配置喵。 */
   availableGroups: string[]
+  /** 模型名 -> 全局定价基准，供「本组没填输入价」时回落换算用喵。 */
+  globalPricingBases: GlobalPricingBasesMap
 }
 
 /** 空草稿：所有字段留空表示「继承全局」喵。 */
@@ -79,13 +88,13 @@ const EMPTY_DRAFT: GroupPricingDraft = {
   modelName: '',
   billingMode: GROUP_BILLING_MODE_INHERIT,
   modelPrice: '',
-  modelRatio: '',
-  completionRatio: '',
-  cacheRatio: '',
-  createCacheRatio: '',
-  imageRatio: '',
-  audioRatio: '',
-  audioCompletionRatio: '',
+  inputPrice: '',
+  outputPrice: '',
+  cachePrice: '',
+  createCachePrice: '',
+  imagePrice: '',
+  audioPrice: '',
+  audioOutputPrice: '',
   billingExpr: '',
 }
 
@@ -206,11 +215,19 @@ export function GroupModelPricingForm(props: GroupModelPricingFormProps) {
           modelName,
           pricingMap[selectedGroup]?.[modelName],
           groupModeMap[selectedGroup]?.[modelName],
-          groupExprMap[selectedGroup]?.[modelName]
+          groupExprMap[selectedGroup]?.[modelName],
+          // 该模型的全局定价基准：本组没填输入价时，换算要回落到全局价喵。
+          props.globalPricingBases[modelName]
         )
       )
     },
-    [groupExprMap, groupModeMap, pricingMap, selectedGroup]
+    [
+      groupExprMap,
+      groupModeMap,
+      pricingMap,
+      props.globalPricingBases,
+      selectedGroup,
+    ]
   )
 
   const handleDeleteRow = useCallback(
@@ -232,7 +249,11 @@ export function GroupModelPricingForm(props: GroupModelPricingFormProps) {
       toast.error(t('Model name is required'))
       return
     }
-    const result = draftToOverride(draft)
+    const result = draftToOverride(
+      draft,
+      // 该模型的全局定价基准：只填输出价、没填输入价时靠它换算成倍率喵。
+      props.globalPricingBases[modelName]
+    )
     // 喵~防御：数值非法（负数、非数字）时拒绝写入，绝不让脏价格进到计费配置里喵。
     if (!result.ok) {
       toast.error(t(result.messageKey))
@@ -245,7 +266,7 @@ export function GroupModelPricingForm(props: GroupModelPricingFormProps) {
     writeOverride(modelName, result.override, draft.billingExpr.trim())
     setEditingModelName(modelName)
     toast.success(t('Override applied. Remember to save.'))
-  }, [draft, editingModelName, t, writeOverride])
+  }, [draft, editingModelName, props.globalPricingBases, t, writeOverride])
 
   const handleNewDraft = useCallback(() => {
     setEditingModelName('')
@@ -552,24 +573,57 @@ function GroupPricingDraftPanel(props: {
           </Select>
         </div>
 
-        {!props.isTiered &&
-          GROUP_PRICING_NUMERIC_FIELDS.map((numericField) => (
-            <div key={numericField.field} className='flex flex-col gap-1.5'>
-              <Label>{t(numericField.labelKey)}</Label>
-              <Input
-                type='number'
-                inputMode='decimal'
-                step='any'
-                min={0}
-                value={props.draft[numericField.field]}
-                placeholder={t('Inherit global')}
-                disabled={props.disabled}
-                onChange={(event) =>
-                  updateField(numericField.field, event.target.value)
-                }
-              />
-            </div>
-          ))}
+        {!props.isTiered && (
+          <>
+            {/* 按次价格框：按次模式只显示它；继承模式也显示，以便给「全局是按次」的模型单独改按次价喵。 */}
+            {(props.draft.billingMode === GROUP_BILLING_MODE_PER_CALL ||
+              props.draft.billingMode === GROUP_BILLING_MODE_INHERIT) && (
+              <div className='flex flex-col gap-1.5'>
+                <Label>{t('Per-request price (USD)')}</Label>
+                <InputGroup>
+                  <InputGroupAddon>$</InputGroupAddon>
+                  <InputGroupInput
+                    inputMode='decimal'
+                    value={props.draft.modelPrice}
+                    placeholder={t('Inherit global')}
+                    disabled={props.disabled}
+                    onChange={(event) =>
+                      updateField('modelPrice', event.target.value)
+                    }
+                  />
+                  <InputGroupAddon align='inline-end'>
+                    {t('per request')}
+                  </InputGroupAddon>
+                </InputGroup>
+              </div>
+            )}
+            {/* 按量 / 继承全局：全部按「美元/百万 token」直接填价格，留空即继承全局喵。 */}
+            {props.draft.billingMode !== GROUP_BILLING_MODE_PER_CALL && (
+              <>
+                <div className='flex flex-col gap-1.5'>
+                  <Label>{t('Input price')}</Label>
+                  <PriceInput
+                    value={props.draft.inputPrice}
+                    placeholder={t('Inherit global')}
+                    disabled={props.disabled}
+                    onChange={(value) => updateField('inputPrice', value)}
+                  />
+                </div>
+                {GROUP_PRICING_PRICE_FIELDS.map((priceField) => (
+                  <div key={priceField.field} className='flex flex-col gap-1.5'>
+                    <Label>{t(priceField.labelKey)}</Label>
+                    <PriceInput
+                      value={props.draft[priceField.field]}
+                      placeholder={t('Inherit global')}
+                      disabled={props.disabled}
+                      onChange={(value) => updateField(priceField.field, value)}
+                    />
+                  </div>
+                ))}
+              </>
+            )}
+          </>
+        )}
       </div>
 
       {props.isTiered && (

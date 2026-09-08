@@ -6549,6 +6549,7 @@
     "Billing expression is required": "计费表达式为必填项",
     "Pricing values must be finite numbers": "定价数值必须是有限数字",
     "Pricing values cannot be negative": "定价数值不能为负数",
-    "Per-request price is required": "按次价格为必填项"
+    "Per-request price is required": "按次价格为必填项",
+    "Input price is required to convert per-token prices.": "按量价格需要输入价才能换算，请先填写输入价。"
   }
 }

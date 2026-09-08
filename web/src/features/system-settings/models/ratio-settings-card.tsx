@@ -34,7 +34,11 @@ import { useUpdateOption } from '../hooks/use-update-option'
 import { safeJsonParse } from '../utils/json-parser'
 import { positiveIntegerSchema } from '../utils/numeric-field'
 import { GroupModelPricingForm } from './group-model-pricing-form'
-import type { GroupModelPricingFormValues } from './group-model-pricing-utils'
+import type {
+  GlobalPricingBases,
+  GlobalPricingBasesMap,
+  GroupModelPricingFormValues,
+} from './group-model-pricing-utils'
 import { GroupRatioForm } from './group-ratio-form'
 import { ModelRatioForm } from './model-ratio-form'
 import { ToolPriceSettings } from './tool-price-settings'
@@ -619,6 +623,29 @@ export function RatioSettingsCard({
     )
   }, [groupDefaults.GroupRatio])
 
+  // 每个模型的「全局定价基准」：分组没填输入价/音频输入价时，价格 ⇄ 倍率的换算要回落到这里喵。
+  // 换算口径与后端一致：输入价 = ModelRatio × 2（$1 = 500000 额度），音频输入价 = 输入价 × AudioRatio喵。
+  const globalPricingBases = useMemo<GlobalPricingBasesMap>(() => {
+    const modelRatioMap = safeJsonParse<Record<string, number>>(
+      modelDefaults.ModelRatio,
+      { fallback: {}, silent: true }
+    )
+    const audioRatioMap = safeJsonParse<Record<string, number>>(
+      modelDefaults.AudioRatio,
+      { fallback: {}, silent: true }
+    )
+    const bases: GlobalPricingBasesMap = {}
+    for (const modelName of Object.keys(modelRatioMap)) {
+      const inputPrice = (modelRatioMap[modelName] ?? 0) * 2
+      const base: GlobalPricingBases = {
+        inputPrice,
+        audioInputPrice: inputPrice * (audioRatioMap[modelName] ?? 1),
+      }
+      bases[modelName] = base
+    }
+    return bases
+  }, [modelDefaults.AudioRatio, modelDefaults.ModelRatio])
+
   const tabLabels: Record<RatioTabId, string> = {
     models: 'Model prices',
     'unset-models': 'Unset price models',
@@ -668,6 +695,7 @@ export function RatioSettingsCard({
           onSave={saveGroupModelPricing}
           isSaving={updateOption.isPending}
           availableGroups={availableGroups}
+          globalPricingBases={globalPricingBases}
         />
       )
     }

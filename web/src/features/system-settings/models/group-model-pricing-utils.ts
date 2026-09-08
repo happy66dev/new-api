@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { safeJsonParse } from '../utils/json-parser'
+import { formatPricingNumber } from './pricing-format'
 
 /**
  * 分组定制定价的前端数据结构与「草稿 ↔ 配置」互转工具喵。
@@ -27,6 +28,17 @@ import { safeJsonParse } from '../utils/json-parser'
  * 最重要的一条约定喵：**字段缺失（undefined）表示「继承全局配置」**，
  * 显式填 0 表示「这个分组真的免费」。所以草稿里的空字符串必须转成「不写这个键」，
  * 绝不能转成 0，不然会把继承悄悄改成免费喵。
+ *
+ * 编辑面板里管理员直接填「美元价格」，而配置里存的是后端要的「倍率」，
+ * 所以这里负责价格 ⇄ 倍率的换算，口径与全局编辑器（model-pricing-core）完全一致喵：
+ *
+ *   - model_ratio = 输入价 ÷ 2（因为 $1 = 500000 额度，倍率 × 2 才是 $/1M token）
+ *   - completion_ratio = 输出价 ÷ 基准输入价
+ *   - cache_ratio / create_cache_ratio / image_ratio / audio_ratio 同理除以基准输入价
+ *   - audio_completion_ratio = 音频输出价 ÷ 基准音频输入价
+ *
+ * 「基准输入价」优先取本组填的输入价，没填就回落到全局输入价（全局 ModelRatio × 2），
+ * 这样「只定制输出价、继承全局输入价」也能换算成倍率喵。
  */
 
 /** 分组不指定计费方式，沿用全局判定（全局配了按次价就按次，否则按量）喵。 */
@@ -68,12 +80,26 @@ export type GroupModelPricingMap = Record<
 
 /**
  * 覆盖项里纯数值字段的键名集合喵。
- * 把 billing_mode（字符串字段）排除掉，编辑面板遍历数值输入框时才能安全地按 key 赋数字喵。
+ * 把 billing_mode（字符串字段）排除掉，换算循环里才能安全地按 key 赋数字喵。
  */
 export type GroupPricingNumericKey = Exclude<
   keyof GroupPricingOverride,
   'billing_mode'
 >
+
+/**
+ * 某个模型的全局定价基准，供「本组没填输入价/音频输入价」时回落换算用喵。
+ * 都是美元/百万 token 的价格，预乘了「倍率 × 2」这一层换算喵。
+ */
+export type GlobalPricingBases = {
+  /** 全局输入价 = 全局 ModelRatio × 2 喵。 */
+  inputPrice: number
+  /** 全局音频输入价 = 全局输入价 × 全局 AudioRatio 喵。 */
+  audioInputPrice: number
+}
+
+/** 模型名 -> 该模型的全局定价基准，ratio-settings-card 一次性算好传进来喵。 */
+export type GlobalPricingBasesMap = Record<string, GlobalPricingBases>
 
 /** 「分组名 -> 模型名 -> 字符串值」两层映射，分组计费方式与分组表达式都用它喵。 */
 export type GroupBillingTextMap = Record<string, Record<string, string>>
@@ -88,66 +114,91 @@ export type GroupModelPricingFormValues = {
   GroupBillingExpr: string
 }
 
-/** 编辑面板里的草稿：所有数值都用字符串存，空串代表「留空 = 继承全局」喵。 */
+/** 编辑面板里的草稿：所有价格都用字符串存，空串代表「留空 = 继承全局」喵。 */
 export type GroupPricingDraft = {
   /** 模型名，例如 deepseek-chat 喵。 */
   modelName: string
   /** 当前选中的计费方式，取值见 GROUP_BILLING_MODE_* 常量喵。 */
   billingMode: string
-  /** 按次价格输入框的原始文本喵。 */
+  /** 按次价格输入框的原始文本，单位美元/次，仅按次计费模式有意义喵。 */
   modelPrice: string
-  /** 模型倍率输入框的原始文本喵。 */
-  modelRatio: string
-  /** 补全倍率输入框的原始文本喵。 */
-  completionRatio: string
-  /** 缓存读取倍率输入框的原始文本喵。 */
-  cacheRatio: string
-  /** 缓存写入倍率输入框的原始文本喵。 */
-  createCacheRatio: string
-  /** 图片倍率输入框的原始文本喵。 */
-  imageRatio: string
-  /** 音频倍率输入框的原始文本喵。 */
-  audioRatio: string
-  /** 音频补全倍率输入框的原始文本喵。 */
-  audioCompletionRatio: string
+  /** 输入价输入框的原始文本，单位美元/百万 token 喵。 */
+  inputPrice: string
+  /** 输出价输入框的原始文本，单位美元/百万 token 喵。 */
+  outputPrice: string
+  /** 缓存读取价输入框的原始文本，单位美元/百万 token 喵。 */
+  cachePrice: string
+  /** 缓存写入价输入框的原始文本，单位美元/百万 token 喵。 */
+  createCachePrice: string
+  /** 图片价输入框的原始文本，单位美元/百万 token 喵。 */
+  imagePrice: string
+  /** 音频输入价输入框的原始文本，单位美元/百万 token 喵。 */
+  audioPrice: string
+  /** 音频输出价输入框的原始文本，单位美元/百万 token 喵。 */
+  audioOutputPrice: string
   /** 阶梯计费表达式的原始文本，仅计费方式为 tiered_expr 时有意义喵。 */
   billingExpr: string
 }
 
-/** 草稿字段 ↔ 覆盖项字段 ↔ 界面标签 的对应关系，编辑面板直接遍历它渲染输入框喵。 */
-export const GROUP_PRICING_NUMERIC_FIELDS: ReadonlyArray<{
-  /** 草稿里的字段名喵。 */
+/** 价格输入框 ↔ 覆盖项倍率字段 ↔ 界面标签 的对应关系，编辑面板直接遍历它渲染价格输入框喵。
+ * 标签文案与全局编辑器（model-pricing-core 的 laneConfigs）保持一致，直接复用同一批 i18n key 喵。
+ * 换算基准分两种喵：
+ *   - 'input'：倍率 = 该价格 ÷ 基准输入价（输出/缓存/缓存写入/图片/音频输入都归此类）；
+ *   - 'audioInput'：倍率 = 音频输出价 ÷ 基准音频输入价。
+ */
+export const GROUP_PRICING_PRICE_FIELDS: ReadonlyArray<{
+  /** 草稿里的价格字段名喵。 */
   field: keyof GroupPricingDraft
-  /** 覆盖项 JSON 里的字段名，只可能是数值字段喵。 */
-  jsonKey: GroupPricingNumericKey
-  /** i18n 文案 key 喵。 */
+  /** 覆盖项 JSON 里的倍率字段名，只可能是数值字段喵。 */
+  ratioKey: GroupPricingNumericKey
+  /** 该价格换算成倍率时的基准类别喵。 */
+  base: 'input' | 'audioInput'
+  /** i18n 文案 key，与全局编辑器的车道标题一致喵。 */
   labelKey: string
 }> = [
   {
-    field: 'modelPrice',
-    jsonKey: 'model_price',
-    labelKey: 'Per-request price (USD)',
+    field: 'outputPrice',
+    ratioKey: 'completion_ratio',
+    base: 'input',
+    labelKey: 'Completion price',
   },
-  { field: 'modelRatio', jsonKey: 'model_ratio', labelKey: 'Model ratio' },
   {
-    field: 'completionRatio',
-    jsonKey: 'completion_ratio',
-    labelKey: 'Completion ratio',
+    field: 'cachePrice',
+    ratioKey: 'cache_ratio',
+    base: 'input',
+    labelKey: 'Cache read price',
   },
-  { field: 'cacheRatio', jsonKey: 'cache_ratio', labelKey: 'Cache ratio' },
   {
-    field: 'createCacheRatio',
-    jsonKey: 'create_cache_ratio',
-    labelKey: 'Create cache ratio',
+    field: 'createCachePrice',
+    ratioKey: 'create_cache_ratio',
+    base: 'input',
+    labelKey: 'Cache write price',
   },
-  { field: 'imageRatio', jsonKey: 'image_ratio', labelKey: 'Image ratio' },
-  { field: 'audioRatio', jsonKey: 'audio_ratio', labelKey: 'Audio ratio' },
   {
-    field: 'audioCompletionRatio',
-    jsonKey: 'audio_completion_ratio',
-    labelKey: 'Audio completion ratio',
+    field: 'imagePrice',
+    ratioKey: 'image_ratio',
+    base: 'input',
+    labelKey: 'Image input price',
+  },
+  {
+    field: 'audioPrice',
+    ratioKey: 'audio_ratio',
+    base: 'input',
+    labelKey: 'Audio input price',
+  },
+  {
+    field: 'audioOutputPrice',
+    ratioKey: 'audio_completion_ratio',
+    base: 'audioInput',
+    labelKey: 'Audio output price',
   },
 ]
+
+/** 全局基准缺失时的兜底：输入价与音频输入价都是 0，表示「全局也没定价」喵。 */
+const EMPTY_GLOBAL_BASES: GlobalPricingBases = {
+  inputPrice: 0,
+  audioInputPrice: 0,
+}
 
 /** 把「分组 -> 模型 -> 字符串」的 JSON 文本解析成对象，坏 JSON 一律回落空对象喵。 */
 export function parseGroupBillingText(
@@ -166,23 +217,28 @@ export function stringifyGroupPricing(value: unknown): string {
   return JSON.stringify(value ?? {}, null, 2)
 }
 
-/** 数值字段转文本：undefined/null 转空串（表示继承），数字原样转字符串喵。 */
-function numberToText(value: number | undefined | null): string {
+/** 把已配置的倍率换算回可编辑的价格文本：undefined/null/非有限数一律转空串喵。 */
+function ratioToPriceText(value: number | undefined | null): string {
   // 喵~防御：未配置的字段必须显示成空，不能显示 0，否则用户会误以为这个分组免费喵。
   if (value === undefined || value === null) {
     return ''
   }
-  // 喵~防御：NaN 与 Infinity 无法编辑，按未配置处理，避免把脏值带回配置喵。
-  if (!Number.isFinite(value)) {
-    return ''
-  }
-  return String(value)
+  // formatPricingNumber 内部对非有限数也返回空串，NaN/Infinity 不会漏进输入框喵。
+  return formatPricingNumber(value)
+}
+
+/** 把价格数值四舍五入成可写的倍率数值，避免「0.27 / 0.5 = 0.5400000000000001」这种浮点噪音喵。 */
+function priceToRatioNumber(value: number): number {
+  const formatted = formatPricingNumber(value)
+  // formatPricingNumber 对非有限数返回空串，此时按 0 处理，调用方早该拦掉了喵。
+  return formatted === '' ? 0 : Number(formatted)
 }
 
 /**
  * 把一条已有配置还原成编辑面板的草稿喵。
  *
- * 输入：模型名，以及该模型在三份配置里各自的值（都可能是 undefined，表示那份没配）。
+ * 输入：模型名、该模型在三份配置里各自的值（都可能是 undefined，表示那份没配），
+ * 以及该模型的全局定价基准（用于「本组没填输入价时回落到全局价换算」喵）。
  * 输出：填好的草稿。
  * 边界：分组级阶梯计费优先——只要分组计费方式是 tiered_expr，面板就切到表达式模式，
  * 因为此时定价覆盖里的倍率对这个分组已经不生效了喵。
@@ -191,36 +247,71 @@ export function buildDraftFromOverride(
   modelName: string,
   override: GroupPricingOverride | undefined,
   groupBillingMode: string | undefined,
-  groupBillingExpr: string | undefined
+  groupBillingExpr: string | undefined,
+  globalBases: GlobalPricingBases | undefined
 ): GroupPricingDraft {
-  // 分组级声明了阶梯计费时直接进表达式模式，数值框留空避免误导喵。
+  // 分组级声明了阶梯计费时直接进表达式模式，价格框留空避免误导喵。
   if (groupBillingMode === GROUP_BILLING_MODE_TIERED) {
     return {
       modelName,
       billingMode: GROUP_BILLING_MODE_TIERED,
       modelPrice: '',
-      modelRatio: '',
-      completionRatio: '',
-      cacheRatio: '',
-      createCacheRatio: '',
-      imageRatio: '',
-      audioRatio: '',
-      audioCompletionRatio: '',
+      inputPrice: '',
+      outputPrice: '',
+      cachePrice: '',
+      createCachePrice: '',
+      imagePrice: '',
+      audioPrice: '',
+      audioOutputPrice: '',
       billingExpr: groupBillingExpr ?? '',
     }
   }
+  const global = globalBases ?? EMPTY_GLOBAL_BASES
+
+  // 本组输入价 = 组内 model_ratio × 2；基准输入价优先用组内值，没配再回落全局喵。
+  const inputPrice =
+    override?.model_ratio != null
+      ? ratioToPriceText(override.model_ratio * 2)
+      : ''
+  const effectiveInputPrice =
+    inputPrice !== '' && Number(inputPrice) > 0
+      ? Number(inputPrice)
+      : global.inputPrice
+
+  // 音频输入价同样：组内 audio_ratio × 基准输入价；基准音频输入价优先组内、回落全局喵。
+  const audioPrice =
+    override?.audio_ratio != null && effectiveInputPrice > 0
+      ? ratioToPriceText(override.audio_ratio * effectiveInputPrice)
+      : ''
+  const effectiveAudioInputPrice =
+    audioPrice !== '' && Number(audioPrice) > 0
+      ? Number(audioPrice)
+      : global.audioInputPrice
+
+  // 喵~防御：基准为 0（本组与全局都没定价）时倍率换算不出价格，一律留空展示喵。
+  const laneToPrice = (ratio: number | undefined, base: number): string => {
+    if (ratio == null || base <= 0) return ''
+    return ratioToPriceText(ratio * base)
+  }
+
   return {
     modelName,
     // 喵~防御：覆盖项缺失或没写 billing_mode 时按「继承全局」显示喵。
     billingMode: override?.billing_mode ?? GROUP_BILLING_MODE_INHERIT,
-    modelPrice: numberToText(override?.model_price),
-    modelRatio: numberToText(override?.model_ratio),
-    completionRatio: numberToText(override?.completion_ratio),
-    cacheRatio: numberToText(override?.cache_ratio),
-    createCacheRatio: numberToText(override?.create_cache_ratio),
-    imageRatio: numberToText(override?.image_ratio),
-    audioRatio: numberToText(override?.audio_ratio),
-    audioCompletionRatio: numberToText(override?.audio_completion_ratio),
+    modelPrice: ratioToPriceText(override?.model_price),
+    inputPrice,
+    outputPrice: laneToPrice(override?.completion_ratio, effectiveInputPrice),
+    cachePrice: laneToPrice(override?.cache_ratio, effectiveInputPrice),
+    createCachePrice: laneToPrice(
+      override?.create_cache_ratio,
+      effectiveInputPrice
+    ),
+    imagePrice: laneToPrice(override?.image_ratio, effectiveInputPrice),
+    audioPrice,
+    audioOutputPrice: laneToPrice(
+      override?.audio_completion_ratio,
+      effectiveAudioInputPrice
+    ),
     billingExpr: groupBillingExpr ?? '',
   }
 }
@@ -234,15 +325,19 @@ export type DraftConversionResult =
  * 把编辑面板的草稿转成可写入配置的覆盖项喵。
  *
  * 整体思路喵：
- *  1. 阶梯计费模式只需要表达式，数值字段一律不写，先单独校验表达式非空；
- *  2. 其余模式逐个解析数值框：空串跳过（继承全局），非空则必须是有限非负数；
- *  3. 声明按次计费却没填按次价时拦下来——后端也会拦，但前端先提示体验更好喵。
+ *  1. 阶梯计费模式只需要表达式，价格一律不写，先单独校验表达式非空；
+ *  2. 按次计费只需要按次价，且必须显式填写（前端看不到全局按次价，避免静默变 0 元/次）；
+ *  3. 按量 / 继承模式把价格逐个换算成倍率：输入价 ÷ 2 得到 model_ratio，
+ *     其余价格 ÷ 基准（组内输入价，没配回落全局）得到对应倍率；
+ *  4. 声明按次计费却没填按次价时拦下来——后端也会拦，但前端先提示体验更好喵。
  *
- * 输入：草稿。输出：成功时是覆盖项，失败时是错误文案 key（调用方负责 t() 翻译）。
- * 边界：负数、NaN、Infinity、非数字文本全部判为非法，绝不写进计费配置喵。
+ * 输入：草稿与该模型的全局定价基准。输出：成功时是覆盖项，失败时是错误文案 key。
+ * 边界：负数、NaN、Infinity、非数字文本全部判为非法；基准缺失或为 0 时无法换算，
+ * 一律拒绝保存并提示先填输入价，绝不写 0/Infinity 进计费配置喵。
  */
 export function draftToOverride(
-  draft: GroupPricingDraft
+  draft: GroupPricingDraft,
+  globalBases: GlobalPricingBases | undefined
 ): DraftConversionResult {
   const isTiered = draft.billingMode === GROUP_BILLING_MODE_TIERED
   if (isTiered) {
@@ -259,14 +354,89 @@ export function draftToOverride(
     override.billing_mode = draft.billingMode
   }
 
-  for (const numericField of GROUP_PRICING_NUMERIC_FIELDS) {
-    const rawText = draft[numericField.field].trim()
+  // 按次计费：只收按次价，价格倍率全部不写喵。
+  if (draft.billingMode === GROUP_BILLING_MODE_PER_CALL) {
+    const modelPrice = draft.modelPrice.trim()
+    // 喵~防御：强制按次却没填单价时，是否合法取决于全局有没有配按次价，前端看不到，
+    // 所以这里要求必须显式填写，避免静默变成 0 元/次喵。
+    if (modelPrice === '') {
+      return { ok: false, messageKey: 'Per-request price is required' }
+    }
+    const parsedPrice = Number(modelPrice)
+    if (!Number.isFinite(parsedPrice)) {
+      return { ok: false, messageKey: 'Pricing values must be finite numbers' }
+    }
+    if (parsedPrice < 0) {
+      return { ok: false, messageKey: 'Pricing values cannot be negative' }
+    }
+    override.model_price = parsedPrice
+    return { ok: true, override }
+  }
+
+  // 按量 / 继承模式：价格 → 倍率喵。
+  const global = globalBases ?? EMPTY_GLOBAL_BASES
+
+  // 继承模式也可能只想改按次价（当全局是按次模型时）：面板会同时显示按次价框，
+  // 这里把它一并写进 model_price，与改造前「继承模式下能填按次价」的行为保持一致喵。
+  if (draft.billingMode === GROUP_BILLING_MODE_INHERIT) {
+    const modelPriceText = draft.modelPrice.trim()
+    if (modelPriceText !== '') {
+      const parsedPrice = Number(modelPriceText)
+      // 喵~防御：非数字或 NaN/Infinity 会一路污染额度计算，直接拒绝保存喵。
+      if (!Number.isFinite(parsedPrice)) {
+        return {
+          ok: false,
+          messageKey: 'Pricing values must be finite numbers',
+        }
+      }
+      // 喵~防御：负价格会算出负额度（等于给用户返钱），绝对不允许喵。
+      if (parsedPrice < 0) {
+        return { ok: false, messageKey: 'Pricing values cannot be negative' }
+      }
+      override.model_price = parsedPrice
+    }
+  }
+
+  // 先解析输入价：留空表示继承全局，此时基准输入价回落全局值喵。
+  const inputPriceText = draft.inputPrice.trim()
+  let inputPrice: number | null = null
+  if (inputPriceText !== '') {
+    inputPrice = Number(inputPriceText)
+    // 喵~防御：非数字或 NaN/Infinity 会一路污染额度计算，直接拒绝保存喵。
+    if (!Number.isFinite(inputPrice)) {
+      return { ok: false, messageKey: 'Pricing values must be finite numbers' }
+    }
+    // 喵~防御：负价格会算出负额度（等于给用户返钱），绝对不允许喵。
+    if (inputPrice < 0) {
+      return { ok: false, messageKey: 'Pricing values cannot be negative' }
+    }
+    override.model_ratio = priceToRatioNumber(inputPrice / 2)
+  }
+  const effectiveInputPrice = inputPrice ?? global.inputPrice
+
+  // 同理解析音频输入价，作为音频输出价的换算基准喵。
+  const audioPriceText = draft.audioPrice.trim()
+  let audioPrice: number | null = null
+  if (audioPriceText !== '') {
+    audioPrice = Number(audioPriceText)
+    if (!Number.isFinite(audioPrice)) {
+      return { ok: false, messageKey: 'Pricing values must be finite numbers' }
+    }
+    if (audioPrice < 0) {
+      return { ok: false, messageKey: 'Pricing values cannot be negative' }
+    }
+  }
+  const effectiveAudioInputPrice =
+    audioPrice ?? (effectiveInputPrice > 0 ? global.audioInputPrice : 0)
+
+  for (const priceField of GROUP_PRICING_PRICE_FIELDS) {
+    const rawText = draft[priceField.field].trim()
     // 留空表示继承全局，这个键就不写进 JSON 喵。
     if (rawText === '') {
       continue
     }
     const parsedValue = Number(rawText)
-    // 喵~防御：非数字或 NaN/Infinity 会一路污染额度计算，直接拒绝保存喵。
+    // 喵~防御：非数字或 NaN/Infinity 直接拒绝，绝不写脏值进计费配置喵。
     if (!Number.isFinite(parsedValue)) {
       return { ok: false, messageKey: 'Pricing values must be finite numbers' }
     }
@@ -274,16 +444,18 @@ export function draftToOverride(
     if (parsedValue < 0) {
       return { ok: false, messageKey: 'Pricing values cannot be negative' }
     }
-    override[numericField.jsonKey] = parsedValue
-  }
-
-  // 喵~防御：强制按次却没填单价时，是否合法取决于全局有没有配按次价，前端看不到，
-  // 所以这里要求必须显式填写，避免静默变成 0 元/次喵。
-  if (
-    draft.billingMode === GROUP_BILLING_MODE_PER_CALL &&
-    override.model_price === undefined
-  ) {
-    return { ok: false, messageKey: 'Per-request price is required' }
+    const base =
+      priceField.base === 'input'
+        ? effectiveInputPrice
+        : effectiveAudioInputPrice
+    // 喵~防御：换算基准为 0 时倍率无从算起（会变成 Infinity），要求先填输入价喵。
+    if (base <= 0) {
+      return {
+        ok: false,
+        messageKey: 'Input price is required to convert per-token prices.',
+      }
+    }
+    override[priceField.ratioKey] = priceToRatioNumber(parsedValue / base)
   }
 
   return { ok: true, override }
