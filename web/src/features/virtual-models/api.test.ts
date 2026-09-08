@@ -67,7 +67,7 @@ afterEach(() => {
 
 describe('virtual model API', () => {
   test('loads the current user virtual models from the user endpoint', async () => {
-    // mock GET 校验列表读取不会误用管理员或 Token AutoRoutes 接口喵。
+    // mock GET 校验列表读取不会误用管理员接口喵。
     apiClient.get = async (url) => {
       expect(url).toBe('/api/virtual-models')
       return { data: { success: true, data: [] } }

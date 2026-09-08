@@ -39,7 +39,7 @@ const maximumCandidateAttemptIDLength = 32
 const candidateRequestIDSeparator = ":"
 
 // candidateForbiddenGroupName 是虚拟模型候选禁止使用的自动分组名称喵。
-// 候选必须固定分组，进入 auto 分支会与 Token AutoRoutes 的原生语义互相污染喵。
+// 候选必须固定分组，分组为 auto 时会触发 auto 分组自动路由、破坏候选边界喵。
 const candidateForbiddenGroupName = "auto"
 
 // CandidateRelayBaseline 保存一次虚拟模型请求里所有候选共享、且与具体候选无关的字段喵。
@@ -224,7 +224,7 @@ func validateCandidateRelayIdentity(identity CandidateRelayIdentity) error {
 	}
 	// 去掉两端空白后再判断分组，避免" auto "这类输入绕过检查喵。
 	groupName := strings.TrimSpace(identity.GroupName)
-	// 喵~防御：分组为空或为 auto 时会进入 Token AutoRoutes 的自动分支，破坏候选边界喵。
+	// 喵~防御：分组为空或为 auto 时会触发 auto 分组自动路由，破坏候选边界喵。
 	if groupName == "" || groupName == candidateForbiddenGroupName {
 		return errors.New("candidate relay identity requires a fixed non-auto group name")
 	}

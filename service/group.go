@@ -57,7 +57,10 @@ func GetUserUsableGroups(userGroup string) map[string]string {
 		}
 	}
 	// 用户共享分组硬编码追加到所有用户可用分组，共享模型归入该分组喵。
-	groupsCopy[constant.GroupUserShared] = "用户共享"
+	// 共享开关(UserUpstreamSharingEnabled)关闭后不再追加，用户共享分组从所有分组列表消失喵。
+	if model.UserUpstreamSharingFeatureEnabled() {
+		groupsCopy[constant.GroupUserShared] = "用户共享"
+	}
 	return groupsCopy
 }
 
@@ -229,28 +232,6 @@ func GetRequestAutoGroups(c *gin.Context, userGroup string) []string {
 		return []string{}
 	}
 	return FilterUserTokenAutoGroupsForUser(c.GetInt("id"), userGroup, groups)
-}
-
-// GetRequestAutoRoute returns the token-scoped candidate chain for a virtual
-// model. A missing route is intentionally distinguishable from an empty route;
-// the latter is treated as invalid and never falls back to a recursive route.
-func GetRequestAutoRoute(c *gin.Context, modelName string) ([]string, bool) {
-	if !strings.HasPrefix(modelName, "auto/") {
-		return nil, false
-	}
-	value, ok := common.GetContextKey(c, constant.ContextKeyTokenAutoRoutes)
-	if !ok {
-		return nil, false
-	}
-	routes, ok := value.(map[string][]string)
-	if !ok {
-		return nil, false
-	}
-	chain, ok := routes[modelName]
-	if !ok || len(chain) == 0 {
-		return nil, false
-	}
-	return chain, true
 }
 
 // GetGroupsEnabledModels 按 groups 顺序获取各分组启用的模型并去重喵。

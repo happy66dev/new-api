@@ -295,19 +295,6 @@ export function DataTableRowActions<TData>({
             <RotateCcw size={16} />
           </DropdownMenuShortcut>
         </DropdownMenuItem>
-        {apiKey.group === 'auto' && (
-          <DropdownMenuItem
-            onClick={() => {
-              setCurrentRow(apiKey)
-              setOpen('auto-route-status')
-            }}
-          >
-            {t('View virtual model routes')}
-            <DropdownMenuShortcut>
-              <ExternalLink size={16} />
-            </DropdownMenuShortcut>
-          </DropdownMenuItem>
-        )}
         <DropdownMenuSeparator />
         <DropdownMenuItem
           onClick={() => {

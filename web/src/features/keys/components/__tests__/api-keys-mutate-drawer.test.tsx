@@ -292,37 +292,4 @@ describe('API keys mutate drawer Auto group integration', () => {
     expect(createdPayloads[0]?.auto_groups).toEqual(['vip'])
   })
 
-  test('opens the virtual model editor in create mode', async () => {
-    installApiFixtures([])
-    await renderCreateDrawer()
-    fireEvent.click(findButton('Add virtual model', true))
-    await waitFor(() => {
-      expect(screen.getByText('Edit virtual model route')).toBeTruthy()
-    })
-  })
-
-  test('filters route models by the selected route group', async () => {
-    const modelRequests: string[] = []
-    installApiFixtures([], modelRequests)
-    await renderCreateDrawer()
-
-    fireEvent.click(findButton('Add virtual model', true))
-
-    await waitFor(() => expect(modelRequests).toContain('default'))
-    const routeSelector = screen
-      .getAllByRole('combobox')
-      .find((candidate) => candidate.textContent?.includes('default'))
-    if (!routeSelector) {
-      throw new Error('Expected virtual route model selector')
-    }
-
-    await waitFor(() => expect(routeSelector).toBeEnabled())
-    fireEvent.click(routeSelector)
-    await waitFor(() => expect(screen.getByText('default-model')).toBeTruthy())
-
-    fireEvent.click(screen.getByRole('button', { name: 'vip' }))
-    await waitFor(() => expect(modelRequests).toContain('vip'))
-    await waitFor(() => expect(screen.getByText('vip-model')).toBeTruthy())
-    expect(screen.queryByText('default-model')).toBe(null)
-  })
 })

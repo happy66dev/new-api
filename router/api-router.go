@@ -123,6 +123,8 @@ func SetApiRouter(router *gin.Engine) {
 				selfRoute.POST("/monero/pay", middleware.CriticalRateLimit(), controller.RequestMoneroPay)
 				selfRoute.GET("/monero/payment", controller.GetMoneroPaymentStatus)
 				selfRoute.POST("/aff_transfer", middleware.UserCriticalRateLimit("aff-transfer"), controller.TransferAffQuota)
+				selfRoute.GET("/transfer/search", middleware.UserCriticalRateLimit("transfer-search"), controller.SearchTransferTargets)
+				selfRoute.POST("/transfer", middleware.UserCriticalRateLimit("user-transfer"), controller.TransferQuotaToUser)
 				selfRoute.PUT("/setting", controller.UpdateUserSetting)
 
 				// 2FA routes
@@ -342,8 +344,6 @@ func SetApiRouter(router *gin.Engine) {
 			tokenRoute.GET("/rpm", controller.GetTokenRPM)
 			tokenRoute.GET("/search", middleware.SearchRateLimit(), controller.SearchTokens)
 			tokenRoute.GET("/auto-groups", controller.GetTokenAutoGroups)
-			tokenRoute.GET("/:id/auto-routes", controller.GetTokenAutoRoutes)
-			tokenRoute.GET("/:id/auto-routes/status", controller.GetTokenAutoRouteStatus)
 			tokenRoute.GET("/:id", controller.GetToken)
 			tokenRoute.POST("/:id/key", middleware.CriticalRateLimit(), middleware.DisableCache(), controller.GetTokenKey)
 			tokenRoute.POST("/:id/reset-used-quota", controller.ResetTokenUsedQuota)
@@ -491,5 +491,3 @@ func SetApiRouter(router *gin.Engine) {
 		}
 	}
 }
-				selfRoute.GET("/transfer/search", middleware.UserCriticalRateLimit("transfer-search"), controller.SearchTransferTargets)
-				selfRoute.POST("/transfer", middleware.UserCriticalRateLimit("user-transfer"), controller.TransferQuotaToUser)

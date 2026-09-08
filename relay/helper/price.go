@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
@@ -42,33 +41,6 @@ const claudeCacheCreation1hMultiplier = 6 / 3.75
 // the pre-consumed quota still reflects a plausible output cost in paid groups.
 const defaultTieredPreConsumeMaxTokens = 8192
 
-// resolveAutoRoutePricingModel 决定 auto/xxx 这类虚拟模型名该用哪个模型名去查价喵。
-// 虚拟模型名自己配了价（按次价、倍率或该分组的定制价）就按虚拟名计价，
-// 否则退回到它的第一个真实路由目标去查价喵。
-// group 参与判断是因为分组定制价能让一个全局未定价的虚拟名在该分组下变成已定价喵。
-func resolveAutoRoutePricingModel(c *gin.Context, group string, modelName string) string {
-	if !strings.HasPrefix(modelName, "auto/") {
-		return modelName
-	}
-	value, ok := common.GetContextKey(c, constant.ContextKeyTokenAutoRoutes)
-	if !ok {
-		return modelName
-	}
-	routes, ok := value.(map[string][]string)
-	if !ok || len(routes[modelName]) == 0 {
-		return modelName
-	}
-	pricing := ratio_setting.ResolveModelPricing(group, modelName)
-	// 按次价可用（非哨兵值）说明虚拟名自己就有价，直接按虚拟名计价喵。
-	if pricing.UsePrice && pricing.ModelPrice >= 0 {
-		return modelName
-	}
-	if pricing.ModelRatioConfigured {
-		return modelName
-	}
-	return routes[modelName][0]
-}
-
 // HandleGroupRatio checks for "auto_group" in the context and updates the group ratio and relayInfo.UsingGroup if present
 func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hosttypes.GroupRatioInfo {
 	groupRatioInfo := hosttypes.GroupRatioInfo{
@@ -103,11 +75,6 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 	// （比如 A 组按次、B 组按量），所以 UsingGroup 一定要在取任何价格之前定下来喵。
 	groupRatioInfo := HandleGroupRatio(c, info)
 
-	originModelName := info.OriginModelName
-	if pricingModelName := resolveAutoRoutePricingModel(c, info.UsingGroup, originModelName); pricingModelName != originModelName {
-		info.OriginModelName = pricingModelName
-		defer func() { info.OriginModelName = originModelName }()
-	}
 
 	// 阶梯计费表达式同样支持按分组覆盖，按最终分组判一次计费方式喵。
 	if billing_setting.GetBillingModeForGroup(info.UsingGroup, info.OriginModelName) == billing_setting.BillingModeTieredExpr {
@@ -222,11 +189,6 @@ func ModelPriceHelperPerCall(c *gin.Context, info *relaycommon.RelayInfo) (hostt
 	// 同 ModelPriceHelper：先定分组再取价，否则分组定制价会按错误的分组解析喵。
 	groupRatioInfo := HandleGroupRatio(c, info)
 
-	originModelName := info.OriginModelName
-	if pricingModelName := resolveAutoRoutePricingModel(c, info.UsingGroup, originModelName); pricingModelName != originModelName {
-		info.OriginModelName = pricingModelName
-		defer func() { info.OriginModelName = originModelName }()
-	}
 
 	// 合并分组定制价与全局价：任务 / MJ 这类按次场景同样支持某个分组单独定价喵。
 	pricing := ratio_setting.ResolveModelPricing(info.UsingGroup, info.OriginModelName)

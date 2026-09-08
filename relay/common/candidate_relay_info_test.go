@@ -265,7 +265,7 @@ func TestNewCandidateRelayInfoRejectsInvalidInput(t *testing.T) {
 		CandidateRelayIdentity{CandidateID: 42, RealModelName: "model-a", GroupName: "group-a"}, validRequest)
 	require.Error(t, missingAttemptError)
 
-	// auto 分组会进入 Token AutoRoutes 的自动分支，必须拒绝喵。
+	// auto 分组会触发 auto 分组自动路由，必须拒绝喵。
 	autoGroupContext := newCandidateTestContext(t, "model-a", "auto")
 	_, autoGroupError := NewCandidateRelayInfo(autoGroupContext, validBaseline,
 		CandidateRelayIdentity{CandidateID: 42, CandidateAttemptID: "vc42a1", RealModelName: "model-a", GroupName: "auto"}, validRequest)

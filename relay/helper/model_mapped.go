@@ -3,7 +3,6 @@ package helper
 import (
 	"errors"
 	"fmt"
-	"strings"
 
 	newapicommon "github.com/QuantumNous/new-api/common"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -27,13 +26,8 @@ func ModelMappedHelper(c *gin.Context, info *relaycommon.RelayInfo, request dto.
 
 		// 支持链式模型重定向，最终使用链尾的模型
 		currentModel := info.UpstreamModelName
-		// Auto routing selects a concrete candidate for channel lookup, but the
-		// channel mapping is keyed by the client-facing virtual model. Start
-		// from that virtual name so auto/terra -> provider-model mappings still
-		// apply after a concrete candidate has been selected.
-		if strings.HasPrefix(info.OriginModelName, "auto/") {
-			currentModel = info.OriginModelName
-		} else if currentModel == "" {
+		// 模型名非空时从当前上游模型起步做链式映射；上游为空才退回客户端原始模型名喵。
+		if currentModel == "" {
 			currentModel = info.OriginModelName
 		}
 		info.IsModelMapped = false

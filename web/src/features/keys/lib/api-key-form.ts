@@ -22,7 +22,7 @@ import { z } from 'zod'
 import { parseQuotaFromDollars, quotaUnitsToDollars } from '@/lib/format'
 
 import { DEFAULT_GROUP } from '../constants'
-import type { ApiKey, ApiKeyAutoRoutes, ApiKeyFormData } from '../types'
+import type { ApiKey, ApiKeyFormData } from '../types'
 
 // ============================================================================
 // Form Schema
@@ -43,7 +43,6 @@ export function getApiKeyFormSchema(t: TFunction, maxAutoGroups = 5) {
       group: z.string().optional(),
       auto_groups_mode: z.enum(['inherit', 'custom']),
       auto_groups: z.array(z.string()),
-      auto_routes: z.record(z.string(), z.array(z.string())),
       cross_group_retry: z.boolean().optional(),
       tokenCount: z.number().min(1).optional(),
     })
@@ -80,24 +79,6 @@ export function getApiKeyFormSchema(t: TFunction, maxAutoGroups = 5) {
           })
         }
 
-        for (const [virtualModel, chain] of Object.entries(data.auto_routes)) {
-          if (!virtualModel.startsWith('auto/') || virtualModel.length <= 5) {
-            ctx.addIssue({
-              code: 'custom',
-              path: ['auto_routes'],
-              message: t('Virtual model names must start with auto/'),
-            })
-            break
-          }
-          if (chain.length === 0) {
-            ctx.addIssue({
-              code: 'custom',
-              path: ['auto_routes'],
-              message: t('Each virtual model needs at least one route model'),
-            })
-            break
-          }
-        }
       }
 
       if (data.unlimited_quota) {
@@ -133,7 +114,6 @@ export const API_KEY_FORM_DEFAULT_VALUES: ApiKeyFormValues = {
   group: DEFAULT_GROUP,
   auto_groups_mode: 'inherit',
   auto_groups: [],
-  auto_routes: {},
   cross_group_retry: true,
   tokenCount: 1,
 }
@@ -146,7 +126,6 @@ export function getApiKeyFormDefaultValues(
     group: defaultUseAutoGroup ? 'auto' : DEFAULT_GROUP,
     auto_groups_mode: 'inherit',
     auto_groups: [],
-    auto_routes: {},
     cross_group_retry: defaultUseAutoGroup,
   }
 }
@@ -178,7 +157,6 @@ export function transformFormDataToPayload(
       data.group === 'auto' && data.auto_groups_mode === 'custom'
         ? data.auto_groups
         : [],
-    auto_routes: data.group === 'auto' ? data.auto_routes : {},
     cross_group_retry: data.group === 'auto' ? !!data.cross_group_retry : false,
   }
 }
@@ -193,7 +171,6 @@ export function transformApiKeyToFormDefaults(
 ): ApiKeyFormValues {
   const availableSet = new Set(availableAutoGroups)
   const storedAutoGroups = apiKey.auto_groups ?? []
-  const storedAutoRoutes: ApiKeyAutoRoutes = apiKey.auto_routes ?? {}
   const autoGroups = storedAutoGroups
     .filter((group) => availableSet.has(group))
     .slice(0, Math.max(0, maxAutoGroups))
@@ -216,7 +193,6 @@ export function transformApiKeyToFormDefaults(
     group: apiKey.group || DEFAULT_GROUP,
     auto_groups_mode: autoGroupsMode,
     auto_groups: autoGroups,
-    auto_routes: storedAutoRoutes,
     cross_group_retry: !!apiKey.cross_group_retry,
     tokenCount: 1,
   }

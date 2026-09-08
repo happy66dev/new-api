@@ -265,7 +265,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	relayInfo.SetEstimatePromptTokens(tokens)
 
 	// candidateRelayBaseline 保存虚拟模型候选切换所需的请求级基线，仅虚拟请求才构造喵。
-	// 普通模型请求和 Token AutoRoutes 请求不会进入该分支，单一 RelayInfo 生命周期保持不变喵。
+	// 普通模型请求不会进入该分支，单一 RelayInfo 生命周期保持不变喵。
 	var candidateRelayBaseline *relaycommon.CandidateRelayBaseline
 	if _, isVirtualCandidateRequest := middleware.GetActiveVirtualModelCandidateAttempt(c); isVirtualCandidateRequest {
 		baseline, baselineError := relaycommon.NewCandidateRelayBaseline(relayInfo)
@@ -675,12 +675,6 @@ func getRetryTimesForCurrentGroup(c *gin.Context, tokenGroup string) int {
 		group = autoGroup
 	}
 	retryTimes := ratio_setting.GetGroupRetryTimes(group, common.RetryTimes)
-	if tokenGroup == "auto" {
-		modelName := common.GetContextKeyString(c, constant.ContextKeyOriginalModel)
-		if route, ok := service.GetRequestAutoRoute(c, modelName); ok && len(route)-1 > retryTimes {
-			retryTimes = len(route) - 1
-		}
-	}
 	return retryTimes
 }
 

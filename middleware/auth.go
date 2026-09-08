@@ -523,15 +523,6 @@ func SetupContextForToken(c *gin.Context, token *model.Token, parts ...string) e
 			common.SetContextKey(c, constant.ContextKeyTokenAutoGroups, autoGroups)
 		}
 	}
-	if token.AutoRoutes != "" {
-		autoRoutes, err := token.GetAutoRoutes()
-		if err != nil {
-			common.SysError(fmt.Sprintf("failed to parse auto routes for token %d: %v", token.Id, err))
-			common.SetContextKey(c, constant.ContextKeyTokenAutoRoutes, map[string][]string{})
-		} else if len(autoRoutes) > 0 {
-			common.SetContextKey(c, constant.ContextKeyTokenAutoRoutes, autoRoutes)
-		}
-	}
 	if len(parts) > 1 {
 		if model.IsAdmin(token.UserId) {
 			id, err := strconv.Atoi(parts[1])

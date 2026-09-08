@@ -23,7 +23,6 @@ import { useApiKeys } from './api-keys-provider'
 import { ApiKeyUsageDialog } from './dialogs/api-key-usage-dialog'
 import { CCSwitchDialog } from './dialogs/cc-switch-dialog'
 import { TokenGroupMigrationDialog } from './dialogs/token-group-migration-dialog'
-import { AutoRouteStatusDrawer } from './dialogs/auto-route-status-drawer'
 
 export function ApiKeysDialogs() {
   const { open, setOpen, currentRow, resolvedKey } = useApiKeys()
@@ -37,11 +36,6 @@ export function ApiKeysDialogs() {
       />
       <ApiKeysDeleteDialog />
       <ApiKeyResetQuotaDialog />
-      <AutoRouteStatusDrawer
-        open={open === 'auto-route-status'}
-        onOpenChange={(isOpen) => !isOpen && setOpen(null)}
-        token={currentRow}
-      />
       <TokenGroupMigrationDialog
         open={open === 'migrate-group'}
         onOpenChange={(isOpen) => !isOpen && setOpen(null)}

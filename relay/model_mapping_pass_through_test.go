@@ -14,7 +14,7 @@ import (
 )
 
 func TestPrepareMappedPassThroughBodyRewritesJSONModel(t *testing.T) {
-	payload := []byte(`{"model":"auto/terra","messages":[],"future":{"enabled":true}}`)
+	payload := []byte(`{"model":"gpt-4o","messages":[],"future":{"enabled":true}}`)
 	storage, err := common.CreateBodyStorage(payload)
 	require.NoError(t, err)
 	defer storage.Close()
@@ -23,9 +23,9 @@ func TestPrepareMappedPassThroughBodyRewritesJSONModel(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	c.Request.Header.Set("Content-Type", "application/json; charset=utf-8")
 	info := &relaycommon.RelayInfo{
-		OriginModelName: "auto/terra",
+		OriginModelName: "gpt-4o",
 		ChannelMeta: &relaycommon.ChannelMeta{
-			UpstreamModelName: "openai/gpt-5.6-terra",
+			UpstreamModelName: "openai/gpt-4o-2024-08-06",
 		},
 	}
 
@@ -36,12 +36,12 @@ func TestPrepareMappedPassThroughBodyRewritesJSONModel(t *testing.T) {
 
 	got, err := io.ReadAll(body)
 	require.NoError(t, err)
-	require.Equal(t, "openai/gpt-5.6-terra", gjson.GetBytes(got, "model").String())
+	require.Equal(t, "openai/gpt-4o-2024-08-06", gjson.GetBytes(got, "model").String())
 	require.True(t, gjson.GetBytes(got, "future.enabled").Bool())
 }
 
 func TestPrepareMappedPassThroughBodyPreservesNonJSONBody(t *testing.T) {
-	payload := []byte("--boundary\r\nmodel=auto/terra\r\n--boundary--\r\n")
+	payload := []byte("--boundary\r\nmodel=gpt-4o\r\n--boundary--\r\n")
 	storage, err := common.CreateBodyStorage(payload)
 	require.NoError(t, err)
 	defer storage.Close()
@@ -50,9 +50,9 @@ func TestPrepareMappedPassThroughBodyPreservesNonJSONBody(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/edits", nil)
 	c.Request.Header.Set("Content-Type", "multipart/form-data; boundary=boundary")
 	info := &relaycommon.RelayInfo{
-		OriginModelName: "auto/terra",
+		OriginModelName: "gpt-4o",
 		ChannelMeta: &relaycommon.ChannelMeta{
-			UpstreamModelName: "openai/gpt-5.6-terra",
+			UpstreamModelName: "openai/gpt-4o-2024-08-06",
 		},
 	}
 

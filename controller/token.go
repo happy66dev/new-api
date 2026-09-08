@@ -3,7 +3,6 @@ package controller
 import (
 	"fmt"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -33,30 +32,14 @@ func (input *tokenAutoGroupsInput) UnmarshalJSON(data []byte) error {
 	return common.Unmarshal(data, &input.Groups)
 }
 
-type tokenAutoRoutesInput struct {
-	Set    bool
-	Routes map[string][]string
-}
-
-func (input *tokenAutoRoutesInput) UnmarshalJSON(data []byte) error {
-	input.Set = true
-	if strings.TrimSpace(string(data)) == "null" {
-		input.Routes = nil
-		return nil
-	}
-	return common.Unmarshal(data, &input.Routes)
-}
-
 type tokenRequest struct {
 	model.Token
 	AutoGroups tokenAutoGroupsInput `json:"auto_groups"`
-	AutoRoutes tokenAutoRoutesInput `json:"auto_routes"`
 }
 
 type tokenResponse struct {
 	*model.Token
 	AutoGroups []string            `json:"auto_groups"`
-	AutoRoutes map[string][]string `json:"auto_routes,omitempty"`
 	TotalQuota int                 `json:"total_quota"`
 	RPM        int                 `json:"rpm"`
 }
@@ -98,9 +81,6 @@ func buildMaskedTokenResponseWithStats(token *model.Token, rpm int) *tokenRespon
 			}
 		}
 	}
-	// Virtual model routes are deliberately omitted from list and detail
-	// responses. They are loaded through the token-scoped endpoint only when
-	// the editor is opened, while RPM remains a one-time list snapshot.
 	return &tokenResponse{Token: &maskedToken, AutoGroups: autoGroups, TotalQuota: totalQuota, RPM: rpm}
 }
 
@@ -160,55 +140,6 @@ func setTokenAutoGroups(c *gin.Context, token *model.Token, groups []string) boo
 	}
 
 	if err := token.SetAutoGroups(groups); err != nil {
-		common.ApiError(c, err)
-		return false
-	}
-	return true
-}
-
-func setTokenAutoRoutes(c *gin.Context, token *model.Token, routes map[string][]string) bool {
-	if len(routes) == 0 {
-		if err := token.SetAutoRoutes(nil); err != nil {
-			common.ApiError(c, err)
-			return false
-		}
-		return true
-	}
-	if token.Group != "auto" {
-		common.ApiError(c, fmt.Errorf("虚拟模型路由仅支持 auto 分组"))
-		return false
-	}
-	userGroup, err := getTokenRequestUserGroup(c)
-	if err != nil {
-		common.ApiError(c, err)
-		return false
-	}
-	autoGroups, err := token.GetAutoGroups()
-	if err != nil {
-		common.ApiError(c, err)
-		return false
-	}
-	if len(autoGroups) == 0 {
-		autoGroups = service.GetUserAutoGroupForUser(c.GetInt("id"), userGroup)
-	}
-	availableModels := make(map[string]struct{})
-	for _, modelName := range service.GetGroupsEnabledModels(autoGroups, c.GetInt("id")) {
-		availableModels[modelName] = struct{}{}
-	}
-	normalized := make(map[string][]string, len(routes))
-	for virtualModel, chain := range routes {
-		virtualModel = strings.TrimSpace(virtualModel)
-		normalizedChain := make([]string, 0, len(chain))
-		for _, modelName := range chain {
-			normalizedChain = append(normalizedChain, strings.TrimSpace(modelName))
-		}
-		normalized[virtualModel] = normalizedChain
-	}
-	if err := model.ValidateAutoRoutes(normalized, availableModels); err != nil {
-		common.ApiError(c, err)
-		return false
-	}
-	if err := token.SetAutoRoutes(normalized); err != nil {
 		common.ApiError(c, err)
 		return false
 	}
@@ -321,117 +252,8 @@ func GetToken(c *gin.Context) {
 	common.ApiSuccess(c, buildMaskedTokenResponse(token))
 }
 
-// GetTokenAutoRoutes returns the virtual models configured on one API key.
 // Keep this separate from the frequently refreshed key list because routes can
 // be comparatively large and are only needed by the editor.
-func GetTokenAutoRoutes(c *gin.Context) {
-	id, err := strconv.Atoi(c.Param("id"))
-	if err != nil || id <= 0 {
-		common.ApiError(c, fmt.Errorf("令牌 ID 无效"))
-		return
-	}
-	token, err := model.GetTokenByIds(id, c.GetInt("id"))
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	routes, err := token.GetAutoRoutes()
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	if routes == nil {
-		routes = map[string][]string{}
-	}
-	common.ApiSuccess(c, gin.H{"auto_routes": routes})
-}
-
-type tokenAutoRouteStatusResponse struct {
-	VirtualModel string                            `json:"virtual_model"`
-	Chain        []string                          `json:"chain"`
-	Models       []model.TokenAutoRouteModelStatus `json:"models"`
-}
-
-func GetTokenAutoRouteStatus(c *gin.Context) {
-	id, err := strconv.Atoi(c.Param("id"))
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	token, err := model.GetTokenByIds(id, c.GetInt("id"))
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	if token.Group != "auto" {
-		common.ApiError(c, fmt.Errorf("虚拟模型路由仅支持 auto 分组"))
-		return
-	}
-	routes, err := token.GetAutoRoutes()
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	userGroup, err := getTokenRequestUserGroup(c)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	autoGroups, err := token.GetAutoGroups()
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	if len(autoGroups) == 0 {
-		autoGroups = service.GetUserAutoGroupForUser(c.GetInt("id"), userGroup)
-	}
-	virtualModels := make([]string, 0, len(routes))
-	for virtualModel := range routes {
-		virtualModels = append(virtualModels, virtualModel)
-	}
-	sort.Strings(virtualModels)
-	models := make([]string, 0)
-	seenModels := make(map[string]struct{})
-	for _, virtualModel := range virtualModels {
-		for _, modelName := range routes[virtualModel] {
-			if _, ok := seenModels[modelName]; ok {
-				continue
-			}
-			seenModels[modelName] = struct{}{}
-			models = append(models, modelName)
-		}
-	}
-	modelStatuses, err := model.GetTokenAutoRouteModelStatuses(autoGroups, models)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	statusByModel := make(map[string]model.TokenAutoRouteModelStatus, len(modelStatuses))
-	for _, status := range modelStatuses {
-		statusByModel[status.Model] = status
-	}
-	response := make([]tokenAutoRouteStatusResponse, 0, len(virtualModels))
-	for _, virtualModel := range virtualModels {
-		chain := routes[virtualModel]
-		chainStatuses := make([]model.TokenAutoRouteModelStatus, 0, len(chain))
-		for _, modelName := range chain {
-			if status, ok := statusByModel[modelName]; ok {
-				chainStatuses = append(chainStatuses, status)
-			}
-		}
-		response = append(response, tokenAutoRouteStatusResponse{
-			VirtualModel: virtualModel,
-			Chain:        chain,
-			Models:       chainStatuses,
-		})
-	}
-	common.ApiSuccess(c, gin.H{
-		"routes":      response,
-		"auto_groups": autoGroups,
-		"updated_at":  common.GetTimestamp(),
-	})
-}
-
 func ResetTokenUsedQuota(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
@@ -590,13 +412,9 @@ func AddToken(c *gin.Context) {
 		if !setTokenAutoGroups(c, &token, request.AutoGroups.Groups) {
 			return
 		}
-		if !setTokenAutoRoutes(c, &token, request.AutoRoutes.Routes) {
-			return
-		}
 	} else {
 		token.CrossGroupRetry = false
 		_ = token.SetAutoGroups(nil)
-		_ = token.SetAutoRoutes(nil)
 	}
 	key, err := common.GenerateKey()
 	if err != nil {
@@ -619,7 +437,6 @@ func AddToken(c *gin.Context) {
 		Group:              token.Group,
 		CrossGroupRetry:    token.CrossGroupRetry,
 		AutoGroups:         token.AutoGroups,
-		AutoRoutes:         token.AutoRoutes,
 	}
 	err = cleanToken.Insert()
 	if err != nil {
@@ -703,16 +520,8 @@ func UpdateToken(c *gin.Context) {
 		if token.Group != "auto" {
 			cleanToken.CrossGroupRetry = false
 			_ = cleanToken.SetAutoGroups(nil)
-			_ = cleanToken.SetAutoRoutes(nil)
 		} else if request.AutoGroups.Set {
 			if !setTokenAutoGroups(c, cleanToken, request.AutoGroups.Groups) {
-				return
-			}
-			if request.AutoRoutes.Set && !setTokenAutoRoutes(c, cleanToken, request.AutoRoutes.Routes) {
-				return
-			}
-		} else if request.AutoRoutes.Set {
-			if !setTokenAutoRoutes(c, cleanToken, request.AutoRoutes.Routes) {
 				return
 			}
 		}

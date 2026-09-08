@@ -2,7 +2,6 @@ package service
 
 import (
 	"errors"
-	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -76,45 +75,6 @@ func (p *RetryParam) ResetRetryNextTry() {
 	p.resetNextTry = true
 }
 
-func (p *RetryParam) routeModelAndRetry() (string, int) {
-	p.SelectedModel = p.ModelName
-	modelRetry := p.GetRetry()
-	if p.TokenGroup != "auto" {
-		return p.SelectedModel, modelRetry
-	}
-	chain, ok := GetRequestAutoRoute(p.Ctx, p.ModelName)
-	if !ok {
-		return p.SelectedModel, modelRetry
-	}
-	index := p.Attempt
-	if index >= len(chain) {
-		index = len(chain) - 1
-	}
-	p.SelectedModel = chain[index]
-	// Each virtual candidate receives its own channel-priority retries after
-	// the first pass through the route chain.
-	modelRetry = p.Attempt - index
-	if modelRetry < 0 {
-		modelRetry = 0
-	}
-	return p.SelectedModel, modelRetry
-}
-
-func ChannelSupportsVirtualModel(channel *model.Channel, modelName string) bool {
-	if channel == nil || !strings.HasPrefix(modelName, "auto/") {
-		return channel != nil
-	}
-	mapping := strings.TrimSpace(channel.GetModelMapping())
-	if mapping == "" || mapping == "{}" {
-		return false
-	}
-	modelMap := make(map[string]string)
-	if err := common.Unmarshal([]byte(mapping), &modelMap); err != nil {
-		return false
-	}
-	return strings.TrimSpace(modelMap[modelName]) != ""
-}
-
 // CacheGetRandomSatisfiedChannel tries to get a random channel that satisfies the requirements.
 // 尝试获取一个满足要求的随机渠道。
 //
@@ -163,7 +123,10 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 	var err error
 	selectGroup := param.TokenGroup
 	userGroup := common.GetContextKeyString(param.Ctx, constant.ContextKeyUserGroup)
-	selectionModel, modelRetry := param.routeModelAndRetry()
+	// 选中模型即请求模型本身（auto/xxx 虚拟模型路由链已删除，普通模型直接透传）喵。
+	param.SelectedModel = param.ModelName
+	selectionModel := param.ModelName
+	modelRetry := param.GetRetry()
 	filters := GetChannelConstraints(param.Ctx).Filters
 
 	if param.TokenGroup == "auto" {
@@ -196,13 +159,6 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
 
 			channel, _ = model.GetRandomSatisfiedChannel(autoGroup, selectionModel, priorityRetry, filters)
-			// A token auto route may resolve selectionModel to a concrete model,
-			// but the channel still needs an explicit rewrite for the original
-			// virtual model. Otherwise the first group can accept the concrete
-			// model while forwarding an unmapped virtual request downstream.
-			if !ChannelSupportsVirtualModel(channel, param.ModelName) {
-				channel = nil
-			}
 			if channel == nil {
 				// Current group has no available channel for this model, try next group
 				// 当前分组没有该模型的可用渠道，尝试下一个分组
@@ -249,9 +205,6 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 		)
 		if err != nil {
 			return nil, param.TokenGroup, err
-		}
-		if !ChannelSupportsVirtualModel(channel, param.ModelName) {
-			channel = nil
 		}
 	}
 	return channel, selectGroup, nil

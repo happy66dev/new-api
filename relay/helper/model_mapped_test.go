@@ -9,16 +9,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestModelMappedHelperKeepsAutoSelectedModelWhenChannelMappingIsEmpty(t *testing.T) {
+func TestModelMappedHelperKeepsUpstreamModelWhenChannelMappingIsEmpty(t *testing.T) {
 	c, _ := gin.CreateTestContext(nil)
 	request := &dto.GeneralOpenAIRequest{}
 	info := &relaycommon.RelayInfo{
-		OriginModelName: "auto/terra",
+		OriginModelName: "gpt-5.6-terra",
 		ChannelMeta: &relaycommon.ChannelMeta{
 			UpstreamModelName: "openai/gpt-5.6-terra",
 		},
 	}
 
+	// 渠道已把模型解析成具体上游名；model_mapping 为空时不应改写它喵。
 	require.NoError(t, ModelMappedHelper(c, info, request))
 	require.Equal(t, "openai/gpt-5.6-terra", info.UpstreamModelName)
 	require.Equal(t, "openai/gpt-5.6-terra", request.Model)
@@ -26,26 +27,10 @@ func TestModelMappedHelperKeepsAutoSelectedModelWhenChannelMappingIsEmpty(t *tes
 
 func TestModelMappedHelperUsesCommonJSONDecoder(t *testing.T) {
 	c, _ := gin.CreateTestContext(nil)
-	c.Set("model_mapping", `{"auto/terra":"openai/gpt-5.6-terra"}`)
-	info := &relaycommon.RelayInfo{OriginModelName: "auto/terra"}
+	c.Set("model_mapping", `{"gpt-4o":"openai/gpt-4o-2024-08-06"}`)
+	info := &relaycommon.RelayInfo{OriginModelName: "gpt-4o"}
 	request := &dto.GeneralOpenAIRequest{}
 
 	require.NoError(t, ModelMappedHelper(c, info, request))
-	require.Equal(t, "openai/gpt-5.6-terra", request.Model)
-}
-
-func TestModelMappedHelperAppliesVirtualMappingAfterAutoSelection(t *testing.T) {
-	c, _ := gin.CreateTestContext(nil)
-	c.Set("model_mapping", `{"auto/terra":"openai/gpt-5.6-terra"}`)
-	info := &relaycommon.RelayInfo{
-		OriginModelName: "auto/terra",
-		ChannelMeta: &relaycommon.ChannelMeta{
-			UpstreamModelName: "gpt-5.6-terra",
-		},
-	}
-	request := &dto.GeneralOpenAIRequest{}
-
-	require.NoError(t, ModelMappedHelper(c, info, request))
-	require.Equal(t, "openai/gpt-5.6-terra", info.UpstreamModelName)
-	require.Equal(t, "openai/gpt-5.6-terra", request.Model)
+	require.Equal(t, "openai/gpt-4o-2024-08-06", request.Model)
 }
