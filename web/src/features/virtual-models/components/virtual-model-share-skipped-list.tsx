@@ -11,7 +11,10 @@ import { useTranslation } from 'react-i18next'
 import { Badge } from '@/components/ui/badge'
 
 import type { VirtualModelShareSkippedCandidate } from '../api'
-import { describeShareSkipReason, describeShareWarning } from '../lib/share-code'
+import {
+  describeShareSkipReason,
+  describeShareWarning,
+} from '../lib/share-code'
 
 // VirtualModelShareSkippedList 展示导入预检/导入结果里被跳过的候选与提示喵。
 // 候选为什么被跳过必须逐条说明，否则用户只会看到"少了几条"而不知道原因喵。
@@ -40,18 +43,28 @@ export function VirtualModelShareSkippedList({
               >
                 <div className='flex flex-wrap items-center gap-2'>
                   <Badge variant='outline'>
-                    {t('Candidate {{index}}', { index: skippedCandidate.order })}
+                    {t('Candidate {{index}}', {
+                      index: skippedCandidate.order,
+                    })}
                   </Badge>
                   {/* 分组与模型分开展示，让用户一眼看出是哪条路由目标不可用喵。 */}
                   {skippedCandidate.group && (
-                    <span className='font-mono'>{t('Group')}: {skippedCandidate.group}</span>
+                    <span className='font-mono'>
+                      {t('Group')}: {skippedCandidate.group}
+                    </span>
                   )}
                   {skippedCandidate.model && (
-                    <span className='font-mono'>{t('Model')}: {skippedCandidate.model}</span>
+                    <span className='font-mono'>
+                      {t('Model')}: {skippedCandidate.model}
+                    </span>
                   )}
                 </div>
                 <p className='text-muted-foreground mt-1'>
-                  {describeShareSkipReason(skippedCandidate.reason, skippedCandidate.message, t)}
+                  {describeShareSkipReason(
+                    skippedCandidate.reason,
+                    skippedCandidate.message,
+                    t
+                  )}
                 </p>
               </li>
             ))}

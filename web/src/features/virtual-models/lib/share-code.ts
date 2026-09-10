@@ -66,7 +66,8 @@ export function extractShareCodeErrorMessage(
   if (typeof error !== 'object' || error === null) {
     return fallbackMessage
   }
-  const response = (error as { response?: { data?: { message?: unknown } } }).response
+  const response = (error as { response?: { data?: { message?: unknown } } })
+    .response
   const serverMessage = response?.data?.message
   if (typeof serverMessage === 'string' && serverMessage.trim() !== '') {
     return serverMessage
@@ -117,7 +118,10 @@ export function resolveShareCodeStatus(
     return 'expired'
   }
   // 喵~防御：max_imports 为零表示不限次数，同样不能判成"已用尽"喵。
-  if (shareCode.max_imports > 0 && shareCode.import_count >= shareCode.max_imports) {
+  if (
+    shareCode.max_imports > 0 &&
+    shareCode.import_count >= shareCode.max_imports
+  ) {
     return 'exhausted'
   }
   return 'active'

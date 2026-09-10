@@ -33,7 +33,11 @@ import {
   type VirtualModelShareCodeCreated,
   type VirtualModelShareCodeSummary,
 } from '../api'
-import { extractShareCodeErrorMessage, resolveShareCodeStatus, shareCodeStatusTextKeys } from '../lib/share-code'
+import {
+  extractShareCodeErrorMessage,
+  resolveShareCodeStatus,
+  shareCodeStatusTextKeys,
+} from '../lib/share-code'
 
 // ShareCodeRow 渲染单枚分享码及其状态与撤销入口喵。
 function ShareCodeRow({
@@ -89,7 +93,8 @@ export function VirtualModelShareDialog({
   const queryClient = useQueryClient()
   const { copyToClipboard } = useCopyToClipboard()
   // createdShareCode 保存本次刚生成的分享码，供用户马上复制喵。
-  const [createdShareCode, setCreatedShareCode] = useState<VirtualModelShareCodeCreated | null>(null)
+  const [createdShareCode, setCreatedShareCode] =
+    useState<VirtualModelShareCodeCreated | null>(null)
 
   const shareCodesQuery = useQuery({
     queryKey: ['virtual-models', 'share-codes'],
@@ -111,10 +116,14 @@ export function VirtualModelShareDialog({
     },
     onSuccess: (created) => {
       setCreatedShareCode(created)
-      void queryClient.invalidateQueries({ queryKey: ['virtual-models', 'share-codes'] })
+      void queryClient.invalidateQueries({
+        queryKey: ['virtual-models', 'share-codes'],
+      })
     },
     onError: (error) => {
-      toast.error(extractShareCodeErrorMessage(error, t('Unable to create share code')))
+      toast.error(
+        extractShareCodeErrorMessage(error, t('Unable to create share code'))
+      )
     },
   })
 
@@ -127,10 +136,14 @@ export function VirtualModelShareDialog({
     },
     onSuccess: () => {
       toast.success(t('Share code revoked'))
-      void queryClient.invalidateQueries({ queryKey: ['virtual-models', 'share-codes'] })
+      void queryClient.invalidateQueries({
+        queryKey: ['virtual-models', 'share-codes'],
+      })
     },
     onError: (error) => {
-      toast.error(extractShareCodeErrorMessage(error, t('Unable to revoke share code')))
+      toast.error(
+        extractShareCodeErrorMessage(error, t('Unable to revoke share code'))
+      )
     },
   })
 
@@ -143,23 +156,33 @@ export function VirtualModelShareDialog({
         <DialogHeader>
           <DialogTitle>{t('Share plan')}</DialogTitle>
           <DialogDescription>
-            {t('Share codes copy this plan to another account. They never contain your API Key.')}
+            {t(
+              'Share codes copy this plan to another account. They never contain your API Key.'
+            )}
           </DialogDescription>
         </DialogHeader>
 
-        {model && <Badge variant='secondary'>{`virtual/${model.normalized_name}`}</Badge>}
+        {model && (
+          <Badge variant='secondary'>{`virtual/${model.normalized_name}`}</Badge>
+        )}
 
         {/* 隐私告知：地址明文会随分享码发出，主人需要知道发出去的到底是什么喵。 */}
         <Alert>
           <AlertDescription>
-            {t('A share code keeps internal candidates as-is and keeps the upstream address of custom candidates. The receiver still has to fill in their own API Key.')}
+            {t(
+              'A share code keeps internal candidates as-is and keeps the upstream address of custom candidates. The receiver still has to fill in their own API Key.'
+            )}
           </AlertDescription>
         </Alert>
 
         {createdShareCode && (
           <div className='space-y-2 rounded-md border p-3'>
             <p className='text-sm font-medium'>{t('New share code')}</p>
-            <Input readOnly value={createdShareCode.code} onFocus={(event) => event.target.select()} />
+            <Input
+              readOnly
+              value={createdShareCode.code}
+              onFocus={(event) => event.target.select()}
+            />
             <div className='flex items-center justify-between gap-3'>
               <Button
                 onClick={() => void copyToClipboard(createdShareCode.code)}
@@ -169,17 +192,23 @@ export function VirtualModelShareDialog({
                 {t('Copy')}
               </Button>
               <p className='text-muted-foreground text-xs'>
-                {t('Internal candidates: {{internal}}, custom candidates: {{custom}}', {
-                  internal: createdShareCode.internal_candidate_count,
-                  custom: createdShareCode.custom_candidate_count,
-                })}
+                {t(
+                  'Internal candidates: {{internal}}, custom candidates: {{custom}}',
+                  {
+                    internal: createdShareCode.internal_candidate_count,
+                    custom: createdShareCode.custom_candidate_count,
+                  }
+                )}
               </p>
             </div>
             {createdShareCode.omitted_reference_candidates > 0 && (
               <p className='text-muted-foreground text-xs'>
-                {t('{{count}} candidate(s) that reference your own upstream models were left out and cannot be shared.', {
-                  count: createdShareCode.omitted_reference_candidates,
-                })}
+                {t(
+                  '{{count}} candidate(s) that reference your own upstream models were left out and cannot be shared.',
+                  {
+                    count: createdShareCode.omitted_reference_candidates,
+                  }
+                )}
               </p>
             )}
           </div>
@@ -191,7 +220,9 @@ export function VirtualModelShareDialog({
             <p className='text-muted-foreground text-xs'>{t('Loading')}</p>
           )}
           {!shareCodesQuery.isLoading && shareCodes.length === 0 && (
-            <p className='text-muted-foreground text-xs'>{t('No share codes yet')}</p>
+            <p className='text-muted-foreground text-xs'>
+              {t('No share codes yet')}
+            </p>
           )}
           {shareCodes.map((shareCode) => (
             <ShareCodeRow
@@ -212,7 +243,9 @@ export function VirtualModelShareDialog({
             disabled={!model || createMutation.isPending}
             onClick={() => createMutation.mutate()}
           >
-            {createMutation.isPending ? t('Generating') : t('Generate share code')}
+            {createMutation.isPending
+              ? t('Generating')
+              : t('Generate share code')}
           </Button>
         </DialogFooter>
       </DialogContent>

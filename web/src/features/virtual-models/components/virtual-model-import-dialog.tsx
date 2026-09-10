@@ -29,8 +29,8 @@ import {
   precheckVirtualModelShareImport,
   type VirtualModelShareImportPreview,
 } from '../api'
-import { VirtualModelShareSkippedList } from './virtual-model-share-skipped-list'
 import { extractShareCodeErrorMessage } from '../lib/share-code'
+import { VirtualModelShareSkippedList } from './virtual-model-share-skipped-list'
 
 // VirtualModelImportDialog 用分享码把别人的虚拟模型方案复制一份到当前账号喵。
 // 流程固定为"先预检、再确认导入"：预检只读不落库，用户看到跳过清单后再决定是否导入喵。
@@ -46,7 +46,9 @@ export function VirtualModelImportDialog({
   const [code, setCode] = useState('')
   // displayName 是导入后可修改的显示名，预检通过后按快照显示名预填喵。
   const [displayName, setDisplayName] = useState('')
-  const [preview, setPreview] = useState<VirtualModelShareImportPreview | null>(null)
+  const [preview, setPreview] = useState<VirtualModelShareImportPreview | null>(
+    null
+  )
 
   // resetDraft 清空弹窗内的临时状态，避免上一次的码与预检结果残留到下次打开喵。
   const resetDraft = () => {
@@ -74,7 +76,9 @@ export function VirtualModelImportDialog({
     onError: (error) => {
       // 预检失败要清掉旧结果，否则界面会显示与当前码不符的过时清单喵。
       setPreview(null)
-      toast.error(extractShareCodeErrorMessage(error, t('Unable to read the share code')))
+      toast.error(
+        extractShareCodeErrorMessage(error, t('Unable to read the share code'))
+      )
     },
   })
 
@@ -93,14 +97,18 @@ export function VirtualModelImportDialog({
     },
     onSuccess: (result) => {
       toast.success(
-        t('Imported {{count}} candidate(s)', { count: result.imported_candidate_count })
+        t('Imported {{count}} candidate(s)', {
+          count: result.imported_candidate_count,
+        })
       )
       void queryClient.invalidateQueries({ queryKey: ['virtual-models'] })
       resetDraft()
       onOpenChange(false)
     },
     onError: (error) => {
-      toast.error(extractShareCodeErrorMessage(error, t('Unable to import the plan')))
+      toast.error(
+        extractShareCodeErrorMessage(error, t('Unable to import the plan'))
+      )
     },
   })
 
@@ -116,7 +124,9 @@ export function VirtualModelImportDialog({
         <DialogHeader>
           <DialogTitle>{t('Import plan')}</DialogTitle>
           <DialogDescription>
-            {t('Paste a share code to copy that plan. Imported models stay disabled until you review them.')}
+            {t(
+              'Paste a share code to copy that plan. Imported models stay disabled until you review them.'
+            )}
           </DialogDescription>
         </DialogHeader>
 
@@ -138,10 +148,13 @@ export function VirtualModelImportDialog({
           <>
             <Alert>
               <AlertDescription>
-                {t('This plan has {{total}} candidate(s); {{importable}} can be imported into your account.', {
-                  total: preview.candidate_count,
-                  importable: preview.importable_candidate_count,
-                })}
+                {t(
+                  'This plan has {{total}} candidate(s); {{importable}} can be imported into your account.',
+                  {
+                    total: preview.candidate_count,
+                    importable: preview.importable_candidate_count,
+                  }
+                )}
               </AlertDescription>
             </Alert>
             <label className='grid gap-1 text-sm font-medium'>
@@ -174,7 +187,9 @@ export function VirtualModelImportDialog({
               disabled={precheckMutation.isPending || code.trim() === ''}
               onClick={() => precheckMutation.mutate()}
             >
-              {precheckMutation.isPending ? t('Checking') : t('Check share code')}
+              {precheckMutation.isPending
+                ? t('Checking')
+                : t('Check share code')}
             </Button>
           )}
         </DialogFooter>
