@@ -398,6 +398,12 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 	if err := SettleBilling(ctx, relayInfo, quota); err != nil {
 		logger.LogError(ctx, "error settling billing: "+err.Error())
 	}
+	// 虚拟模型请求：把本次候选成功结算的额度累加进请求级总额，供日志写「全候选累计计费」喵。
+	accumulateVirtualRequestBilling(ctx, relaycommon.VirtualBillingAmount{
+		Quota:            quota,
+		PromptTokens:     usage.PromptTokens,
+		CompletionTokens: usage.CompletionTokens,
+	})
 
 	logModel := relayInfo.OriginModelName
 	if extraContent != "" {

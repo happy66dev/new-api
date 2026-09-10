@@ -130,6 +130,7 @@ var customStreamErrorPayloadPattern = regexp.MustCompile(`"type"\s*:\s*"error"|"
 
 // probeCustomStreamingResponse 在同一响应 reader 上缓冲至内容字符达到门槛喵。
 // 静默超过 stall 秒数判定卡流、探测总预算耗尽判定超时，均不向客户端写任何字节喵。
+// 失败时同时返回已缓冲的字节：候选被跳过前这些内容同样会被原生口径计费，调用方据此估算 usage 喵。
 func probeCustomStreamingResponse(responseReader *bufio.Reader, params ProbeParameters) ([]byte, error) {
 	// 喵~防御：空 reader 不能安全探测，直接返回结构化候选失败喵。
 	if responseReader == nil {
@@ -157,12 +158,12 @@ func probeCustomStreamingResponse(responseReader *bufio.Reader, params ProbePara
 	for len(bufferedBytes) < customCandidatePrecommitBufferLimit {
 		// 喵~防御：探测总预算耗尽时终止，避免上游一直发无内容心跳拖死候选链喵。
 		if time.Since(probeStartTime) >= probeTotalTimeout {
-			return nil, fmt.Errorf("%w: probe phase exceeded total budget", relaykitypes.ErrStalledStream)
+			return bufferedBytes, fmt.Errorf("%w: probe phase exceeded total budget", relaykitypes.ErrStalledStream)
 		}
 		lineBytes, readError := readProbeLineWithTimeout(responseReader, stallTimeout, probeDeadline)
 		if len(lineBytes) > 0 {
 			if len(bufferedBytes)+len(lineBytes) > customCandidatePrecommitBufferLimit {
-				return nil, errors.New("custom upstream stream precommit buffer limit exceeded")
+				return bufferedBytes, errors.New("custom upstream stream precommit buffer limit exceeded")
 			}
 			bufferedBytes = append(bufferedBytes, lineBytes...)
 			trimmedLine := strings.TrimSpace(string(lineBytes))
@@ -191,7 +192,7 @@ func probeCustomStreamingResponse(responseReader *bufio.Reader, params ProbePara
 		if readError != nil {
 			if errors.Is(readError, errProbeTotalBudgetExceeded) {
 				// 总预算成为硬上限：即使单行尚未读到也必须在预算内终止，归入卡流分类喵。
-				return nil, fmt.Errorf("%w: probe phase exceeded total budget", relaykitypes.ErrStalledStream)
+				return bufferedBytes, fmt.Errorf("%w: probe phase exceeded total budget", relaykitypes.ErrStalledStream)
 			}
 			if errors.Is(readError, io.EOF) {
 				// 喵~防御：流在达到内容门槛前结束但已缓冲任何事件字节时视为成功放流，
@@ -199,12 +200,12 @@ func probeCustomStreamingResponse(responseReader *bufio.Reader, params ProbePara
 				if len(bufferedBytes) > 0 {
 					return bufferedBytes, nil
 				}
-				return nil, errors.New("custom upstream returned an empty streaming response")
+				return bufferedBytes, errors.New("custom upstream returned an empty streaming response")
 			}
-			return nil, readError
+			return bufferedBytes, readError
 		}
 	}
-	return nil, errors.New("custom upstream stream precommit buffer limit exceeded")
+	return bufferedBytes, errors.New("custom upstream stream precommit buffer limit exceeded")
 }
 
 // errProbeTotalBudgetExceeded 表示探测或伪流阶段的总预算在单次读行中耗尽，供调用方按各自语义分类喵。
@@ -361,7 +362,8 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 		if input.FakeStreamEnabled {
 			usage, fakeStreamError := fakeStreamCommitResponse(c, responseReader, response.Header, response.StatusCode, input, requestBody)
 			if fakeStreamError != nil {
-				return &CustomCandidateExecutionResult{Err: customCandidatePrecommitFailure(fakeStreamError), TtftMs: ttftMs}
+				// 伪流断流：携带已缓冲内容整理出的 usage，供候选链按原生口径结算该候选喵。
+				return &CustomCandidateExecutionResult{Usage: usage, Err: customCandidatePrecommitFailure(fakeStreamError), TtftMs: ttftMs}
 			}
 			return &CustomCandidateExecutionResult{Usage: usage, TtftMs: ttftMs}
 		}
@@ -373,14 +375,22 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 		if precommitError != nil {
 			// 上游流式阶段报告 SSE 错误事件：把已缓冲的错误事件字节作为可透传响应体返回，供直调透传或失败规则 passthrough 使用喵。
 			if streamError, isStreamError := precommitError.(*UpstreamStreamError); isStreamError && len(streamError.SSEBytes) > 0 {
-				return &CustomCandidateExecutionResult{Err: &CustomCandidateExecutionFailure{
-					Failure:         NormalizeCandidateFailure(response.StatusCode, response.Header, streamError.SSEBytes, nil),
-					ResponseHeaders: response.Header.Clone(),
-					ResponseBody:    streamError.SSEBytes,
-					Cause:           streamError.Cause,
-				}, TtftMs: ttftMs}
+				return &CustomCandidateExecutionResult{
+					// 被跳过的候选同样计费：用已缓冲内容按原生口径估算该候选的 usage 喵。
+					Usage: customCandidateFailureUsage(c, input.RealModelName, requestBody, nil, "", precommitBuffer),
+					Err: &CustomCandidateExecutionFailure{
+						Failure:         NormalizeCandidateFailure(response.StatusCode, response.Header, streamError.SSEBytes, nil),
+						ResponseHeaders: response.Header.Clone(),
+						ResponseBody:    streamError.SSEBytes,
+						Cause:           streamError.Cause,
+					}, TtftMs: ttftMs}
 			}
-			return &CustomCandidateExecutionResult{Err: customCandidatePrecommitFailure(precommitError), TtftMs: ttftMs}
+			return &CustomCandidateExecutionResult{
+				// 卡流/断流/空流被跳过：探测缓存的上游内容按原生口径估算 usage，供候选链结算喵。
+				Usage:  customCandidateFailureUsage(c, input.RealModelName, requestBody, nil, "", precommitBuffer),
+				Err:    customCandidatePrecommitFailure(precommitError),
+				TtftMs: ttftMs,
+			}
 		}
 		copyCustomResponseHeaders(c.Writer.Header(), response.Header)
 		c.Status(response.StatusCode)
@@ -395,7 +405,12 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 			markVirtualModelFirstWrite(c)
 		}
 		if _, writeError := c.Writer.Write(precommitBuffer); writeError != nil {
-			return &CustomCandidateExecutionResult{Err: fmt.Errorf("write committed custom upstream response: %w", writeError), TtftMs: ttftMs}
+			return &CustomCandidateExecutionResult{
+				// 已放流后写失败：候选仍按原生口径结算已产生的 usage，交由调用方决定结算或退款喵。
+				Usage:  customCandidateFailureUsage(c, input.RealModelName, requestBody, usage, responseTextBuilder.String(), nil),
+				Err:    fmt.Errorf("write committed custom upstream response: %w", writeError),
+				TtftMs: ttftMs,
+			}
 		}
 		// 探测缓冲写出后立即刷新，保证首段 SSE 及时到达客户端喵。
 		flushCustomResponse(c)
@@ -408,7 +423,12 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 				// 幂等打点：探测缓冲为空时首个有内容行才是真正首字节喵。
 				markVirtualModelFirstWrite(c)
 				if _, writeError := c.Writer.Write(lineBytes); writeError != nil {
-					return &CustomCandidateExecutionResult{Err: fmt.Errorf("write committed custom upstream response: %w", writeError), TtftMs: ttftMs}
+					return &CustomCandidateExecutionResult{
+						// 边收边放中途写失败：已放流部分同样按原生口径结算该候选 usage 喵。
+						Usage:  customCandidateFailureUsage(c, input.RealModelName, requestBody, usage, responseTextBuilder.String(), nil),
+						Err:    fmt.Errorf("write committed custom upstream response: %w", writeError),
+						TtftMs: ttftMs,
+					}
 				}
 				// 逐行刷新，SSE 事件及时推送避免客户端空等喵。
 				flushCustomResponse(c)
@@ -418,7 +438,12 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 					break
 				}
 				// 喵~防御：放流后中途非 EOF 失败归入断流哨兵，供失败分类把这类「写了一半才挂」识别为 stream_cut 喵。
-				return &CustomCandidateExecutionResult{Err: fmt.Errorf("read committed custom upstream stream: %w", fmt.Errorf("%w: %v", relaykitypes.ErrStreamCut, readError)), TtftMs: ttftMs}
+				return &CustomCandidateExecutionResult{
+					// 放流后断流：已累积 usage 与响应文本按原生口径结算，避免上游消耗被完全免费送喵。
+					Usage:  customCandidateFailureUsage(c, input.RealModelName, requestBody, usage, responseTextBuilder.String(), nil),
+					Err:    fmt.Errorf("read committed custom upstream stream: %w", fmt.Errorf("%w: %v", relaykitypes.ErrStreamCut, readError)),
+					TtftMs: ttftMs,
+				}
 			}
 		}
 		usage = normalizeUpstreamModelUsage(usage)

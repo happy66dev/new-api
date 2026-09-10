@@ -260,6 +260,15 @@ export interface LogOtherData {
     // error_body 该候选尝试的错误返回体受限摘要，供详情点击复制喵。
     error_body?: string
     retry_count?: number
+    // quota 该候选尝试产生的 new-api 额度计费（含被跳过但仍计费的候选）喵。
+    quota?: number
+    // custom_cost_cents 该候选尝试产生的自定义上游费用，单位：10^-5 元喵。
+    custom_cost_cents?: number
+    // billed_on_skip 标记该候选未向客户端产出响应但仍产生了计费喵。
+    billed_on_skip?: boolean
+    // prompt_tokens / completion_tokens 该候选尝试对应的用量，零或缺失表示未统计到喵。
+    prompt_tokens?: number
+    completion_tokens?: number
   }>
   // Violation fee fields
   violation_fee?: boolean

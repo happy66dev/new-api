@@ -34,6 +34,8 @@ const (
 	ContextKeyVirtualModelStartTime ContextKey = "virtual_model_start_time"
 	// ContextKeyVirtualModelFailureLogged 标记虚拟模型整体失败日志已写入，防止集中式失败日志在多个收尾路径重复落库喵。
 	ContextKeyVirtualModelFailureLogged ContextKey = "virtual_model_failure_logged"
+	// ContextKeyVirtualBilling 承载虚拟模型请求的候选级与请求级计费累计，供候选级日志与总体累计额度使用喵。
+	ContextKeyVirtualBilling ContextKey = "virtual_model_billing"
 	// ContextKeyUpstreamModelRelay 标记请求已注入自定义上游临时渠道，后续由原生 relay 中转链执行（自动格式转换）喵。
 	ContextKeyUpstreamModelRelay ContextKey = "upstream_model_relay"
 	// ContextKeyUpstreamModelRelayContext 保存自定义上游 relay 执行的结算上下文（模型/预扣/共享等）喵。

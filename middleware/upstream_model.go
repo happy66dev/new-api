@@ -807,13 +807,16 @@ func upstreamModelFailureErrorClass(executionError error) string {
 	return "upstream_unavailable"
 }
 
-// settleUserUpstreamModelCharge 计算费用、结算预扣差额并写入自定上游日志喵。
-// preConsumedCents 为请求前预扣金额：大于零时按差额补扣或退还，等于零时保持直接扣费兼容喵。
-// isShared 为 true 时表示共享调用：免费、只累计共享消耗、日志归入 user-shared 分组喵。
-func settleUserUpstreamModelCharge(c *gin.Context, ownerUserID int, upstreamModel *model.UserUpstreamModel, usage *dto.Usage, group string, isStream bool, useTimeSeconds int, isShared bool, ttftMs int64, preConsumedCents int64) {
-	// 喵~防御：空上下文或空模型对象直接返回，避免空指针喵。
-	if c == nil || upstreamModel == nil {
-		return
+// applyUserUpstreamModelCharge 计算自定义上游费用并完成预扣差额调整，返回实收金额喵。
+//
+// 输入：模型属主、上游模型、本次 usage（可为 nil，表示拿不到计费信息）、是否共享调用、请求前预扣金额喵。
+// 输出：实收金额（10^-5 元）与是否发生结算异常；任何路径都不会产生负数费用，也不会多退超出预扣的金额喵。
+// 说明喵：把算费与调差从日志写入中拆出来，供「候选未被采用但上游已被调用」的结算路径复用，
+// 避免为了结算而额外写出一行消费日志喵。
+func applyUserUpstreamModelCharge(ownerUserID int, upstreamModel *model.UserUpstreamModel, usage *dto.Usage, isShared bool, preConsumedCents int64) (int64, bool) {
+	// 喵~防御：空模型对象无法定位账户，按零费用处理，避免空指针喵。
+	if upstreamModel == nil {
+		return 0, true
 	}
 	// 费用计算：无 usage 时费用为零（不计费但照常写日志）喵。
 	costCents, costError := upstreammodelservice.CalculateUpstreamModelCostCents(upstreamModel, usage)
@@ -827,7 +830,7 @@ func settleUserUpstreamModelCharge(c *gin.Context, ownerUserID int, upstreamMode
 		common.SysError(fmt.Sprintf("user upstream model cost is negative, clamped to zero: %d", costCents))
 		costCents = 0
 	}
-	// 结算异常标记：差额结算或直接扣费失败时写入日志 other，供管理员定位计费异常喵。
+	// 结算异常标记：差额结算或直接扣费失败时由调用方写入日志 other，供管理员定位计费异常喵。
 	settlementException := false
 	// 扣减：有预扣时按实际费用结算差额（多退少补），无预扣时直接按实际费用扣减（兼容未启用预扣的调用点）喵。
 	if preConsumedCents > 0 {
@@ -846,6 +849,20 @@ func settleUserUpstreamModelCharge(c *gin.Context, ownerUserID int, upstreamMode
 			settlementException = true
 		}
 	}
+	return costCents, settlementException
+}
+
+// settleUserUpstreamModelCharge 计算费用、结算预扣差额并写入自定上游日志喵。
+// preConsumedCents 为请求前预扣金额：大于零时按差额补扣或退还，等于零时保持直接扣费兼容喵。
+// isShared 为 true 时表示共享调用：免费、只累计共享消耗、日志归入 user-shared 分组喵。
+// 返回实收金额（10^-5 元），供调用方把费用挂到候选尝试记录上做逐候选对账喵。
+func settleUserUpstreamModelCharge(c *gin.Context, ownerUserID int, upstreamModel *model.UserUpstreamModel, usage *dto.Usage, group string, isStream bool, useTimeSeconds int, isShared bool, ttftMs int64, preConsumedCents int64) int64 {
+	// 喵~防御：空上下文或空模型对象直接返回，避免空指针喵。
+	if c == nil || upstreamModel == nil {
+		return 0
+	}
+	// 算费与调差交给共享实现，成功结算与失败候选结算使用同一套口径喵。
+	costCents, settlementException := applyUserUpstreamModelCharge(ownerUserID, upstreamModel, usage, isShared, preConsumedCents)
 	// 分组：共享调用固定归入 user-shared，自用沿用请求分组并兜底默认值喵。
 	effectiveGroup := strings.TrimSpace(group)
 	if isShared {
@@ -911,6 +928,8 @@ func settleUserUpstreamModelCharge(c *gin.Context, ownerUserID int, upstreamMode
 		IsStream:         isStream,
 		Other:            other,
 	})
+	// 实收金额回传给调用方，供候选尝试记录写入逐候选 RMB 计费喵。
+	return costCents
 }
 
 // recordUserUpstreamModelFailureLog 在 user/xxx 候选最终失败（透传错误或候选链耗尽）时记录失败日志喵。

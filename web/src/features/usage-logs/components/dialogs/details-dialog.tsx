@@ -79,6 +79,7 @@ import {
   getResponseTimeColor,
   getReasoningEffortVariant,
   renderAuditContent,
+  formatCustomCostCents,
 } from '../../lib/format'
 import {
   getLogTypeConfig,
@@ -1471,6 +1472,40 @@ export function DetailsDialog(props: DetailsDialogProps) {
                           })}
                         </p>
                       )}
+                    {/* 候选计费行：展示该候选尝试产生的 new-api 额度与自定义上游费用，
+                        被跳过但仍按原生口径计费的候选追加中性别注，便于逐候选对账喵。 */}
+                    {(candidate.quota != null ||
+                      candidate.custom_cost_cents != null) && (
+                      <p className='text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-0.5'>
+                        {candidate.quota != null && (
+                          <span>
+                            {t('Billed quota')}: {formatLogQuota(candidate.quota)}
+                          </span>
+                        )}
+                        {formatCustomCostCents(candidate.custom_cost_cents) !=
+                          null && (
+                          <span>
+                            {t('Custom cost')}: ¥
+                            {formatCustomCostCents(
+                              candidate.custom_cost_cents
+                            )}
+                          </span>
+                        )}
+                        {candidate.billed_on_skip === true && (
+                          <span className='text-amber-600 dark:text-amber-400'>
+                            {t('Billed despite being skipped')}
+                          </span>
+                        )}
+                      </p>
+                    )}
+                    {(candidate.prompt_tokens != null ||
+                      candidate.completion_tokens != null) && (
+                      <p className='text-muted-foreground'>
+                        {t('Tokens')}:{' '}
+                        {formatTokens(candidate.prompt_tokens ?? 0)} /{' '}
+                        {formatTokens(candidate.completion_tokens ?? 0)}
+                      </p>
+                    )}
                   </div>
                 </div>
               ))}

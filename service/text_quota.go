@@ -510,6 +510,12 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	if err := SettleBilling(ctx, relayInfo, summary.Quota); err != nil {
 		logger.LogError(ctx, "error settling billing: "+err.Error())
 	}
+	// 虚拟模型请求：把本次候选成功结算的额度累加进请求级总额，供日志写「全候选累计计费」喵。
+	accumulateVirtualRequestBilling(ctx, relaycommon.VirtualBillingAmount{
+		Quota:            summary.Quota,
+		PromptTokens:     summary.PromptTokens,
+		CompletionTokens: summary.CompletionTokens,
+	})
 
 	logModel := summary.ModelName
 	if strings.HasPrefix(logModel, "gpt-4-gizmo") {

@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/setting/console_setting"
 	"github.com/QuantumNous/new-api/types"
 
@@ -419,7 +420,8 @@ func InjectVirtualModelAttempts(c *gin.Context, other map[string]interface{}) {
 
 // appendVirtualModelSuccessAttempt 在 internal 候选成功结算时把成功尝试追加到候选尝试切片喵。
 // elapsedMs 与 ttftMs 分别为请求级总耗时与首字耗时（毫秒），由调用点按 relayInfo 计算喵。
-func appendVirtualModelSuccessAttempt(c *gin.Context, candidateModelName string, elapsedMs int64, ttftMs int64) {
+// quota 与 token 为该成功候选自己结算出的额度与用量，供日志详情逐候选对账喵。
+func appendVirtualModelSuccessAttempt(c *gin.Context, candidateModelName string, elapsedMs int64, ttftMs int64, quota int, promptTokens int, completionTokens int) {
 	// 喵~防御：空上下文时直接返回喵。
 	if c == nil {
 		return
@@ -437,7 +439,38 @@ func appendVirtualModelSuccessAttempt(c *gin.Context, candidateModelName string,
 		StatusCode: 200,
 		ElapsedMs:  elapsedMs,
 		TtftMs:     ttftMs,
+		// 该候选自己的额度与用量：虚拟模型日志行的 Quota 是全候选累计，候选级明细在这里喵。
+		Quota:            quota,
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
 	})
+}
+
+// virtualModelCumulativeBilling 读取本次虚拟模型请求全部候选已结算的累计额度与 token 喵。
+//
+// 用途喵：虚拟模型的日志行代表整次请求，因此它的额度列要写「全候选累计计费」而不是最后一个候选的额度喵。
+// 输出：累计额度、输入 token、输出 token 与是否存在非零累计；普通请求或没有累计时返回零值喵。
+func virtualModelCumulativeBilling(c *gin.Context) relaycommon.VirtualBillingAmount {
+	// 喵~防御：空上下文没有计费累计喵。
+	if c == nil {
+		return relaycommon.VirtualBillingAmount{}
+	}
+	value, found := common.GetContextKey(c, constant.ContextKeyVirtualBilling)
+	// 喵~防御：普通请求没有该 key，返回零值让调用方保持原有额度语义喵。
+	if !found {
+		return relaycommon.VirtualBillingAmount{}
+	}
+	billing, ok := value.(*relaycommon.VirtualBilling)
+	// 喵~防御：类型不符时按无累计处理，避免类型断言 panic 影响日志写入喵。
+	if !ok || billing == nil {
+		return relaycommon.VirtualBillingAmount{}
+	}
+	total := billing.Total()
+	return relaycommon.VirtualBillingAmount{
+		Quota:            total.Quota,
+		PromptTokens:     total.PromptTokens,
+		CompletionTokens: total.CompletionTokens,
+	}
 }
 
 // RecordConsumeLog 记录普通消费日志；虚拟模型 internal 候选请求写 type=虚拟模型 并附加候选尝试序列喵。
@@ -454,9 +487,18 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	logType := LogTypeConsume
 	if virtualLogType := common.GetContextKeyInt(c, constant.ContextKeyVirtualLogType); virtualLogType > 0 {
 		logType = virtualLogType
-		// 虚拟模型 internal 候选成功：先追加成功尝试，再注入全部候选尝试序列到 Other 喵。
-		appendVirtualModelSuccessAttempt(c, params.ModelName, params.UseTimeMs, params.FirstByteMs)
+		// 虚拟模型 internal 候选成功：先追加成功尝试（带该候选自己的额度与用量），再注入全部候选尝试序列到 Other 喵。
+		appendVirtualModelSuccessAttempt(c, params.ModelName, params.UseTimeMs, params.FirstByteMs, params.Quota, params.PromptTokens, params.CompletionTokens)
 		InjectVirtualModelAttempts(c, params.Other)
+		// 日志行代表整次虚拟模型请求：额度与 token 改写为全候选累计，候选级明细由 candidates 序列承载喵。
+		cumulativeBilling := virtualModelCumulativeBilling(c)
+		if cumulativeBilling.Quota > 0 {
+			params.Quota = cumulativeBilling.Quota
+		}
+		if cumulativeBilling.PromptTokens > 0 || cumulativeBilling.CompletionTokens > 0 {
+			params.PromptTokens = cumulativeBilling.PromptTokens
+			params.CompletionTokens = cumulativeBilling.CompletionTokens
+		}
 	}
 	// 渠道字段恒为真实服务渠道 id（internal 候选即实际 relay 的 new-api 渠道），候选链序号由 candidates 序列承载喵。
 	channelId := params.ChannelId
@@ -556,6 +598,14 @@ func RecordUserUpstreamModelLog(c *gin.Context, userId int, params RecordUserUps
 	requestId := c.GetString(common.RequestIdKey)
 	createdAt := common.GetTimestamp()
 	otherStr := common.MapToJsonStr(params.Other)
+	// 独立 RMB 计费系统不走 new-api quota，Quota 固定为 0 喵。
+	logQuota := 0
+	// 虚拟模型上下文下该日志行代表整次请求：额度改写为全候选累计（含被跳过但仍计费的候选）喵。
+	if common.GetContextKeyInt(c, constant.ContextKeyVirtualLogType) > 0 {
+		if cumulativeBilling := virtualModelCumulativeBilling(c); cumulativeBilling.Quota > 0 {
+			logQuota = cumulativeBilling.Quota
+		}
+	}
 	log := &Log{
 		UserId:           userId,
 		Username:         username,
@@ -566,14 +616,13 @@ func RecordUserUpstreamModelLog(c *gin.Context, userId int, params RecordUserUps
 		CompletionTokens: params.CompletionTokens,
 		TokenName:        params.TokenName,
 		ModelName:        params.ModelName,
-		// 独立 RMB 计费系统不走 new-api quota，Quota 固定为 0 喵。
-		Quota:     0,
-		TokenId:   params.TokenId,
-		UseTime:   params.UseTimeSeconds,
-		IsStream:  params.IsStream,
-		Group:     params.Group,
-		RequestId: requestId,
-		Other:     otherStr,
+		Quota:            logQuota,
+		TokenId:          params.TokenId,
+		UseTime:          params.UseTimeSeconds,
+		IsStream:         params.IsStream,
+		Group:            params.Group,
+		RequestId:        requestId,
+		Other:            otherStr,
 	}
 	if err := createLog(log); err != nil {
 		logger.LogError(c, "failed to record user upstream model log: "+err.Error())
@@ -604,6 +653,11 @@ func RecordVirtualModelLog(c *gin.Context, userId int, params RecordVirtualModel
 	}
 	// 附加候选尝试序列，供日志详情展示候选链故障转移过程喵。
 	InjectVirtualModelAttempts(c, params.Other)
+	// 日志行代表整次虚拟模型请求：额度改写为全候选累计（含被跳过但仍计费的候选），候选级明细由 candidates 承载喵。
+	cumulativeBilling := virtualModelCumulativeBilling(c)
+	if cumulativeBilling.Quota > 0 {
+		params.Quota = cumulativeBilling.Quota
+	}
 	username := c.GetString("username")
 	requestId := c.GetString(common.RequestIdKey)
 	createdAt := common.GetTimestamp()

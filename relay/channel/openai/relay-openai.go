@@ -149,6 +149,8 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 
 	// 虚拟模型流式探测失败时立即返回错误，跳过成功收尾避免向客户端写字节喵。
 	if streamProbeErr != nil {
+		// 跳过候选计费：探测缓存的上游内容按原生 new-api 口径估算该候选已产生的 usage 并登记计费喵。
+		helper.RegisterSkippedCandidateStreamBilling(c, info, streamProbeErr)
 		return nil, streamProbeErr
 	}
 

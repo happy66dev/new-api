@@ -177,6 +177,26 @@ export function parseLogOther(other: string): LogOtherData | null {
   }
 }
 
+/** UPSTREAM_MODEL_UNITS_PER_YUAN 自定义上游计费的最小单位数：1 元 = 100000 cents，
+ * 与后端 constant.UpstreamModelUnitsPerYuan 保持同口径喵。 */
+const UPSTREAM_MODEL_UNITS_PER_YUAN = 100000
+
+/**
+ * 把自定义上游候选的 cents 计费换算成元字符串，供日志详情逐候选展示喵。
+ * 输入：costCents 单位为 10^-5 元（与后端 custom_cost_cents 字段同口径）。
+ * 输出：保留 5 位小数的元字符串；零值或非法值返回 null，由调用方跳过该行展示喵。
+ */
+export function formatCustomCostCents(
+  costCents: number | undefined | null
+): string | null {
+  // 喵~防御：字段缺失、非有限数（NaN/Infinity）或零值都视为「本候选无自定义计费」喵。
+  if (costCents == null || !Number.isFinite(costCents) || costCents === 0) {
+    return null
+  }
+  // 与后端 fmt.Sprintf("%.5f", cents/100000) 完全同口径，避免前后端展示不一致喵。
+  return (costCents / UPSTREAM_MODEL_UNITS_PER_YUAN).toFixed(5)
+}
+
 /**
  * 取虚拟模型日志（type=9）custom 候选在渠道列的展示标识喵。
  * custom 候选没有 new-api 渠道（channel=0），用候选尝试序列里成功候选的 label（模型名/显示名）；

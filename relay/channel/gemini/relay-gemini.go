@@ -189,6 +189,8 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 
 	// 虚拟模型流式探测失败时立即返回错误喵。
 	if streamProbeErr != nil {
+		// 跳过候选计费：探测缓存的上游内容按原生口径估算该候选已产生的 usage 并登记计费喵。
+		helper.RegisterSkippedCandidateStreamBilling(c, info, streamProbeErr)
 		return nil, streamProbeErr
 	}
 

@@ -298,6 +298,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		// Only return quota if downstream failed and quota was actually pre-consumed
 		if newAPIError != nil {
 			newAPIError = service.NormalizeViolationFeeError(newAPIError)
+			// 虚拟模型候选：收尾前先结算「放流前被跳过」时按原生口径登记的计费；
+			// 结算成功后计费会话进入终态，紧随其后的退款会自动幂等失效，普通请求无任何副作用喵。
+			service.SettlePendingCandidateBilling(c, relayInfo)
 			if relayInfo.Billing != nil {
 				relayInfo.Billing.Refund(c)
 			}
@@ -358,6 +361,8 @@ candidateRelayLoop:
 				relayInfo.LastError = nil
 				// 内部候选成功后清除其请求启动时观察到的自动冻结状态，失败只记录日志不影响成功响应喵。
 				middleware.ClearCurrentVirtualModelCandidateAutomaticFreeze(c)
+				// 内部候选成功：丢弃探测阶段登记的跳过计费，成功路径会按真实 usage 结算，避免重复计费喵。
+				service.ClearPendingCandidateBilling(c)
 				// 内部候选成功：结算 usage 已在 service 写入 context，这里连同 TTFT 一并填充探测样本喵。
 				internalTtftMs := int64(0)
 				if !relayInfo.FirstResponseTime.IsZero() {
@@ -428,6 +433,8 @@ candidateRelayLoop:
 			}
 			if nativeFailureDecision.CustomCandidateCommitted {
 				// 自定义候选已把响应字节交给客户端，此后绝不允许再向同一个响应追加第二个错误正文喵。
+				// 先结算该内部候选在放流前被跳过时登记的计费（按原生口径同样计费），再退还未消耗预扣喵。
+				service.SettlePendingCandidateBilling(c, relayInfo)
 				if relayInfo.Billing != nil {
 					if refundError := relayInfo.Billing.RefundImmediately(c); refundError != nil {
 						// 喵~防御：同步退款只完成了部分步骤时只能记录日志，改用异步退款补齐剩余步骤，
@@ -498,7 +505,8 @@ func shouldSuppressFinalErrorBody(c *gin.Context, isVirtualCandidateRequest bool
 // 整体思路喵：候选之间不共享任何可变状态，所以切换必须严格按下列顺序执行，
 // 任一步失败都立刻返回错误，并阻止后备候选建立预扣或发起上游连接喵。
 //  1. 校验确实存在已激活的内部候选，普通请求误入此路径时只返回内部错误；
-//  2. 让旧候选的计费会话进入终态（同步退款），确认旧额度确实已经释放；
+//  2. 让旧候选的计费会话进入终态：先结算它在放流前已登记的计费（被跳过的候选按原生口径同样计费），
+//     再同步退还未消耗的预扣，确认旧额度确实已经释放；
 //  3. 按候选真实模型重新解析请求体，禁止复用上一候选改写过的请求对象；
 //  4. 用候选工厂创建全新 RelayInfo，工厂内部会断言未继承任何候选级状态；
 //  5. 按候选模型与固定分组重新定价，并为该候选单独预扣额度。
@@ -515,7 +523,9 @@ func switchToNextVirtualModelCandidate(c *gin.Context, currentRelayInfo *relayco
 	if !foundCandidateAttempt || candidateAttempt.SourceType != model.VirtualModelSourceInternal {
 		return nil, types.NewError(errors.New("virtual model candidate is unavailable"), types.ErrorCodeModelPriceError, types.ErrOptionWithSkipRetry())
 	}
-	// 第一步：旧候选必须先完成同步退款；额度未确认释放前不允许为新候选预扣喵。
+	// 第一步：旧候选的计费会话进入终态 —— 先按原生口径结算它在放流前已产生的计费（被跳过的候选同样计费），
+	// 再同步退还未消耗的预扣；结算成功后 RefundImmediately 会自动幂等失效，不会重复退款喵。
+	service.SettlePendingCandidateBilling(c, currentRelayInfo)
 	if currentRelayInfo.Billing != nil {
 		if refundError := currentRelayInfo.Billing.RefundImmediately(c); refundError != nil {
 			return nil, types.NewError(refundError, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())

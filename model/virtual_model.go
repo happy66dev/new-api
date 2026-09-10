@@ -40,6 +40,17 @@ type VirtualModelCandidateAttemptRecord struct {
 	// ErrorBody 本次尝试的错误返回体（受限摘要），custom 候选填上游真实响应体，internal 填错误消息喵。
 	ErrorBody  string `json:"error_body,omitempty"`
 	RetryCount int    `json:"retry_count"` // 失败规则对该候选的重试次数喵。
+	// Quota 本次尝试产生的 new-api 额度计费，单位：quota（与消费日志 Quota 列同口径）喵。
+	// 候选被跳过但仍按原生口径计费时同样写入，供日志详情逐候选对账喵。
+	Quota int `json:"quota,omitempty"`
+	// CustomCostCents 本次尝试产生的自定义上游 RMB 计费，单位：10^-5 元（cents）喵。
+	CustomCostCents int64 `json:"custom_cost_cents,omitempty"`
+	// BilledOnSkip 标记该候选「已被跳过（未向客户端产出响应）但仍产生了计费」喵。
+	BilledOnSkip bool `json:"billed_on_skip,omitempty"`
+	// PromptTokens 本次尝试对应的输入 token 数，单位：个；零表示未统计到喵。
+	PromptTokens int `json:"prompt_tokens,omitempty"`
+	// CompletionTokens 本次尝试对应的输出 token 数，单位：个；零表示未统计到喵。
+	CompletionTokens int `json:"completion_tokens,omitempty"`
 }
 
 // VirtualModelFailureAction 描述候选失败后的编排动作喵。

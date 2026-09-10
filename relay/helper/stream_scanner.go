@@ -321,7 +321,13 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			if !strings.HasPrefix(data, "[DONE]") {
 				// 探测阶段：先缓存数据直到内容字符达到门槛，避免"假成功流"喵。
 				if probeState != nil && !probePassed.Load() {
-					probeState.buffer = append(probeState.buffer, data)
+					// 该行计入门槛的内容字符数：心跳不构成业务内容，伪流模式全量缓存但不做门槛放流喵。
+					addedContentChars := 0
+					if !fakeStreamEnabled && !isProbeHeartbeat(data) {
+						addedContentChars = common.StreamProbeContentChars(data)
+					}
+					// 缓存该行并取回累计内容字符数；缓存写与快照读都走加锁方法，避免与主循环竞争喵。
+					bufferedContentChars := probeState.bufferProbeData(data, addedContentChars)
 					// 累计缓存字节数，伪流/探测模式都受上限保护，避免异常上游耗尽服务内存喵。
 					probeBufferBytes += len(data)
 					// 主人注意：伪流/探测全量缓存若无上限，恶意或异常上游可持续发送数据行导致内存无界增长喵。
@@ -339,15 +345,12 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 					if fakeStreamEnabled {
 						continue
 					}
-					// 心跳不构成业务内容，只缓存重放不参与门槛计数喵。
-					if !isProbeHeartbeat(data) {
-						probeState.bufferedContentChars += common.StreamProbeContentChars(data)
-					}
-					if probeState.bufferedContentChars >= probeState.config.MinContentChars {
+					// 心跳不构成业务内容，已在缓存前按 0 字符计入门槛喵。
+					if bufferedContentChars >= probeState.config.MinContentChars {
 						// 放流：先重放已缓存数据，再继续正常边收边放喵。
 						probePassed.Store(true)
 						ticker.Reset(streamingTimeout)
-						for _, bufferedData := range probeState.buffer {
+						for _, bufferedData := range probeState.drainBuffer() {
 							info.SetFirstResponseTime()
 							info.ReceivedResponseCount++
 							select {
@@ -358,7 +361,6 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 								return
 							}
 						}
-						probeState.buffer = nil
 					}
 					continue
 				}
@@ -378,7 +380,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 					if fakeStreamEnabled {
 						probePassed.Store(true)
 						ticker.Reset(streamingTimeout)
-						for _, bufferedData := range probeState.buffer {
+						for _, bufferedData := range probeState.drainBuffer() {
 							info.SetFirstResponseTime()
 							info.ReceivedResponseCount++
 							select {
@@ -389,7 +391,6 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 								return
 							}
 						}
-						probeState.buffer = nil
 						// 回放 [DONE] 结束标记，客户端据此关闭流喵。
 						info.ReceivedResponseCount++
 						select {
@@ -444,6 +445,8 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				cutError = types.ErrStreamCut
 			}
 			probeFailure := fmt.Errorf("%w: stream silent before business content", cutError)
+			// 主循环在这里直接判定失败，需要手动附上放流前的缓存快照，供跳过候选按原生口径结算喵。
+			probeFailure = probeState.wrapWithBufferedData(probeFailure)
 			probeFailedError = probeFailure
 			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, probeFailure)
 		} else {
@@ -460,6 +463,8 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				cutError = types.ErrStreamCut
 			}
 			probeFailure := fmt.Errorf("%w: probe phase exceeded total budget", cutError)
+			// 主循环在这里直接判定失败，同样手动附上放流前的缓存快照喵。
+			probeFailure = probeState.wrapWithBufferedData(probeFailure)
 			probeFailedError = probeFailure
 			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, probeFailure)
 		}

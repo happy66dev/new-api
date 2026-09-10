@@ -17,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -456,6 +457,8 @@ func handleVirtualModelRequest(c *gin.Context, modelRequest *ModelRequest) bool 
 	common.SetContextKey(c, constant.ContextKeyVirtualModelStartTime, executionState.startTime)
 	// 虚拟模型请求日志统一归入「虚拟模型」类型（internal 候选走消费日志时覆盖 type 为 9）喵。
 	common.SetContextKey(c, constant.ContextKeyVirtualLogType, model.LogTypeVirtualModel)
+	// 候选级与请求级计费累计容器：跳过候选的估算计费与全候选累计额度都写在这里，供日志与结算读取喵。
+	common.SetContextKey(c, constant.ContextKeyVirtualBilling, relaycommon.NewVirtualBilling())
 	// 初始化候选尝试记录切片，供请求生命周期内各候选追加，最终随日志落库喵。
 	candidateAttempts := make([]model.VirtualModelCandidateAttemptRecord, 0, len(executionSnapshot.Candidates))
 	common.SetContextKey(c, constant.ContextKeyVirtualCandidateAttempts, &candidateAttempts)
@@ -533,6 +536,8 @@ func AdvanceVirtualModelAfterNativeFailure(c *gin.Context, nativeError *types.Ne
 	if len(internalErrorBody) > maxInternalErrorBodyBytes {
 		internalErrorBody = internalErrorBody[:maxInternalErrorBodyBytes]
 	}
+	// 候选在放流前被跳过时仍按原生口径产生计费：取本次尝试登记的额度与 token，供候选记录对账喵。
+	attemptBilling := pendingInternalAttemptBilling(c)
 	appendVirtualModelCandidateAttempt(c, model.VirtualModelCandidateAttemptRecord{
 		Seq:          currentVirtualModelCandidateSeq(c),
 		CandidateID:  currentCandidate.CandidateID,
@@ -546,6 +551,11 @@ func AdvanceVirtualModelAfterNativeFailure(c *gin.Context, nativeError *types.Ne
 		ErrorBody:  internalErrorBody,
 		ElapsedMs:  time.Since(executionState.currentCandidateStartedAt).Milliseconds(),
 		RetryCount: executionState.ruleRetryCounts[currentCandidate.CandidateID],
+		// 本次尝试按原生口径登记的额度与 token：非零即表示该候选被跳过但仍会计费喵。
+		Quota:            attemptBilling.Quota,
+		PromptTokens:     attemptBilling.PromptTokens,
+		CompletionTokens: attemptBilling.CompletionTokens,
+		BilledOnSkip:     !attemptBilling.IsZero(),
 	})
 	// 断流失败与普通失败统一走失败规则决策（候选规则优先，无则全局兜底），目标模式断流措施已由全局兜底规则代替喵。
 	// 自动避险独立于失效规则：候选配置了连续失败阈值时，无论失效规则决策为何都累计连续失败，达阈值即冻结退避喵。
@@ -830,6 +840,94 @@ func currentVirtualModelCandidateSeq(c *gin.Context) int {
 		return 0
 	}
 	return executionState.currentCandidateIndex + 1
+}
+
+// mergeCustomFailureUsage 把一轮候选失败尝试的 usage 累加进候选级待结算 usage 喵。
+//
+// 用途喵：同一自定义候选按失败规则重试时，每次尝试都真实消耗了上游额度，
+// 因此候选级结算要把这些尝试的 token 累加，而不是只保留最后一次喵。
+// 输入：候选级待结算 usage（可为 nil）与本次尝试的 usage 喵。
+// 输出：累加后的 usage；本次没有 usage 时原样返回已有值，两者都没有时返回 nil 喵。
+func mergeCustomFailureUsage(baseUsage *dto.Usage, attemptUsage *dto.Usage) *dto.Usage {
+	// 喵~防御：本次没有计费素材时不改动已有累计喵。
+	if attemptUsage == nil {
+		return baseUsage
+	}
+	// 首次登记：复制一份，避免后续累加污染调用方持有的 usage 对象喵。
+	if baseUsage == nil {
+		copiedUsage := *attemptUsage
+		return &copiedUsage
+	}
+	// 逐侧累加 token，保证缓存读/写与多模态分类同样进入候选级计费口径喵。
+	baseUsage.PromptTokens += attemptUsage.PromptTokens
+	baseUsage.CompletionTokens += attemptUsage.CompletionTokens
+	baseUsage.TotalTokens += attemptUsage.TotalTokens
+	baseUsage.InputTokens += attemptUsage.InputTokens
+	baseUsage.OutputTokens += attemptUsage.OutputTokens
+	baseUsage.PromptTokensDetails.CachedTokens += attemptUsage.PromptTokensDetails.CachedTokens
+	baseUsage.PromptTokensDetails.CachedCreationTokens += attemptUsage.PromptTokensDetails.CachedCreationTokens
+	baseUsage.PromptTokensDetails.CacheWriteTokens += attemptUsage.PromptTokensDetails.CacheWriteTokens
+	baseUsage.PromptTokensDetails.CacheCreationInputTokens += attemptUsage.PromptTokensDetails.CacheCreationInputTokens
+	baseUsage.PromptTokensDetails.CacheReadInputTokens += attemptUsage.PromptTokensDetails.CacheReadInputTokens
+	baseUsage.PromptTokensDetails.TextTokens += attemptUsage.PromptTokensDetails.TextTokens
+	baseUsage.PromptTokensDetails.AudioTokens += attemptUsage.PromptTokensDetails.AudioTokens
+	baseUsage.PromptTokensDetails.ImageTokens += attemptUsage.PromptTokensDetails.ImageTokens
+	baseUsage.ClaudeCacheCreation5mTokens += attemptUsage.ClaudeCacheCreation5mTokens
+	baseUsage.ClaudeCacheCreation1hTokens += attemptUsage.ClaudeCacheCreation1hTokens
+	return baseUsage
+}
+
+// attachVirtualModelCandidateCustomBilling 把自定义候选实际产生的 RMB 计费回填到它的候选尝试记录上喵。
+//
+// 说明喵：候选尝试记录在候选失败或成功分支就已经追加，而失败候选的结算发生在函数退出时的 defer，
+// 因此这里从后往前找最后一次属于该候选、且尚未写入计费的记录回填；找不到记录只留系统日志，
+// 已经完成的扣费不受影响（日志展示缺失不改变账目）喵。
+func attachVirtualModelCandidateCustomBilling(c *gin.Context, candidateID int, costCents int64, usage *dto.Usage) {
+	// 喵~防御：缺少上下文或候选编号时无法定位记录喵。
+	if c == nil || candidateID <= 0 {
+		return
+	}
+	candidateAttempts, foundAttempts := common.GetContextKeyType[*[]model.VirtualModelCandidateAttemptRecord](c, constant.ContextKeyVirtualCandidateAttempts)
+	// 喵~防御：没有候选尝试序列时只留日志，不影响已经完成的计费喵。
+	if !foundAttempts || candidateAttempts == nil {
+		common.SysError(fmt.Sprintf("virtual model candidate billing record unavailable: candidate=%d cost_cents=%d", candidateID, costCents))
+		return
+	}
+	// 从后往前找：同一候选的最后一条记录才是本次结算对应的尝试摘要喵。
+	for index := len(*candidateAttempts) - 1; index >= 0; index-- {
+		candidateAttempt := &(*candidateAttempts)[index]
+		if candidateAttempt.CandidateID != candidateID || candidateAttempt.CustomCostCents != 0 {
+			continue
+		}
+		candidateAttempt.CustomCostCents = costCents
+		// 失败候选被计费时打上「跳过仍计费」标记，供日志详情区分「白送的候选」与「计费的候选」喵。
+		candidateAttempt.BilledOnSkip = !candidateAttempt.Success
+		// 估算出的 token 一并落记录，便于管理员核对费用构成喵。
+		if usage != nil {
+			candidateAttempt.PromptTokens = usage.PromptTokens
+			candidateAttempt.CompletionTokens = usage.CompletionTokens
+		}
+		return
+	}
+	common.SysError(fmt.Sprintf("virtual model candidate billing record not found: candidate=%d cost_cents=%d", candidateID, costCents))
+}
+
+// pendingInternalAttemptBilling 读取当前内部候选最近一次尝试按原生口径登记的计费额度喵。
+//
+// 用途喵：内部候选在放流前被跳过时，service 层已把估算额度登记进请求上下文的计费累计，
+// 候选尝试记录需要展示「这一次尝试算了多少」，因此这里取最近一次登记的金额而不是累计值喵。
+// 输出：最近一次尝试的额度与 token；没有登记时返回零值（IsZero 为真），记录里就不会出现计费字段喵。
+func pendingInternalAttemptBilling(c *gin.Context) relaycommon.VirtualBillingAmount {
+	// 喵~防御：缺少上下文时没有登记可读喵。
+	if c == nil {
+		return relaycommon.VirtualBillingAmount{}
+	}
+	billing, foundBilling := common.GetContextKeyType[*relaycommon.VirtualBilling](c, constant.ContextKeyVirtualBilling)
+	// 喵~防御：普通请求没有计费累计容器，按无登记处理，绝不产生额外计费信息喵。
+	if !foundBilling || billing == nil {
+		return relaycommon.VirtualBillingAmount{}
+	}
+	return billing.LastAttempt()
 }
 
 // recordVirtualModelCustomSuccess 纯直填 custom 候选成功时写虚拟模型日志喵。
@@ -1220,6 +1318,8 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 	preConsumedCents := int64(0)
 	var preConsumeError error
 	settled := false
+	// pendingFailureUsage 累积本候选「上游已被调用但没有被采用」时整理出的 usage，退出时按原生口径结算喵。
+	var pendingFailureUsage *dto.Usage
 	if hasUpstreamReference && referencedUpstreamModel != nil {
 		preConsumedCents, preConsumeError = preConsumeUserUpstreamModelCharge(c, referencedUpstreamModel, false)
 		// 喵~防御：预扣失败（余额/可用任一不足）直接 403 拒绝，与自用上游模型预扣语义一致喵。
@@ -1227,14 +1327,30 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 			abortUpstreamModelQuotaExhausted(c)
 			return false
 		}
-		// 请求未完成差额结算前持有的预扣，由成功结算或失败退出退款二选一释放喵。
+		// 请求未完成差额结算前持有的预扣，由成功结算、失败候选结算或全额退款三选一释放喵。
 		defer func() {
-			// 喵~防御：候选失败退出（切换/终结/透传）时退还预扣金额，避免虚拟模型候选链反复预扣锁定额度喵。
-			if preConsumedCents > 0 && !settled {
-				if refundError := model.AdjustUserUpstreamModelCharge(referencedUpstreamModel.ID, referencedUpstreamModel.OwnerUserID, -preConsumedCents, false); refundError != nil {
-					common.SysError("virtual model custom pre-consume refund failed: " + refundError.Error())
-				}
+			// 喵~防御：无预扣或已结算（成功或已按失败 usage 结算过）时无需再动账户喵。
+			if preConsumedCents <= 0 || settled {
+				return
 			}
+			// 口径统一：候选虽未被采用，但上游已被调用且拿得到 usage 时按原生口径结算，
+			// 与 internal 候选「被跳过也计费」保持一致；差额调整会自动退还多扣的部分喵。
+			if pendingFailureUsage != nil {
+				costCents, settlementException := applyUserUpstreamModelCharge(referencedUpstreamModel.OwnerUserID, referencedUpstreamModel, pendingFailureUsage, false, preConsumedCents)
+				// 记系统日志便于审计结算异常，但不影响已完成的候选链决策喵。
+				if settlementException {
+					common.SysError(fmt.Sprintf("virtual model custom candidate settlement exception: candidate=%d cost_cents=%d", candidate.CandidateID, costCents))
+				}
+				// 把实际 RMB 计费挂到该候选的尝试记录上，供日志详情展示候选级费用喵。
+				attachVirtualModelCandidateCustomBilling(c, candidate.CandidateID, costCents, pendingFailureUsage)
+				settled = true
+				return
+			}
+			// 完全拿不到计费素材时退化为原有语义：全额退还预扣，避免额度被永久锁定喵。
+			if refundError := model.AdjustUserUpstreamModelCharge(referencedUpstreamModel.ID, referencedUpstreamModel.OwnerUserID, -preConsumedCents, false); refundError != nil {
+				common.SysError("virtual model custom pre-consume refund failed: " + refundError.Error())
+			}
+			settled = true
 		}()
 	}
 	for retryIndex := 0; retryIndex <= maximumRetries; retryIndex++ {
@@ -1293,6 +1409,10 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 			executionUsage = customExecutionResult.Usage
 			executionResult = &virtualmodelservice.UserUpstreamModelExecutionResult{Usage: customExecutionResult.Usage, TtftMs: customExecutionResult.TtftMs}
 		}
+		// 候选失败但上游已产生消耗（卡流/断流被跳过、放流后中途失败等）：累积 usage 供退出时按原生口径结算喵。
+		if executionError != nil && executionUsage != nil {
+			pendingFailureUsage = mergeCustomFailureUsage(pendingFailureUsage, executionUsage)
+		}
 		// 成功响应已由透传器直接写出，此时仅清除请求开始前已观察到的历史冻结并中止后续 controller relay 喵。
 		if executionError == nil {
 			// 请求级耗时基准：总耗时取请求入口到当前，首字取首次写响应时刻减请求入口喵。
@@ -1334,9 +1454,11 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 					requestGroup = executionState.modelRequest.Group
 				}
 				// 结算总耗时取请求入口到当前，首字取请求级首次写响应，与虚拟模型日志口径一致喵。
-				settleUserUpstreamModelCharge(c, referencedUpstreamModel.OwnerUserID, referencedUpstreamModel, executionUsage, requestGroup, isUpstreamModelRequestStreaming(c), int(requestElapsedMs/1000), false, requestFirstByteMs, preConsumedCents)
+				successCostCents := settleUserUpstreamModelCharge(c, referencedUpstreamModel.OwnerUserID, referencedUpstreamModel, executionUsage, requestGroup, isUpstreamModelRequestStreaming(c), int(requestElapsedMs/1000), false, requestFirstByteMs, preConsumedCents)
 				// 已按差额结算完毕，defer 不再退还预扣喵。
 				settled = true
+				// 把实收 RMB 计费回填到本次成功候选的尝试记录，供日志详情逐候选对账喵。
+				attachVirtualModelCandidateCustomBilling(c, candidate.CandidateID, successCostCents, executionUsage)
 				// 实体状态检测：引用上游模型成功，同时记录上游模型自用维度成功喵。
 				recordUpstreamModelProbeState(referencedUpstreamModel, false, true, true, "", startTime, buildUpstreamProbeExtras(executionResult))
 			} else {
