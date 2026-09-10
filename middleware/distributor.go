@@ -735,6 +735,11 @@ func activateNextVirtualModelCandidate(c *gin.Context, executionState *virtualMo
 			continue
 		}
 		if candidateSnapshot.SourceType == model.VirtualModelSourceCustom {
+			// 系统总开关(UserUpstreamEnabled)关闭时，自定义候选（直填或引用上游）一律视为不可用跳过，
+			// 让候选链前进到内部候选；存量候选仅拦截不删除，重新开启后恢复可用喵。
+			if !model.UserUpstreamFeatureEnabled() {
+				continue
+			}
 			identityDigest := virtualmodelservice.CustomCandidateIdentityDigest(*candidateSnapshot)
 			if _, automaticallyFrozen := executionState.automaticFreezeStatesByIdentity[identityDigest]; automaticallyFrozen {
 				continue

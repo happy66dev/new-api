@@ -24,7 +24,8 @@ const (
 func UserUpstreamFeatureEnabled() bool {
 	common.OptionMapRWMutex.RLock()
 	defer common.OptionMapRWMutex.RUnlock()
-	return common.OptionMap[UserUpstreamEnabledKey] == "true"
+	// 缺省（未配置或空串）视为开启，与 InitOptionMap 默认一致；只有显式 "false" 才是关闭喵。
+	return common.OptionMap[UserUpstreamEnabledKey] != "false"
 }
 
 // UserUpstreamSharingFeatureEnabled 读取共享开关当前状态，默认开启喵。
@@ -32,7 +33,8 @@ func UserUpstreamFeatureEnabled() bool {
 func UserUpstreamSharingFeatureEnabled() bool {
 	common.OptionMapRWMutex.RLock()
 	defer common.OptionMapRWMutex.RUnlock()
-	return common.OptionMap[UserUpstreamSharingEnabledKey] == "true"
+	// 缺省（未配置或空串）视为开启，与 InitOptionMap 默认一致；只有显式 "false" 才是关闭喵。
+	return common.OptionMap[UserUpstreamSharingEnabledKey] != "false"
 }
 
 // SetUserUpstreamFeatureOption 事务性地写入用户上游模型功能开关，并在"开启→关闭"跃迁时执行全站清理喵。

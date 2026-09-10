@@ -625,12 +625,13 @@ func validateVirtualModelCandidateSourceInput(sourceType model.VirtualModelSourc
 	if sourceType != model.VirtualModelSourceCustom {
 		return errors.New("虚拟模型候选来源无效")
 	}
+	// 喵~防御：系统总开关(UserUpstreamEnabled)关闭时，自定义候选（直填 url/key 或引用用户上游）
+	// 一律禁止保存与编辑，存量候选仅拦截不删除，重新开启后恢复可用喵。
+	if !model.UserUpstreamFeatureEnabled() {
+		return errors.New("系统已关闭用户上游模型功能，无法配置自定义上游候选")
+	}
 	// 引用用户上游模型时，真实模型名与凭据以该条目为准，不要求直填字段喵。
 	if candidateInput.UpstreamModelID != nil && *candidateInput.UpstreamModelID > 0 {
-		// 系统总开关(UserUpstreamEnabled)关闭时不允许新增对用户上游的引用，避免绕过完全冻结喵。
-		if !model.UserUpstreamFeatureEnabled() {
-			return errors.New("系统已关闭用户上游模型功能，无法引用用户上游")
-		}
 		return nil
 	}
 	if strings.TrimSpace(candidateInput.RealModelName) == "" {

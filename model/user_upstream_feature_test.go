@@ -27,11 +27,11 @@ func TestUserUpstreamFeatureAccessors(t *testing.T) {
 	assert.True(t, UserUpstreamFeatureEnabled())
 	assert.True(t, UserUpstreamSharingFeatureEnabled())
 
-	// 值非 true（含缺失、空串）一律视为关闭，避免误判喵。
+	// 显式 "false" 视为关闭；空串等同缺省，按默认开启处理（与 InitOptionMap 默认一致）喵。
 	common.OptionMap[UserUpstreamEnabledKey] = "false"
 	common.OptionMap[UserUpstreamSharingEnabledKey] = ""
 	assert.False(t, UserUpstreamFeatureEnabled())
-	assert.False(t, UserUpstreamSharingFeatureEnabled())
+	assert.True(t, UserUpstreamSharingFeatureEnabled())
 }
 
 // migrateFeatureTestTables 迁移本次开关清理涉及的数据库表并清空历史数据喵。
