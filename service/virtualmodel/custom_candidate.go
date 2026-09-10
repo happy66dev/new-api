@@ -417,7 +417,8 @@ func ExecuteCustomCandidate(c *gin.Context, input CustomCandidateExecutionInput)
 				if errors.Is(readError, io.EOF) {
 					break
 				}
-				return &CustomCandidateExecutionResult{Err: fmt.Errorf("read committed custom upstream stream: %w", readError), TtftMs: ttftMs}
+				// 喵~防御：放流后中途非 EOF 失败归入断流哨兵，供失败分类把这类「写了一半才挂」识别为 stream_cut 喵。
+				return &CustomCandidateExecutionResult{Err: fmt.Errorf("read committed custom upstream stream: %w", fmt.Errorf("%w: %v", relaykitypes.ErrStreamCut, readError)), TtftMs: ttftMs}
 			}
 		}
 		usage = normalizeUpstreamModelUsage(usage)

@@ -268,7 +268,8 @@ func ExecuteUserUpstreamModel(c *gin.Context, input CustomCandidateExecutionInpu
 				if errors.Is(readError, io.EOF) {
 					break
 				}
-				return &UserUpstreamModelExecutionResult{Err: fmt.Errorf("read committed user upstream stream: %w", readError), TtftMs: ttftMs}
+				// 喵~防御：放流后中途非 EOF 失败归入断流哨兵，供失败分类把这类「写了一半才挂」识别为 stream_cut 喵。
+				return &UserUpstreamModelExecutionResult{Err: fmt.Errorf("read committed user upstream stream: %w", fmt.Errorf("%w: %v", relaykitypes.ErrStreamCut, readError)), TtftMs: ttftMs}
 			}
 		}
 		// 只有真正解析到 token 计数才返回 usage，否则按请求/响应文本估计参与计费喵。

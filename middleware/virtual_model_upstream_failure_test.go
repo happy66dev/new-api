@@ -228,6 +228,9 @@ func TestVirtualModelUpstreamRetryDelayDeadline(t *testing.T) {
 // retry/next/passthrough 会二次写响应，本测试断言直接中止且候选链不推进喵。
 func TestExecuteCustomVirtualModelCandidateWrittenStructuredFailureAborts(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	// 状态检测与失败日志断言需要内存库（探测表 + 日志表），避免写进真实数据库喵。
+	newProbeTestDB(t)
+	testLogDB := newFailureLogTestDB(t)
 	// 开发模式允许本地 http mock 上游，测试结束后自动恢复环境变量喵。
 	t.Setenv("VIRTUAL_MODEL_INSECURE_UPSTREAM", "1")
 	// 配置凭据主密钥并加密 mock 上游地址与密钥，供直填自定义候选解密使用喵。
@@ -263,6 +266,8 @@ func TestExecuteCustomVirtualModelCandidateWrittenStructuredFailureAborts(t *tes
 	ctx.Set("id", 7)
 	common.SetContextKey(ctx, constant.ContextKeyVirtualModelExecutionState, executionState)
 	common.SetContextKey(ctx, constant.ContextKeyUserGroupAccess, service.UserGroupAccess{UsableGroups: map[string]string{"default": "default"}, AutoGroups: []string{}})
+	// 虚拟模型名上下文供整体失败日志钩子识别请求归属喵。
+	common.SetContextKey(ctx, constant.ContextKeyVirtualModelName, "virtual/vm-test")
 	attempts := make([]model.VirtualModelCandidateAttemptRecord, 0, 4)
 	common.SetContextKey(ctx, constant.ContextKeyVirtualCandidateAttempts, &attempts)
 	// 用「写入失败」的响应写入器替换默认 writer，模拟伪流回放写盘失败喵。
@@ -277,4 +282,19 @@ func TestExecuteCustomVirtualModelCandidateWrittenStructuredFailureAborts(t *tes
 	require.Equal(t, 0, executionState.currentCandidateIndex)
 	// 未发生 passthrough 二次写入，recorder 正文为空喵。
 	require.Empty(t, recorder.Body.String())
+
+	// 回归断言（修复后）：响应已提交但写失败时，必须追加失败尝试并落 type=9 整体失败日志，保证请求留痕喵。
+	require.Len(t, attempts, 1)
+	require.False(t, attempts[0].Success)
+	require.Equal(t, "custom", attempts[0].Source)
+	require.Equal(t, "network_error", attempts[0].ErrorClass)
+	var logCount int64
+	require.NoError(t, testLogDB.Model(&model.Log{}).Count(&logCount).Error)
+	require.Equal(t, int64(1), logCount)
+	var committedFailureLog model.Log
+	require.NoError(t, testLogDB.Model(&model.Log{}).First(&committedFailureLog).Error)
+	require.Equal(t, model.LogTypeVirtualModel, committedFailureLog.Type)
+	require.Equal(t, "virtual/vm-test", committedFailureLog.ModelName)
+	require.Contains(t, committedFailureLog.Other, "final_success")
+	require.Contains(t, committedFailureLog.Other, "network_error")
 }

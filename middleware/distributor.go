@@ -1089,6 +1089,48 @@ func recordCustomCandidateFailureProbe(c *gin.Context, candidate *model.VirtualM
 	}
 }
 
+// buildVirtualModelCustomFailureAttempt 构造自定义候选一次失败尝试的可审计摘要喵。
+// failure 为已规范化的失败信息，retryIndex 为该候选在本候选内已执行的重试序号（0 起）喵。
+func buildVirtualModelCustomFailureAttempt(c *gin.Context, candidate *model.VirtualModelInternalCandidateSnapshot, candidateRealModelName string, failure virtualmodelservice.CandidateFailure, retryIndex int, startTime time.Time) model.VirtualModelCandidateAttemptRecord {
+	// 喵~防御：上下文或候选缺失时返回零值记录，避免空指针喵。
+	if c == nil || candidate == nil {
+		return model.VirtualModelCandidateAttemptRecord{}
+	}
+	return model.VirtualModelCandidateAttemptRecord{
+		Seq:          currentVirtualModelCandidateSeq(c),
+		CandidateID:  candidate.CandidateID,
+		Source:       "custom",
+		Label:        buildVirtualModelAttemptLabel(candidate, candidateRealModelName),
+		Success:      false,
+		StatusCode:   failure.HTTPStatus,
+		ErrorClass:   failure.ErrorClass,
+		ErrorMessage: failure.ErrorClass,
+		// 模型级错误返回体取受限摘要（最多 64 KiB），供详情点击复制喵。
+		ErrorBody:  failure.BodyPreview,
+		ElapsedMs:  time.Since(startTime).Milliseconds(),
+		RetryCount: retryIndex,
+	}
+}
+
+// recordVirtualModelCustomCommittedFailure 收尾「自定义候选响应已部分提交后才失败」的场景喵。
+// 典型触发：流式响应已向客户端写出字节后中途断流、超时或本地写失败，响应无法撤销也无法再切换候选喵。
+// 此前该场景既不 append 尝试记录也不落整体失败日志，请求全程无留痕；本函数补齐两件事喵：
+// 1. 把本次失败追加进候选尝试序列，供日志详情 Candidate Attempts 展示喵；
+// 2. 补写 type=9 整体失败日志（防重标记保证与 abort 钩子、relay 收尾不重复落库）喵。
+// 同时按既有语义记录候选失败与整体失败的实体状态样本喵。
+func recordVirtualModelCustomCommittedFailure(c *gin.Context, candidate *model.VirtualModelInternalCandidateSnapshot, candidateRealModelName string, failure virtualmodelservice.CandidateFailure, hasUpstreamReference bool, referencedUpstreamModel *model.UserUpstreamModel, retryIndex int, startTime time.Time) {
+	// 喵~防御：上下文或候选缺失时直接返回，避免空指针喵。
+	if c == nil || candidate == nil {
+		return
+	}
+	// 把本次失败追加进候选尝试序列，确保整体失败日志里能看到该候选喵。
+	appendVirtualModelCandidateAttempt(c, buildVirtualModelCustomFailureAttempt(c, candidate, candidateRealModelName, failure, retryIndex, startTime))
+	// 实体状态检测：响应已部分提交但仍失败，记录候选失败与虚拟模型整体失败喵。
+	recordCustomCandidateFailureProbe(c, candidate, hasUpstreamReference, referencedUpstreamModel, failure.ErrorClass, startTime, true)
+	// 补写 type=9 整体失败日志：错误分类用规范化稳定分类，状态码统一 502 表示上游侧失败喵。
+	RecordVirtualModelOverallFailure(c, failure.ErrorClass, http.StatusBadGateway)
+}
+
 // executeCustomVirtualModelCandidate 在当前 middleware 生命周期内安全完成单次自定义候选透传喵。
 // executionSnapshot 提供候选级与模型级全局兜底失败规则，候选未配置规则时自动回退全局规则喵。
 func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.VirtualModelInternalCandidateSnapshot, executionSnapshot *model.VirtualModelExecutionSnapshot) bool {
@@ -1323,8 +1365,8 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 		// 喵~防御：非结构化异常不能参与规则匹配或重试；若响应已提交则只中止，避免重复错误响应喵。
 		if !errors.As(executionError, &customFailure) {
 			if c.Writer != nil && c.Writer.Written() {
-				// 实体状态检测：响应已部分提交但仍失败，记录候选失败与整体失败喵。
-				recordCustomCandidateFailureProbe(c, candidate, hasUpstreamReference, referencedUpstreamModel, "upstream_unavailable", startTime, true)
+				// 响应已部分提交但仍失败：追加失败尝试并补写整体失败日志，保证请求留痕喵。
+				recordVirtualModelCustomCommittedFailure(c, candidate, candidateRealModelName, virtualmodelservice.NormalizeCandidateFailure(0, nil, nil, executionError), hasUpstreamReference, referencedUpstreamModel, retryIndex, startTime)
 				c.Abort()
 				return false
 			}
@@ -1336,28 +1378,15 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 		// 喵~防御：响应已提交（如伪流回放写入失败）后的结构化失败不得再二次分发，
 		// 否则 retry 会重放、next 会激活下一候选、passthrough 会再次 WriteHeader，全部产生二次响应喵。
 		if c.Writer != nil && c.Writer.Written() {
-			// 实体状态检测：响应已部分提交但仍失败，记录候选失败与整体失败喵。
-			recordCustomCandidateFailureProbe(c, candidate, hasUpstreamReference, referencedUpstreamModel, customFailure.Failure.ErrorClass, startTime, true)
+			// 响应已部分提交但仍失败：追加失败尝试并补写整体失败日志，保证请求留痕喵。
+			recordVirtualModelCustomCommittedFailure(c, candidate, candidateRealModelName, customFailure.Failure, hasUpstreamReference, referencedUpstreamModel, retryIndex, startTime)
 			c.Abort()
 			return false
 		}
 		// 候选失败后按规则决策动作；断流与普通失败统一走失败规则（候选规则优先，无则全局兜底），目标模式断流措施已由全局兜底规则代替喵。
 		action, freezeSeconds, ruleRetryCount := virtualmodelservice.DecideVirtualModelFailureAction(executionSnapshot, candidate.CandidateID, customFailure.Failure)
 		// 记录该 custom 候选的失败尝试摘要，供最终日志展示候选链故障转移过程喵。
-		appendVirtualModelCandidateAttempt(c, model.VirtualModelCandidateAttemptRecord{
-			Seq:          currentVirtualModelCandidateSeq(c),
-			CandidateID:  candidate.CandidateID,
-			Source:       "custom",
-			Label:        buildVirtualModelAttemptLabel(candidate, candidateRealModelName),
-			Success:      false,
-			StatusCode:   customFailure.Failure.HTTPStatus,
-			ErrorClass:   customFailure.Failure.ErrorClass,
-			ErrorMessage: customFailure.Failure.ErrorClass,
-			// 模型级错误返回体取上游响应体受限摘要（最多 64 KiB），供详情点击复制喵。
-			ErrorBody:  customFailure.Failure.BodyPreview,
-			ElapsedMs:  time.Since(startTime).Milliseconds(),
-			RetryCount: retryIndex,
-		})
+		appendVirtualModelCandidateAttempt(c, buildVirtualModelCustomFailureAttempt(c, candidate, candidateRealModelName, customFailure.Failure, retryIndex, startTime))
 		// 自动避险独立于失效规则：候选配置了连续失败阈值时，无论失效规则决策为何都累计连续失败，达阈值即冻结退避喵。
 		ownerUserID := c.GetInt("id")
 		hedgeFroze, hedgeError := virtualmodelservice.RecordCandidateAutoHedge(ownerUserID, *candidate, customFailure.Failure, common.GetTimestamp())
