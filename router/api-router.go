@@ -312,6 +312,13 @@ func SetApiRouter(router *gin.Engine) {
 			virtualModelRoute.POST("/:id/candidates/:candidateId/freeze", controller.FreezeVirtualModelCandidate)
 			virtualModelRoute.DELETE("/:id/candidates/:candidateId/freeze", controller.UnfreezeVirtualModelCandidate)
 			virtualModelRoute.GET("/:id/audit-log", controller.GetVirtualModelAuditLog)
+			// 虚拟模型分享码：把脱敏后的方案快照分发给其他用户，导入方凭码复制一份喵。
+			virtualModelRoute.POST("/share-codes", controller.CreateVirtualModelShareCode)
+			virtualModelRoute.GET("/share-codes", controller.GetVirtualModelShareCodes)
+			virtualModelRoute.DELETE("/share-codes/:codeId", controller.RevokeVirtualModelShareCode)
+			// 导入先预检（只读、不落库）再由用户确认后真正导入喵。
+			virtualModelRoute.POST("/import/precheck", controller.PrecheckVirtualModelShareCode)
+			virtualModelRoute.POST("/import", controller.ImportVirtualModelShareCode)
 		}
 
 		upstreamModelRoute := apiRouter.Group("/upstream-models")

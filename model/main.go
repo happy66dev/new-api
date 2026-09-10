@@ -380,6 +380,8 @@ func migrateDB() error {
 		&VirtualModelCustomFreezeState{},
 		&VirtualModelInternalFreezeState{},
 		&VirtualModelAuditLog{},
+		// 虚拟模型分享码：保存脱敏后的方案快照，供用户之间一对一分发喵。
+		&VirtualModelShareCode{},
 		&UserUpstreamModel{},
 		&EntityProbeState{},
 	)
@@ -469,6 +471,8 @@ func migrateDBFast() error {
 		{&VirtualModelCustomFreezeState{}, "VirtualModelCustomFreezeState"},
 		{&VirtualModelInternalFreezeState{}, "VirtualModelInternalFreezeState"},
 		{&VirtualModelAuditLog{}, "VirtualModelAuditLog"},
+		// 虚拟模型分享码表随快速迁移一并建表，保证启动时两套迁移路径都覆盖喵。
+		{&VirtualModelShareCode{}, "VirtualModelShareCode"},
 	}
 	// 动态计算migration数量，确保errChan缓冲区足够大
 	errChan := make(chan error, len(migrations))
