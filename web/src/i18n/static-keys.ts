@@ -602,4 +602,18 @@ export const STATIC_I18N_KEYS = [
   'Waiting for transaction...',
   'Transaction detected, waiting for confirmations... (Confirmations: {{count}})',
   'Monero payment credited successfully',
+
+  // Virtual model share code skip reasons (selected dynamically by backend reason code)
+  'This candidate has no group configured.',
+  'This candidate uses the automatic group, which virtual models do not support.',
+  'Your account cannot access this group.',
+  'This group currently has no available channel for this model.',
+  'This candidate upstream address was rejected by this instance policy.',
+
+  // Virtual model share code import warnings (selected dynamically by backend warning code)
+  'No candidate can be called right away. Fill in the API Key for custom candidates before enabling the model.',
+  'Every candidate was skipped. The imported plan is empty and cannot be used.',
+
+  // Virtual model share code status (selected dynamically by resolved status)
+  'Import limit reached',
 ] as const

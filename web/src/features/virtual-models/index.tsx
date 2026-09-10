@@ -19,6 +19,8 @@ import { VirtualModelBindingsEditor } from '@/features/virtual-models/components
 import { VirtualModelCandidatesEditor } from '@/features/virtual-models/components/virtual-model-candidates-editor'
 import { VirtualModelDeleteDialog } from '@/features/virtual-models/components/virtual-model-dialogs'
 import { VirtualModelDrawer } from '@/features/virtual-models/components/virtual-model-drawer'
+import { VirtualModelImportDialog } from '@/features/virtual-models/components/virtual-model-import-dialog'
+import { VirtualModelShareDialog } from '@/features/virtual-models/components/virtual-model-share-dialog'
 import { VirtualModelGlobalFailureRulesEditor } from '@/features/virtual-models/components/virtual-model-global-failure-rules-editor'
 import { VirtualModelOverviewStatus } from '@/features/virtual-models/components/virtual-model-overview-status'
 
@@ -27,6 +29,9 @@ export function VirtualModels() {
   const [selectedModelId, setSelectedModelId] = useState<number | null>(null)
   const [isDrawerOpen, setIsDrawerOpen] = useState(false)
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
+  // 分享码弹窗与导入弹窗互不依赖：分享针对当前选中模型，导入不依赖任何已有模型喵。
+  const [isShareDialogOpen, setIsShareDialogOpen] = useState(false)
+  const [isImportDialogOpen, setIsImportDialogOpen] = useState(false)
   const [editingModelId, setEditingModelId] = useState<number | null>(null)
   // activeTab 记录当前选项卡；Overview 候选摘要行可跳转到候选链选项卡喵。
   const [activeTab, setActiveTab] = useState<string>('overview')
@@ -88,6 +93,8 @@ export function VirtualModels() {
     <SectionPageLayout fixedContent>
       <SectionPageLayout.Title>{t('Virtual Models')}</SectionPageLayout.Title>
       <SectionPageLayout.Actions>
+        {/* 导入是全局入口：用户手上只有一枚分享码时不必先有模型喵。 */}
+        <Button size='sm' variant='outline' onClick={() => setIsImportDialogOpen(true)}>{t('Import plan')}</Button>
         <Button size='sm' onClick={openCreateDrawer}>{t('Create virtual model')}</Button>
       </SectionPageLayout.Actions>
       <SectionPageLayout.Content>
@@ -134,6 +141,8 @@ export function VirtualModels() {
                         <p className='text-sm text-muted-foreground'>{`virtual/${selectedModel.normalized_name}`}</p>
                       </div>
                       <div className='flex gap-2'>
+                        {/* 分享针对当前选中模型，因此只在这里出现喵。 */}
+                        <Button size='sm' variant='outline' onClick={() => setIsShareDialogOpen(true)}>{t('Share plan')}</Button>
                         <Button size='sm' variant='outline' onClick={openEditDrawer}>{t('Edit')}</Button>
                         <Button size='sm' variant='destructive' onClick={() => setIsDeleteDialogOpen(true)}>{t('Delete')}</Button>
                       </div>
@@ -190,6 +199,15 @@ export function VirtualModels() {
           open={isDeleteDialogOpen}
           onOpenChange={setIsDeleteDialogOpen}
           onDeleted={handleDeletedModel}
+        />
+        <VirtualModelShareDialog
+          model={selectedModel ?? null}
+          open={isShareDialogOpen}
+          onOpenChange={setIsShareDialogOpen}
+        />
+        <VirtualModelImportDialog
+          open={isImportDialogOpen}
+          onOpenChange={setIsImportDialogOpen}
         />
       </SectionPageLayout.Content>
     </SectionPageLayout>

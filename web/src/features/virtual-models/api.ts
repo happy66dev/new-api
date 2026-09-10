@@ -338,3 +338,137 @@ export async function unfreezeVirtualModelCandidate(
   )
   return response.data
 }
+
+// VirtualModelShareCodeCreateInput 是生成分享码的请求体；两项都留空表示永不过期且不限次数喵。
+export type VirtualModelShareCodeCreateInput = {
+  // expires_at 是可选到期时间（Unix 秒），零或省略表示永不过期喵。
+  expires_at?: number
+  // max_imports 是可选最大导入次数，零或省略表示不限喵。
+  max_imports?: number
+}
+
+// VirtualModelShareCodeCreated 是生成分享码的结果，含分享码本体与快照统计喵。
+export type VirtualModelShareCodeCreated = {
+  id: number
+  code: string
+  display_name: string
+  candidate_count: number
+  internal_candidate_count: number
+  custom_candidate_count: number
+  // omitted_reference_candidates 是因引用用户上游而被省略的候选数量，它们不会进入分享码喵。
+  omitted_reference_candidates: number
+  expires_at: number
+  max_imports: number
+  created_time: number
+}
+
+// VirtualModelShareCodeSummary 是分享码列表项，供分享者自查与撤销喵。
+export type VirtualModelShareCodeSummary = {
+  id: number
+  code: string
+  display_name: string
+  import_count: number
+  max_imports: number
+  expires_at: number
+  // revoked_at 非零表示该分享码已被撤销、不再可用喵。
+  revoked_at: number
+  created_time: number
+}
+
+// VirtualModelShareSkippedCandidate 描述导入时被跳过的候选及其稳定原因码喵。
+export type VirtualModelShareSkippedCandidate = {
+  order: number
+  source: string
+  group?: string
+  model?: string
+  // reason 是后端给出的稳定原因码，前端据此选择已翻译的说明文案喵。
+  reason: string
+  // message 是后端中文兜底说明，仅在原因码未知时使用喵。
+  message: string
+}
+
+// VirtualModelShareImportPreview 是导入预检结果，不写入任何数据喵。
+export type VirtualModelShareImportPreview = {
+  share_code_id: number
+  display_name: string
+  plan: {
+    loop_enabled: boolean
+    total_timeout_seconds: number
+    max_loop_rounds: number
+    fake_stream_enabled: boolean
+    stream_cut_action: string
+    stream_cut_retries: number
+  }
+  // candidate_count 是快照里的候选总数，importable_candidate_count 是本次能导入的数量喵。
+  candidate_count: number
+  importable_candidate_count: number
+  skipped_candidates: VirtualModelShareSkippedCandidate[]
+  // warnings 是提示码，不阻断导入；前端按码翻译后展示喵。
+  warnings: string[]
+}
+
+// VirtualModelShareImportResult 是真正导入后的结果喵。
+export type VirtualModelShareImportResult = {
+  id: number
+  normalized_name: string
+  display_name: string
+  imported_candidate_count: number
+  skipped_candidates: VirtualModelShareSkippedCandidate[]
+  warnings: string[]
+  // enabled 恒为 false：导入的模型默认停用，核对凭据后需用户自行启用喵。
+  enabled: boolean
+}
+
+// createVirtualModelShareCode 为一个虚拟模型生成脱敏方案的分享码喵。
+export async function createVirtualModelShareCode(
+  modelID: number,
+  input: VirtualModelShareCodeCreateInput
+): Promise<VirtualModelApiResponse<VirtualModelShareCodeCreated>> {
+  const response = await api.post(`/api/virtual-models/share-codes`, {
+    virtual_model_id: modelID,
+    ...input,
+  })
+  return response.data
+}
+
+// getVirtualModelShareCodes 读取当前用户生成过的分享码，供撤销与自查喵。
+export async function getVirtualModelShareCodes(): Promise<
+  VirtualModelApiResponse<{ share_codes: VirtualModelShareCodeSummary[]; total: number }>
+> {
+  const response = await api.get('/api/virtual-models/share-codes')
+  return response.data
+}
+
+// revokeVirtualModelShareCode 撤销自己的一枚分享码，撤销后不可再导入喵。
+export async function revokeVirtualModelShareCode(
+  shareCodeID: number
+): Promise<VirtualModelApiResponse<{ id: number }>> {
+  const response = await api.delete(`/api/virtual-models/share-codes/${shareCodeID}`)
+  return response.data
+}
+
+// precheckVirtualModelShareImport 解析分享码并按权限预演导入，不落库喵。
+// 分享码无效属于用户可预期的输入错误，因此跳过全局错误弹窗，由弹窗内联展示喵。
+export async function precheckVirtualModelShareImport(
+  code: string
+): Promise<VirtualModelApiResponse<VirtualModelShareImportPreview>> {
+  const response = await api.post(
+    '/api/virtual-models/import/precheck',
+    { code },
+    { skipErrorHandler: true }
+  )
+  return response.data
+}
+
+// importVirtualModelShareCode 把分享码里的方案复制一份到当前用户名下喵。
+// 这里同样跳过全局错误弹窗，导入失败原因直接显示在导入弹窗里更方便重试喵。
+export async function importVirtualModelShareCode(input: {
+  code: string
+  normalized_name?: string
+  display_name?: string
+}): Promise<VirtualModelApiResponse<VirtualModelShareImportResult>> {
+  const response = await api.post('/api/virtual-models/import', input, {
+    skipErrorHandler: true,
+  })
+  return response.data
+}
