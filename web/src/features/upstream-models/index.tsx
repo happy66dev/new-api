@@ -964,8 +964,9 @@ export function UpstreamModels() {
         </Button>
       </SectionPageLayout.Actions>
       <SectionPageLayout.Content>
+        {/* 提示条：告知主人除了自建上游，还能靠虚拟模型或开启用户共享后用用户共享分组调用自己的模型喵。 */}
         <Alert className='mb-3'>
-          {t('You can also invoke your own upstream through virtual models.')}
+          {t('You can invoke your own upstream through virtual models, or call your own models in the user-shared group after enabling user sharing.')}
         </Alert>
         <div className='overflow-auto rounded-md border'>
           {upstreamModelsQuery.isLoading && <p className='p-4 text-sm text-muted-foreground'>{t('Loading')}</p>}

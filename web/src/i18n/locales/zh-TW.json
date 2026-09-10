@@ -6429,7 +6429,7 @@
     "Unnamed candidate": "Unnamed candidate",
     "Add a candidate before configuring failure rules": "Add a candidate before configuring failure rules",
     "Upstream Models": "Upstream Models",
-    "You can also invoke your own upstream through virtual models.": "你也可以透過虛擬模型呼叫你自己的上游。",
+    "You can invoke your own upstream through virtual models, or call your own models in the user-shared group after enabling user sharing.": "你可以透過虛擬模型呼叫你自己的上游，或者開啟使用者分享後在使用者分享群組中呼叫你自己的模型。",
     "Create upstream model": "Create upstream model",
     "Edit upstream model": "Edit upstream model",
     "Add a new upstream model by providing necessary info.": "Add a new upstream model by providing necessary info.",

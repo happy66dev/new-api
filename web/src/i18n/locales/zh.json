@@ -6429,7 +6429,7 @@
     "Unnamed candidate": "未命名候选",
     "Add a candidate before configuring failure rules": "请先添加候选，再配置失败规则",
     "Upstream Models": "上游模型",
-    "You can also invoke your own upstream through virtual models.": "你也可以通过虚拟模型调用你自己的上游。",
+    "You can invoke your own upstream through virtual models, or call your own models in the user-shared group after enabling user sharing.": "你可以通过虚拟模型调用你自己的上游，或者开启用户共享后在用户共享分组中调用你自己的模型。",
     "Create upstream model": "新建上游模型",
     "Edit upstream model": "编辑上游模型",
     "Add a new upstream model by providing necessary info.": "提供必要信息新建上游模型。",
