@@ -9,6 +9,8 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  countShareableCandidates,
+  describeShareCodeError,
   describeShareSkipReason,
   describeShareWarning,
   extractShareCodeErrorMessage,
@@ -21,13 +23,11 @@ const identityTranslator = (key: string): string => key
 
 // makeShareCode 构造分享码状态判定所需的完整字段，避免每个用例重复写字面量喵。
 function makeShareCode(overrides: {
-  revoked_at?: number
   expires_at?: number
   import_count?: number
   max_imports?: number
 }) {
   return {
-    revoked_at: overrides.revoked_at ?? 0,
     expires_at: overrides.expires_at ?? 0,
     import_count: overrides.import_count ?? 0,
     max_imports: overrides.max_imports ?? 0,
@@ -35,18 +35,22 @@ function makeShareCode(overrides: {
 }
 
 describe('resolveShareCodeStatus', () => {
-  it('未撤销、未过期且未达上限时判定为可用', () => {
+  it('未过期且未达上限时判定为可用', () => {
     expect(resolveShareCodeStatus(makeShareCode({}), 1_700_000_000)).toBe(
       'active'
     )
   })
 
-  it('撤销时间非零时优先判定为已撤销，即使同时已过期', () => {
+  it('同时已过期且次数用尽时优先判定为已过期', () => {
     const status = resolveShareCodeStatus(
-      makeShareCode({ revoked_at: 1_600_000_000, expires_at: 1_600_000_000 }),
+      makeShareCode({
+        expires_at: 1_600_000_000,
+        import_count: 5,
+        max_imports: 5,
+      }),
       1_700_000_000
     )
-    expect(status).toBe('revoked')
+    expect(status).toBe('expired')
   })
 
   it('到期时间早于当前时间时判定为已过期', () => {
@@ -77,6 +81,91 @@ describe('resolveShareCodeStatus', () => {
       1_700_000_000
     )
     expect(status).toBe('active')
+  })
+})
+
+describe('countShareableCandidates', () => {
+  it('内部候选全部计入分享快照', () => {
+    expect(
+      countShareableCandidates([
+        { source_type: 'internal' },
+        { source_type: 'internal' },
+      ])
+    ).toBe(2)
+  })
+
+  it('直填型自定义候选（没有引用上游条目）计入分享快照', () => {
+    expect(
+      countShareableCandidates([
+        { source_type: 'custom', upstream_model_id: null },
+        { source_type: 'custom', upstream_model_id: 0 },
+      ])
+    ).toBe(2)
+  })
+
+  it('引用型自定义候选会被后端整体省略，不计入分享快照', () => {
+    expect(
+      countShareableCandidates([
+        { source_type: 'custom', upstream_model_id: 42 },
+        { source_type: 'internal' },
+      ])
+    ).toBe(1)
+  })
+
+  it('候选全是引用型自定义时返回零，与后端拒绝分享的口径一致', () => {
+    expect(
+      countShareableCandidates([
+        { source_type: 'custom', upstream_model_id: 7 },
+        { source_type: 'custom', upstream_model_id: 8 },
+      ])
+    ).toBe(0)
+  })
+
+  it('未知来源类型不计入分享快照', () => {
+    expect(countShareableCandidates([{ source_type: 'mystery' }])).toBe(0)
+  })
+
+  it('候选列表为空或尚未加载时返回零而不是抛错', () => {
+    expect(countShareableCandidates([])).toBe(0)
+    expect(countShareableCandidates(undefined)).toBe(0)
+  })
+})
+
+describe('describeShareCodeError', () => {
+  it('后端错误码已登记时优先返回该码对应的本地化文案', () => {
+    const error = {
+      response: {
+        status: 400,
+        data: {
+          code: 'virtual_model_share_no_candidate',
+          message: '该方案没有可分享的候选，无法生成分享码',
+        },
+      },
+    }
+    expect(describeShareCodeError(error, '兜底', identityTranslator)).toBe(
+      'This plan has no shareable candidate.'
+    )
+  })
+
+  it('后端错误码未登记时回退到后端返回的说明', () => {
+    const error = {
+      response: {
+        status: 400,
+        data: { code: 'brand_new_code', message: '后端说明' },
+      },
+    }
+    expect(describeShareCodeError(error, '兜底', identityTranslator)).toBe(
+      '后端说明'
+    )
+  })
+
+  it('异常结构不可控时回退到调用方兜底文案', () => {
+    expect(describeShareCodeError(null, '兜底', identityTranslator)).toBe(
+      '兜底'
+    )
+    expect(describeShareCodeError('boom', '兜底', identityTranslator)).toBe(
+      '兜底'
+    )
   })
 })
 
@@ -130,9 +219,9 @@ describe('describeShareWarning', () => {
 describe('extractShareCodeErrorMessage', () => {
   it('优先取后端响应体里的 message', () => {
     const error = {
-      response: { status: 410, data: { message: '分享码已被撤销' } },
+      response: { status: 404, data: { message: '分享码已被删除' } },
     }
-    expect(extractShareCodeErrorMessage(error, '兜底')).toBe('分享码已被撤销')
+    expect(extractShareCodeErrorMessage(error, '兜底')).toBe('分享码已被删除')
   })
 
   it('响应体没有 message 时回退到 Error 自身的 message', () => {
@@ -154,11 +243,11 @@ describe('extractShareCodeErrorMessage', () => {
 })
 
 describe('isShareCodeGone', () => {
-  it('410 表示分享码已撤销、过期或用尽', () => {
+  it('410 表示分享码已过期或次数用尽', () => {
     expect(isShareCodeGone({ response: { status: 410 } })).toBe(true)
   })
 
-  it('404 表示分享码不存在，与已失效区分开', () => {
+  it('404 表示分享码不存在或已被删除，与已失效区分开', () => {
     expect(isShareCodeGone({ response: { status: 404 } })).toBe(false)
   })
 

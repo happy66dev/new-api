@@ -27,29 +27,30 @@ import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 
 import {
   createVirtualModelShareCode,
+  deleteVirtualModelShareCode,
   getVirtualModelShareCodes,
-  revokeVirtualModelShareCode,
   type VirtualModel,
   type VirtualModelShareCodeCreated,
   type VirtualModelShareCodeSummary,
 } from '../api'
 import {
-  extractShareCodeErrorMessage,
+  countShareableCandidates,
+  describeShareCodeError,
   resolveShareCodeStatus,
   shareCodeStatusTextKeys,
 } from '../lib/share-code'
 
-// ShareCodeRow 渲染单枚分享码及其状态与撤销入口喵。
+// ShareCodeRow 渲染单枚分享码及其状态与删除入口喵。
 function ShareCodeRow({
   shareCode,
   nowSeconds,
-  isRevoking,
-  onRevoke,
+  isDeleting,
+  onDelete,
 }: {
   shareCode: VirtualModelShareCodeSummary
   nowSeconds: number
-  isRevoking: boolean
-  onRevoke: (shareCodeID: number) => void
+  isDeleting: boolean
+  onDelete: (shareCodeID: number) => void
 }) {
   const { t } = useTranslation()
   const status = resolveShareCodeStatus(shareCode, nowSeconds)
@@ -65,20 +66,21 @@ function ShareCodeRow({
         <Badge variant={status === 'active' ? 'default' : 'secondary'}>
           {t(shareCodeStatusTextKeys[status])}
         </Badge>
+        {/* 删除是硬删除，但过期与已用尽的码同样允许清理，所以这里只受删除请求本身约束喵。 */}
         <Button
-          disabled={status !== 'active' || isRevoking}
-          onClick={() => onRevoke(shareCode.id)}
+          disabled={isDeleting}
+          onClick={() => onDelete(shareCode.id)}
           size='sm'
           variant='outline'
         >
-          {t('Revoke')}
+          {t('Delete')}
         </Button>
       </div>
     </div>
   )
 }
 
-// VirtualModelShareDialog 生成、查看并撤销某个虚拟模型的分享码喵。
+// VirtualModelShareDialog 生成、查看并删除某个虚拟模型的分享码喵。
 // 分享的是脱敏方案快照：内部候选原样，自定义候选只保留上游地址，API Key 永不出本机喵。
 export function VirtualModelShareDialog({
   model,
@@ -121,31 +123,41 @@ export function VirtualModelShareDialog({
       })
     },
     onError: (error) => {
+      // 后端对「方案没有可分享候选」会返回稳定错误码，优先用它取本地化文案喵。
       toast.error(
-        extractShareCodeErrorMessage(error, t('Unable to create share code'))
+        describeShareCodeError(error, t('Unable to create share code'), (key) =>
+          t(key)
+        )
       )
     },
   })
 
-  const revokeMutation = useMutation({
+  const deleteMutation = useMutation({
     mutationFn: async (shareCodeID: number) => {
-      const response = await revokeVirtualModelShareCode(shareCodeID)
+      const response = await deleteVirtualModelShareCode(shareCodeID)
       if (!response.success) {
-        throw new Error(response.message || t('Unable to revoke share code'))
+        throw new Error(response.message || t('Unable to delete share code'))
       }
     },
     onSuccess: () => {
-      toast.success(t('Share code revoked'))
+      toast.success(t('Share code deleted'))
       void queryClient.invalidateQueries({
         queryKey: ['virtual-models', 'share-codes'],
       })
     },
     onError: (error) => {
       toast.error(
-        extractShareCodeErrorMessage(error, t('Unable to revoke share code'))
+        describeShareCodeError(error, t('Unable to delete share code'), (key) =>
+          t(key)
+        )
       )
     },
   })
+
+  // shareableCandidateCount 统计真正能进快照的候选数量；为零时后端必然拒绝，前端先把按钮禁掉并给出说明喵。
+  const shareableCandidateCount = countShareableCandidates(model?.candidates)
+  // hasShareableCandidate 表示当前模型的方案是否可以分享喵。
+  const hasShareableCandidate = shareableCandidateCount > 0
 
   // nowSeconds 取打开弹窗那一刻的时间，用于判定过期；状态随列表刷新自然更新喵。
   const nowSeconds = Math.floor(Date.now() / 1000)
@@ -229,18 +241,31 @@ export function VirtualModelShareDialog({
               key={shareCode.id}
               shareCode={shareCode}
               nowSeconds={nowSeconds}
-              isRevoking={revokeMutation.isPending}
-              onRevoke={(shareCodeID) => revokeMutation.mutate(shareCodeID)}
+              isDeleting={deleteMutation.isPending}
+              onDelete={(shareCodeID) => deleteMutation.mutate(shareCodeID)}
             />
           ))}
         </div>
+
+        {/* 零候选方案生成分享码没有意义，后端也会直接拒绝，这里提前说明原因避免用户反复点击喵。 */}
+        {model && !hasShareableCandidate && (
+          <Alert variant='destructive'>
+            <AlertDescription>
+              {t(
+                'This plan has nothing to share. Add an internal candidate, or a custom candidate that carries its own upstream address, before generating a share code.'
+              )}
+            </AlertDescription>
+          </Alert>
+        )}
 
         <DialogFooter>
           <Button onClick={() => onOpenChange(false)} variant='outline'>
             {t('Close')}
           </Button>
           <Button
-            disabled={!model || createMutation.isPending}
+            disabled={
+              !model || !hasShareableCandidate || createMutation.isPending
+            }
             onClick={() => createMutation.mutate()}
           >
             {createMutation.isPending

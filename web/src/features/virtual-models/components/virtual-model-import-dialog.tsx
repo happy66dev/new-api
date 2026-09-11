@@ -29,7 +29,7 @@ import {
   precheckVirtualModelShareImport,
   type VirtualModelShareImportPreview,
 } from '../api'
-import { extractShareCodeErrorMessage } from '../lib/share-code'
+import { describeShareCodeError } from '../lib/share-code'
 import { VirtualModelShareSkippedList } from './virtual-model-share-skipped-list'
 
 // VirtualModelImportDialog 用分享码把别人的虚拟模型方案复制一份到当前账号喵。
@@ -76,8 +76,13 @@ export function VirtualModelImportDialog({
     onError: (error) => {
       // 预检失败要清掉旧结果，否则界面会显示与当前码不符的过时清单喵。
       setPreview(null)
+      // 后端对不存在／已删除／已过期／次数用尽给了不同错误码，这里按码取本地化文案喵。
       toast.error(
-        extractShareCodeErrorMessage(error, t('Unable to read the share code'))
+        describeShareCodeError(
+          error,
+          t('Unable to read the share code'),
+          (key) => t(key)
+        )
       )
     },
   })
@@ -106,8 +111,11 @@ export function VirtualModelImportDialog({
       onOpenChange(false)
     },
     onError: (error) => {
+      // 导入阶段可能撞上重名或候选全部不可用，同样按后端错误码取本地化文案喵。
       toast.error(
-        extractShareCodeErrorMessage(error, t('Unable to import the plan'))
+        describeShareCodeError(error, t('Unable to import the plan'), (key) =>
+          t(key)
+        )
       )
     },
   })

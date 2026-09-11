@@ -26,6 +26,7 @@ var virtualModelShareCodeEncoding = base32.StdEncoding.WithPadding(base32.NoPadd
 
 // VirtualModelShareCode 保存一份脱敏虚拟模型方案的分享码喵。
 // 只存"脱敏快照"，不存指向源模型的引用，因此源模型被改名或删除都不影响已发出的分享码喵。
+// 主人注意：撤销分享码即硬删除整行，因此本表不存在"已撤销"这种中间状态喵。
 type VirtualModelShareCode struct {
 	ID int `json:"id" gorm:"primaryKey"`
 	// Code 是分享码本体，全局唯一；导入方凭它读取快照喵。
@@ -52,8 +53,6 @@ type VirtualModelShareCode struct {
 	MaxImports int `json:"max_imports"`
 	// ExpiresAt 是分享码到期时间（Unix 秒），零表示永不过期喵。
 	ExpiresAt int64 `json:"expires_at" gorm:"bigint"`
-	// RevokedAt 是撤销时间（Unix 秒），非零即视为已作废喵。
-	RevokedAt int64 `json:"revoked_at" gorm:"bigint"`
 	CreatedTime int64 `json:"created_time" gorm:"bigint"`
 	DeletedAt gorm.DeletedAt `json:"-" gorm:"index"`
 }
@@ -196,19 +195,22 @@ func GetVirtualModelShareCodesByOwner(ownerUserID int, limit int) ([]VirtualMode
 	return shareCodes, queryError
 }
 
-// RevokeVirtualModelShareCode 撤销某用户自己的分享码，撤销后立即不可再导入喵。
-func RevokeVirtualModelShareCode(ownerUserID int, shareCodeID int) error {
-	// 喵~防御：撤销必须带所有者条件，避免越权撤销他人分享码喵。
+// DeleteVirtualModelShareCodeByOwner 删除某用户自己的分享码，删除后立即不可再导入喵。
+// 主人注意：这里是硬删除（Unscoped），既不保留"已撤销"的中间状态，
+// 也不给 code 唯一索引留下"查不到却占着键"的幽灵行喵。
+func DeleteVirtualModelShareCodeByOwner(ownerUserID int, shareCodeID int) error {
+	// 喵~防御：删除必须带所有者条件，避免越权删除他人分享码喵。
 	if ownerUserID <= 0 || shareCodeID <= 0 {
 		return gorm.ErrRecordNotFound
 	}
-	result := DB.Model(&VirtualModelShareCode{}).
-		Where("id = ? AND owner_user_id = ? AND revoked_at = ?", shareCodeID, ownerUserID, 0).
-		Update("revoked_at", common.GetTimestamp())
+	// 用 Unscoped 绕开软删除，让这一行真正从表里消失喵。
+	result := DB.Unscoped().
+		Where("id = ? AND owner_user_id = ?", shareCodeID, ownerUserID).
+		Delete(&VirtualModelShareCode{})
 	if result.Error != nil {
 		return result.Error
 	}
-	// 喵~防御：零行更新说明分享码不存在、不属于本人或已撤销，统一按未找到返回避免存在性泄露喵。
+	// 喵~防御：零行删除说明分享码不存在或不属于本人，统一按未找到返回避免存在性泄露喵。
 	if result.RowsAffected == 0 {
 		return gorm.ErrRecordNotFound
 	}

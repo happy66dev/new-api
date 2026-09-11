@@ -412,7 +412,8 @@ func TestImportVirtualModelShareCodeRejectsWhenNothingImportable(t *testing.T) {
 	assert.Zero(t, createdCount)
 }
 
-// TestLoadVirtualModelSharePayloadRejectsUnusableCodes 验证不存在、已撤销、已过期、次数用尽的分享码都被拒绝喵。
+// TestLoadVirtualModelSharePayloadRejectsUnusableCodes 验证不存在、已过期、次数用尽的分享码都被拒绝喵。
+// 撤销不在本用例范围内：撤销是硬删除，被撤销的码直接归入"不存在"这一档喵。
 func TestLoadVirtualModelSharePayloadRejectsUnusableCodes(t *testing.T) {
 	setupVirtualModelShareTestDB(t)
 	validPayload := &model.VirtualModelSharePayload{
@@ -432,9 +433,6 @@ func TestLoadVirtualModelSharePayloadRejectsUnusableCodes(t *testing.T) {
 		expectedCode int
 	}{
 		{name: "分享码不存在", code: "UNKNOWNCODE2345678", mutate: nil, expectedCode: http.StatusNotFound},
-		{name: "分享码已撤销", code: "REVOKEDCODE2345678", mutate: func(shareCode *model.VirtualModelShareCode) {
-			shareCode.RevokedAt = common.GetTimestamp()
-		}, expectedCode: http.StatusGone},
 		{name: "分享码已过期", code: "EXPIREDCODE2345678", mutate: func(shareCode *model.VirtualModelShareCode) {
 			shareCode.ExpiresAt = common.GetTimestamp() - 60
 		}, expectedCode: http.StatusGone},
@@ -461,25 +459,65 @@ func TestLoadVirtualModelSharePayloadRejectsUnusableCodes(t *testing.T) {
 	}
 }
 
-// TestRevokeVirtualModelShareCodeIsOwnerScoped 验证撤销只能作用于本人分享码喵。
-func TestRevokeVirtualModelShareCodeIsOwnerScoped(t *testing.T) {
+// TestDeleteVirtualModelShareCodeIsOwnerScoped 验证删除只能作用于本人分享码，
+// 且删除是硬删除——行真的从表里消失，再拿这枚码导入会得到"不存在"喵。
+func TestDeleteVirtualModelShareCodeIsOwnerScoped(t *testing.T) {
 	setupVirtualModelShareTestDB(t)
 	shareCode := &model.VirtualModelShareCode{
 		Code: "OWNERSCOPED23456789", OwnerUserID: 7, SourceVirtualModelID: 1,
 		DisplayName: "方案", Payload: `{"version":1,"candidates":[]}`,
-		Visibility:  model.VirtualModelShareVisibilityPrivate,
+		Visibility: model.VirtualModelShareVisibilityPrivate,
 	}
 	require.NoError(t, model.CreateVirtualModelShareCode(shareCode))
 
-	// 他人撤销必须失败且不改变记录喵。
-	assert.ErrorIs(t, model.RevokeVirtualModelShareCode(8, shareCode.ID), gorm.ErrRecordNotFound)
-	// 本人撤销成功，重复撤销按未找到处理（幂等）喵。
-	require.NoError(t, model.RevokeVirtualModelShareCode(7, shareCode.ID))
-	assert.ErrorIs(t, model.RevokeVirtualModelShareCode(7, shareCode.ID), gorm.ErrRecordNotFound)
+	// 他人删除必须失败，且不能影响这条记录喵。
+	assert.ErrorIs(t, model.DeleteVirtualModelShareCodeByOwner(8, shareCode.ID), gorm.ErrRecordNotFound)
+	var survivedCount int64
+	require.NoError(t, model.DB.Unscoped().Model(&model.VirtualModelShareCode{}).Where("id = ?", shareCode.ID).Count(&survivedCount).Error)
+	assert.Equal(t, int64(1), survivedCount)
 
-	reloadedShareCode := &model.VirtualModelShareCode{}
-	require.NoError(t, model.DB.Where("id = ?", shareCode.ID).First(reloadedShareCode).Error)
-	assert.NotZero(t, reloadedShareCode.RevokedAt)
+	// 本人删除成功，重复删除按未找到处理（幂等）喵。
+	require.NoError(t, model.DeleteVirtualModelShareCodeByOwner(7, shareCode.ID))
+	assert.ErrorIs(t, model.DeleteVirtualModelShareCodeByOwner(7, shareCode.ID), gorm.ErrRecordNotFound)
+
+	// 喵~防御：必须用 Unscoped 复查，才能证明是硬删除而不是软删除留了行喵。
+	var remainingCount int64
+	require.NoError(t, model.DB.Unscoped().Model(&model.VirtualModelShareCode{}).Where("id = ?", shareCode.ID).Count(&remainingCount).Error)
+	assert.Zero(t, remainingCount)
+
+	// 删除后的分享码立刻不可再导入喵。
+	ctx, _ := newVirtualModelShareContext(9, "default", "{}")
+	_, _, loaded := loadVirtualModelSharePayload(ctx, shareCode.Code)
+	assert.False(t, loaded)
+}
+
+// TestCreateVirtualModelShareCodeRejectsPlanWithoutCandidate 验证快照里一条候选都没有时禁止生成分享码喵。
+// 引用型自定义候选因归属问题会被整体省略，所以"只有引用型候选"的模型正好命中这个分支喵。
+func TestCreateVirtualModelShareCodeRejectsPlanWithoutCandidate(t *testing.T) {
+	setupVirtualModelShareTestDB(t)
+	virtualModel := &model.VirtualModel{
+		OwnerUserID: 7, NormalizedName: "vm-share-empty", DisplayName: "空方案",
+		Enabled: true, TotalTimeoutSeconds: 120, MaxLoopRounds: 1, CreatedTime: common.GetTimestamp(),
+	}
+	require.NoError(t, model.DB.Create(virtualModel).Error)
+	referenceUpstreamID := int64(42)
+	candidate := &model.VirtualModelCandidate{
+		VirtualModelID: virtualModel.ID, StableOrder: 0, SourceType: model.VirtualModelSourceCustom,
+		Enabled: true, TimeoutSeconds: 60,
+	}
+	require.NoError(t, model.DB.Create(candidate).Error)
+	require.NoError(t, model.DB.Create(&model.VirtualModelCustomCandidate{
+		CandidateID: candidate.ID, UpstreamModelID: &referenceUpstreamID, AuthStyle: model.VirtualModelAuthBearer,
+	}).Error)
+
+	ctx, recorder := newVirtualModelShareContext(7, "default", fmt.Sprintf(`{"virtual_model_id":%d}`, virtualModel.ID))
+	CreateVirtualModelShareCode(ctx)
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+
+	// 喵~防御：被拒绝的分享不能留下任何分享码记录喵。
+	var shareCodeCount int64
+	require.NoError(t, model.DB.Model(&model.VirtualModelShareCode{}).Where("owner_user_id = ?", 7).Count(&shareCodeCount).Error)
+	assert.Zero(t, shareCodeCount)
 }
 
 // TestResolveVirtualModelShareImportNameSuffixesOnConflict 验证未指定名称时自动追加序号避开冲突喵。

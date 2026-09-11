@@ -32,6 +32,18 @@ const serverErrorMessageKeys = {
   TELEGRAM_BIND_USER_DELETED: 'This user account no longer exists.',
   TELEGRAM_BIND_USER_DISABLED: 'This user account is disabled.',
   TELEGRAM_BIND_INTERNAL_ERROR: 'Telegram binding failed. Please try again.',
+  // 虚拟模型分享码相关错误：后端返回的是小写 code，这里按原样登记才能精确命中喵。
+  virtual_model_share_no_candidate: 'This plan has no shareable candidate.',
+  virtual_model_share_code_not_found:
+    'This share code does not exist or has been deleted.',
+  virtual_model_share_code_expired: 'This share code has expired.',
+  virtual_model_share_code_exhausted:
+    'This share code has reached its import limit.',
+  virtual_model_share_payload_invalid: 'This share code content is not valid.',
+  virtual_model_share_nothing_importable:
+    'No candidate in this share code is available to your account.',
+  virtual_model_name_conflict:
+    'That model name is already taken. Please choose another one.',
 } as const
 
 function isRecord(value: unknown): value is Record<string, unknown> {

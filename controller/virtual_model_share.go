@@ -275,6 +275,13 @@ func CreateVirtualModelShareCode(c *gin.Context) {
 		virtualModelShareUnavailable(c, buildError)
 		return
 	}
+	// 喵~防御：没有任何候选的方案分享出去对接收方毫无意义，直接拒绝生成分享码喵。
+	// 主人注意：判定口径是快照里的候选总数。自定义候选（需接收方自行补填凭据）也算候选，
+	// 只有引用型自定义候选因归属问题被整体省略，所以若一个模型只有这类候选，快照就会是 0 条喵。
+	if len(payload.Candidates) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "code": "virtual_model_share_no_candidate", "message": "该方案没有可分享的候选，无法生成分享码"})
+		return
+	}
 	encodedPayload, marshalError := common.Marshal(payload)
 	if marshalError != nil {
 		virtualModelShareUnavailable(c, marshalError)
@@ -351,34 +358,34 @@ func GetVirtualModelShareCodes(c *gin.Context) {
 	responses := make([]gin.H, 0, len(shareCodes))
 	for _, shareCode := range shareCodes {
 		responses = append(responses, gin.H{
-			"id":                 shareCode.ID,
-			"code":               shareCode.Code,
-			"display_name":       shareCode.DisplayName,
-			"import_count":       shareCode.ImportCount,
-			"max_imports":        shareCode.MaxImports,
-			"expires_at":         shareCode.ExpiresAt,
-			"revoked_at":         shareCode.RevokedAt,
-			"created_time":       shareCode.CreatedTime,
+			"id":           shareCode.ID,
+			"code":         shareCode.Code,
+			"display_name": shareCode.DisplayName,
+			"import_count": shareCode.ImportCount,
+			"max_imports":  shareCode.MaxImports,
+			"expires_at":   shareCode.ExpiresAt,
+			"created_time": shareCode.CreatedTime,
 		})
 	}
 	common.ApiSuccess(c, gin.H{"share_codes": responses, "total": len(responses)})
 }
 
-// RevokeVirtualModelShareCode 撤销当前用户自己的一枚分享码喵。
-func RevokeVirtualModelShareCode(c *gin.Context) {
+// DeleteVirtualModelShareCode 删除当前用户自己的一枚分享码喵。
+// 删除是硬删除：删完这一行就从库里消失，别人再拿这枚码导入会得到"分享码不存在"喵。
+func DeleteVirtualModelShareCode(c *gin.Context) {
 	shareCodeID, convertError := strconv.Atoi(c.Param("codeId"))
 	// 喵~防御：非数字或非正数一律按不存在处理，避免非法输入进入查询条件喵。
 	if convertError != nil || shareCodeID <= 0 {
 		virtualModelShareCodeNotFound(c)
 		return
 	}
-	if revokeError := model.RevokeVirtualModelShareCode(c.GetInt("id"), shareCodeID); revokeError != nil {
-		// 喵~防御：他人分享码、不存在和已撤销统一按同一个 404 处理，避免泄露他人分享码是否存在喵。
-		if errors.Is(revokeError, gorm.ErrRecordNotFound) {
+	if deleteError := model.DeleteVirtualModelShareCodeByOwner(c.GetInt("id"), shareCodeID); deleteError != nil {
+		// 喵~防御：他人分享码与不存在的分享码统一按同一个 404 处理，避免泄露他人分享码是否存在喵。
+		if errors.Is(deleteError, gorm.ErrRecordNotFound) {
 			virtualModelShareCodeNotFound(c)
 			return
 		}
-		virtualModelShareUnavailable(c, revokeError)
+		virtualModelShareUnavailable(c, deleteError)
 		return
 	}
 	common.ApiSuccess(c, gin.H{"id": shareCodeID})
@@ -386,7 +393,7 @@ func RevokeVirtualModelShareCode(c *gin.Context) {
 
 // virtualModelShareCodeNotFound 用统一 404 响应表示分享码不存在或已不可用喵。
 func virtualModelShareCodeNotFound(c *gin.Context) {
-	c.JSON(http.StatusNotFound, gin.H{"success": false, "code": "virtual_model_share_code_not_found", "message": "分享码不存在或已被撤销"})
+	c.JSON(http.StatusNotFound, gin.H{"success": false, "code": "virtual_model_share_code_not_found", "message": "分享码不存在或已被删除"})
 }
 
 // loadVirtualModelSharePayload 读取并校验分享码，返回记录与已解析的快照喵。
@@ -396,18 +403,15 @@ func loadVirtualModelSharePayload(c *gin.Context, rawCode string) (*model.Virtua
 	if queryError != nil {
 		// 喵~防御：不存在与数据库故障区分处理，前者 404 后者 503，避免把故障伪装成"码不对"喵。
 		if errors.Is(queryError, gorm.ErrRecordNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"success": false, "code": "virtual_model_share_code_not_found", "message": "分享码不存在或已被撤销"})
+			c.JSON(http.StatusNotFound, gin.H{"success": false, "code": "virtual_model_share_code_not_found", "message": "分享码不存在或已被删除"})
 			return nil, nil, false
 		}
 		virtualModelShareUnavailable(c, queryError)
 		return nil, nil, false
 	}
-	// 喵~防御：撤销、过期与超出导入次数都必须显式拒绝，不能用"查不到"含糊带过，
-	// 否则分享者无法判断是码写错了还是自己已经撤销了喵。
-	if shareCode.RevokedAt != 0 {
-		c.JSON(http.StatusGone, gin.H{"success": false, "code": "virtual_model_share_code_revoked", "message": "分享码已被撤销"})
-		return nil, nil, false
-	}
+	// 喵~防御：过期与超出导入次数都必须显式拒绝，不能用"查不到"含糊带过，
+	// 否则分享者无法判断是码写错了还是这枚码已经到期/用尽喵。
+	// 撤销走的路径不同：撤销是硬删除，被撤销的分享码在下一次查询时就已经"不存在"了喵。
 	if shareCode.ExpiresAt != 0 && shareCode.ExpiresAt <= common.GetTimestamp() {
 		c.JSON(http.StatusGone, gin.H{"success": false, "code": "virtual_model_share_code_expired", "message": "分享码已过期"})
 		return nil, nil, false

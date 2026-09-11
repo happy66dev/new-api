@@ -616,4 +616,13 @@ export const STATIC_I18N_KEYS = [
 
   // Virtual model share code status (selected dynamically by resolved status)
   'Import limit reached',
+
+  // Virtual model share code server error codes (selected dynamically by backend error code)
+  'This plan has no shareable candidate.',
+  'This share code does not exist or has been deleted.',
+  'This share code has expired.',
+  'This share code has reached its import limit.',
+  'This share code content is not valid.',
+  'No candidate in this share code is available to your account.',
+  'That model name is already taken. Please choose another one.',
 ] as const

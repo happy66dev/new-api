@@ -362,7 +362,7 @@ export type VirtualModelShareCodeCreated = {
   created_time: number
 }
 
-// VirtualModelShareCodeSummary 是分享码列表项，供分享者自查与撤销喵。
+// VirtualModelShareCodeSummary 是分享码列表项，供分享者自查与删除喵。
 export type VirtualModelShareCodeSummary = {
   id: number
   code: string
@@ -370,8 +370,6 @@ export type VirtualModelShareCodeSummary = {
   import_count: number
   max_imports: number
   expires_at: number
-  // revoked_at 非零表示该分享码已被撤销、不再可用喵。
-  revoked_at: number
   created_time: number
 }
 
@@ -433,17 +431,22 @@ export async function createVirtualModelShareCode(
 
 // getVirtualModelShareCodes 读取当前用户生成过的分享码，供撤销与自查喵。
 export async function getVirtualModelShareCodes(): Promise<
-  VirtualModelApiResponse<{ share_codes: VirtualModelShareCodeSummary[]; total: number }>
+  VirtualModelApiResponse<{
+    share_codes: VirtualModelShareCodeSummary[]
+    total: number
+  }>
 > {
   const response = await api.get('/api/virtual-models/share-codes')
   return response.data
 }
 
-// revokeVirtualModelShareCode 撤销自己的一枚分享码，撤销后不可再导入喵。
-export async function revokeVirtualModelShareCode(
+// deleteVirtualModelShareCode 删除自己的一枚分享码；删除后这枚码立即不可再导入喵。
+export async function deleteVirtualModelShareCode(
   shareCodeID: number
 ): Promise<VirtualModelApiResponse<{ id: number }>> {
-  const response = await api.delete(`/api/virtual-models/share-codes/${shareCodeID}`)
+  const response = await api.delete(
+    `/api/virtual-models/share-codes/${shareCodeID}`
+  )
   return response.data
 }
 
