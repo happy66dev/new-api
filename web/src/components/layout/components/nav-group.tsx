@@ -145,6 +145,7 @@ function SidebarMenuLink({ item, href }: { item: NavLink; href: string }) {
       >
         {item.icon && <item.icon className='shrink-0' />}
         <span className='min-w-0 flex-1 truncate'>{item.title}</span>
+        {item.dot && <span className='size-2 shrink-0 rounded-full bg-red-500' aria-hidden='true' />}
         {item.badge && <NavBadge>{item.badge}</NavBadge>}
       </SidebarMenuButton>
     </SidebarMenuItem>
@@ -188,6 +189,7 @@ function SidebarMenuCollapsible({
       >
         {item.icon && <item.icon className='shrink-0' />}
         <span className='min-w-0 flex-1 truncate'>{item.title}</span>
+        {item.dot && <span className='size-2 shrink-0 rounded-full bg-red-500' aria-hidden='true' />}
         {item.badge && <NavBadge>{item.badge}</NavBadge>}
         <ChevronRight className='ms-auto size-4 shrink-0 transition-transform duration-200 group-data-[panel-open]/collapsible-trigger:rotate-90' />
       </CollapsibleTrigger>
@@ -241,6 +243,7 @@ function SidebarMenuCollapsedDropdown({
         >
           {item.icon && <item.icon className='shrink-0' />}
           <span className='min-w-0 flex-1 truncate'>{item.title}</span>
+          {item.dot && <span className='size-2 shrink-0 rounded-full bg-red-500' aria-hidden='true' />}
           {item.badge && <NavBadge>{item.badge}</NavBadge>}
           <ChevronRight className='ms-auto size-4 shrink-0 transition-transform duration-200 group-data-[popup-open]/dropdown-trigger:rotate-90' />
         </DropdownMenuTrigger>

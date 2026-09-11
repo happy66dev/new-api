@@ -52,6 +52,12 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 import { getUserGroups, getUserModels } from '@/features/playground/api'
 import { shouldClearModelForGroup } from '@/features/playground/lib/options/playground-option-utils'
 import { EntityStatusDot, type EntityStatusSummary } from '@/features/status-check/entity-status-dot'
@@ -69,6 +75,7 @@ import {
   type VirtualModelCandidateInput,
   type VirtualModelFailureRule,
 } from '../api'
+import { useVirtualModelAnomalies } from '../hooks/use-virtual-model-anomalies'
 import { VirtualModelCandidateFailureRulesEditor } from './virtual-model-candidate-failure-rules-editor'
 
 // CandidateDraft 仅保存编辑候选链需要的字段；已有自定义候选的密钥不回填到草稿喵。
@@ -548,6 +555,8 @@ export function VirtualModelCandidatesEditor({
     },
     [selectedCandidateID, model.candidates, stableEmptyFailureRules]
   )
+  // 候选被动变化未读异常：逐候选红点提示不可用原因喵。
+  const { unreadByCandidateId } = useVirtualModelAnomalies()
 
   return (
     <div className='space-y-4'>
@@ -588,6 +597,21 @@ export function VirtualModelCandidatesEditor({
               <Badge variant={candidate.sourceType === 'internal' ? 'outline' : 'secondary'}>
                 {candidate.sourceType === 'internal' ? t('Internal') : t('Custom')}
               </Badge>
+              {/* 候选被动变化未读红点：悬停显示后端原因说明喵。 */}
+              {candidate.id !== undefined && unreadByCandidateId.has(candidate.id) && (
+                <TooltipProvider delay={300}>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <span className='size-2 shrink-0 rounded-full bg-red-500' aria-hidden='true' />
+                      }
+                    />
+                    <TooltipContent>
+                      {unreadByCandidateId.get(candidate.id)?.reason_message}
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              )}
               <span className='min-w-0 flex-1 truncate font-medium'>{candidateDisplayName(candidate)}</span>
               {/* url+key 候选节点补显示上游地址摘要，方便区分同名不同上游的节点喵。 */}
               {candidateBaseURL(candidate) && (

@@ -15,6 +15,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { getVirtualModelStatus, getVirtualModels } from '@/features/virtual-models/api'
+import { VirtualModelAnomalyDialog } from '@/features/virtual-models/components/virtual-model-anomaly-dialog'
 import { VirtualModelBindingsEditor } from '@/features/virtual-models/components/virtual-model-bindings-editor'
 import { VirtualModelCandidatesEditor } from '@/features/virtual-models/components/virtual-model-candidates-editor'
 import { VirtualModelDeleteDialog } from '@/features/virtual-models/components/virtual-model-dialogs'
@@ -23,6 +24,7 @@ import { VirtualModelImportDialog } from '@/features/virtual-models/components/v
 import { VirtualModelShareDialog } from '@/features/virtual-models/components/virtual-model-share-dialog'
 import { VirtualModelGlobalFailureRulesEditor } from '@/features/virtual-models/components/virtual-model-global-failure-rules-editor'
 import { VirtualModelOverviewStatus } from '@/features/virtual-models/components/virtual-model-overview-status'
+import { useVirtualModelAnomalies } from '@/features/virtual-models/hooks/use-virtual-model-anomalies'
 
 export function VirtualModels() {
   const { t } = useTranslation()
@@ -59,6 +61,8 @@ export function VirtualModels() {
         : false,
   })
   const virtualModelStatus = virtualModelStatusQuery.data?.data
+  // 候选被动变化未读异常：列表卡片红点与异常提醒弹层共用这一份数据喵。
+  const { unreadByModelId } = useVirtualModelAnomalies()
 
   const openCreateDrawer = () => {
     // 创建模式不绑定任何已有模型喵。
@@ -112,7 +116,12 @@ export function VirtualModels() {
                 onClick={() => setSelectedModelId(item.id)}
                 type='button'
               >
-                <span className='truncate'>{item.display_name || item.normalized_name}</span>
+                <span className='flex min-w-0 items-center gap-2'>
+                  {unreadByModelId.has(item.id) && (
+                    <span className='size-2 shrink-0 rounded-full bg-red-500' aria-hidden='true' />
+                  )}
+                  <span className='truncate'>{item.display_name || item.normalized_name}</span>
+                </span>
                 <div className='flex shrink-0 items-center gap-2'>
                   <Badge variant={item.enabled ? 'default' : 'secondary'}>{item.enabled ? t('Enabled') : t('Disabled')}</Badge>
                   <Badge variant='outline'>{item.candidates?.length ?? 0}</Badge>
@@ -209,6 +218,8 @@ export function VirtualModels() {
           open={isImportDialogOpen}
           onOpenChange={setIsImportDialogOpen}
         />
+        {/* 被动变化异常提醒：进入页面有未读异常时自动弹出，关闭后标记已读喵。 */}
+        <VirtualModelAnomalyDialog />
       </SectionPageLayout.Content>
     </SectionPageLayout>
   )

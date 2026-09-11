@@ -300,6 +300,8 @@ func SetApiRouter(router *gin.Engine) {
 		{
 			virtualModelRoute.GET("", controller.GetVirtualModels)
 			virtualModelRoute.POST("", controller.CreateVirtualModel)
+			// 候选被动变化扫描：只读返回当前用户异常候选清单，供前端红点提醒；禁用缓存保证轮询拿到最新值喵。
+			virtualModelRoute.GET("/anomalies", middleware.DisableCache(), controller.GetVirtualModelAnomalies)
 			virtualModelRoute.GET("/:id", controller.GetVirtualModel)
 			virtualModelRoute.PUT("/:id", controller.UpdateVirtualModel)
 			virtualModelRoute.DELETE("/:id", controller.DeleteVirtualModel)

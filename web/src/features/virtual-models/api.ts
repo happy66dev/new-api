@@ -474,3 +474,31 @@ export async function importVirtualModelShareCode(input: {
   })
   return response.data
 }
+
+// VirtualModelAnomaly 是候选被动变化异常项，供红点提醒与弹层展示喵。
+export type VirtualModelAnomaly = {
+  // virtual_model_id 与 virtual_model_name 定位所属虚拟模型喵。
+  virtual_model_id: number
+  virtual_model_name: string
+  // candidate_id 定位候选，供逐候选展示红点喵。
+  candidate_id: number
+  source_type: string
+  // group_name 与 real_model_name 是候选路由目标，供定位具体异常项喵。
+  group_name?: string
+  real_model_name?: string
+  // reason_code 是稳定机器可读原因码，前端据此查 i18n 文案喵。
+  reason_code: string
+  // reason_message 是后端中文兜底说明，仅在原因码未知时使用喵。
+  reason_message: string
+}
+
+// getVirtualModelAnomalies 读取当前用户虚拟模型候选的被动异常清单喵。
+// 扫描是只读操作，失败时由页面内联处理而非全局 toast，避免轮询失败反复弹窗喵。
+export async function getVirtualModelAnomalies(): Promise<
+  VirtualModelApiResponse<{ anomalies: VirtualModelAnomaly[] }>
+> {
+  const response = await api.get('/api/virtual-models/anomalies', {
+    skipErrorHandler: true,
+  })
+  return response.data
+}

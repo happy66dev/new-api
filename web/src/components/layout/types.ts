@@ -29,6 +29,10 @@ type BaseNavItem = {
   activeUrls?: (LinkProps['to'] | (string & {}))[]
   configUrls?: (LinkProps['to'] | (string & {}))[]
   /**
+   * dot 表示该项需要显示一个红色通知圆点，用于「有未读内容但无需数字」的场景喵。
+   */
+  dot?: boolean
+  /**
    * Minimum role required to see this item in the sidebar. When set, the item
    * is hidden for users whose role is below this threshold (see
    * `useSidebarView`). Route-level guards still enforce access independently.

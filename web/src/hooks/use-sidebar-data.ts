@@ -43,6 +43,7 @@ import { useTranslation } from 'react-i18next'
 
 import type { SidebarData } from '@/components/layout/types'
 import { getSupportUnreadCount } from '@/features/support/api'
+import { useVirtualModelAnomalies } from '@/features/virtual-models/hooks/use-virtual-model-anomalies'
 import { getCustomTabIcon, parseCustomTabs } from '@/lib/custom-tabs'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
@@ -73,6 +74,8 @@ export function useSidebarData(): SidebarData {
     retry: false,
   })
   const supportUnreadCount = supportUnreadQuery.data?.data?.count || 0
+  // 虚拟模型候选被动变化未读数：有未读异常时给侧边栏菜单项亮红点喵。
+  const { hasUnread: virtualModelAnomalyHasUnread } = useVirtualModelAnomalies()
 
   const customTabs = useMemo(
     () => parseCustomTabs(status?.custom_tabs),
@@ -136,6 +139,7 @@ export function useSidebarData(): SidebarData {
               title: t('Virtual Models'),
               url: '/virtual-models',
               icon: Radio,
+              dot: virtualModelAnomalyHasUnread,
             },
             ...(userUpstreamEnabled
               ? [
@@ -249,5 +253,5 @@ export function useSidebarData(): SidebarData {
         },
       ],
     }
-  }, [customTabs, supportEnabled, supportUnreadCount, userUpstreamEnabled, t])
+  }, [customTabs, supportEnabled, supportUnreadCount, userUpstreamEnabled, virtualModelAnomalyHasUnread, t])
 }
