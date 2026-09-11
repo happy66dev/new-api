@@ -31,7 +31,7 @@ type upstreamModelInput struct {
 	AuthStyle     string `json:"auth_style"`
 	// APIType 上游 API 类型：openai=OpenAI 兼容（默认）/anthropic=Anthropic 原生，决定 relay 格式转换方向喵。
 	APIType string `json:"api_type"`
-	// TimeoutSeconds 自用调用超时，单位：秒；零表示使用默认 60 秒喵。
+	// TimeoutSeconds 自用调用超时，单位：秒；零或超出硬顶表示使用默认 600 秒硬顶喵。
 	TimeoutSeconds       int    `json:"timeout_seconds"`
 	CustomHeaders        string `json:"custom_headers"`
 	FieldReplacements    string `json:"field_replacements"`
@@ -224,7 +224,7 @@ func saveUpstreamModelFields(input upstreamModelInput, ownerUserID int, existing
 		return err
 	}
 	existing.CustomHeaders = input.CustomHeaders
-	// 喵~防御：超时必须在安全范围内，零表示使用默认 60 秒喵。
+	// 喵~防御：超时必须在安全范围内，零或超出硬顶表示使用默认 600 秒硬顶喵。
 	if input.TimeoutSeconds < 0 || input.TimeoutSeconds > 600 {
 		return errors.New("超时必须在 0 到 600 秒之间")
 	}

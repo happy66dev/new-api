@@ -87,7 +87,7 @@ func TestSaveUpstreamModelFieldsTimeoutBounds(t *testing.T) {
 		AuthStyle:      "bearer",
 		Version:        1,
 	}
-	// 零值表示沿用默认 60 秒，必须允许保存喵。
+	// 零值表示沿用默认 600 秒硬顶，必须允许保存喵。
 	validInput.TimeoutSeconds = 0
 	zeroExisting := newExisting()
 	require.NoError(t, saveUpstreamModelFields(validInput, 7, zeroExisting))

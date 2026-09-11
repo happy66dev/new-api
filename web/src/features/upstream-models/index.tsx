@@ -241,7 +241,7 @@ function UpstreamModelDrawer({
       toast.error(t('Request customization JSON is invalid'))
       return
     }
-    // 喵~防御：超时秒数必须是非负整数且不超过 600，空串表示使用默认 60 秒喵。
+    // 喵~防御：超时秒数必须是非负整数且不超过 600，空串表示使用默认 600 秒硬顶喵。
     let resolvedTimeoutSeconds = 0
     if (timeoutSeconds.trim() !== '') {
       const parsedTimeout = Number(timeoutSeconds)
@@ -458,7 +458,7 @@ function UpstreamModelDrawer({
             />
             <label className='grid gap-1 text-sm font-medium'>
               {t('Timeout seconds')}
-              <Input inputMode='numeric' value={timeoutSeconds} disabled={isSaving} placeholder={t('0 = default 60 seconds')} onChange={(event) => setTimeoutSeconds(event.target.value)} />
+              <Input inputMode='numeric' value={timeoutSeconds} disabled={isSaving} placeholder={t('0 = default 600 seconds hard cap')} onChange={(event) => setTimeoutSeconds(event.target.value)} />
               <span className='text-muted-foreground text-xs'>
                 {t('Seconds before an upstream request is judged timed out')}
               </span>

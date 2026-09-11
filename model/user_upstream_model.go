@@ -47,7 +47,7 @@ type UserUpstreamModel struct {
 	AuthStyle          string `json:"auth_style" gorm:"type:varchar(32)"`
 	// APIType 上游 API 类型：openai（默认，OpenAI 兼容）或 anthropic（Anthropic 原生），决定 relay 格式转换方向喵。
 	APIType string `json:"api_type" gorm:"type:varchar(16);default:'openai'"`
-	// TimeoutSeconds 自用调用超时，单位：秒；零表示使用默认 60 秒喵。
+	// TimeoutSeconds 自用调用超时，单位：秒；零或超出硬顶表示使用默认 600 秒硬顶喵。
 	TimeoutSeconds int `json:"timeout_seconds"`
 	// 自定义请求头：结构化 JSON，如 {"*": true, "User-Agent": "Kilo-Code/7.3.50"}，* 表示对全部请求生效喵。
 	// 认证头与 hop-by-hop 头禁止设置（由 auth_style 与代理语义管理），其余键会覆盖客户端同名头喵。
