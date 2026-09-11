@@ -105,3 +105,47 @@ func TestApplyUserUpstreamModelDeadlineCancelClosesContext(t *testing.T) {
 		t.Fatal("cancel function should close the request context")
 	}
 }
+
+// TestResolveCustomCandidateExecutionTimeoutSeconds 验证自定义候选执行超时的来源口径喵。
+// 核心回归：引用自定义上游的 url+key 节点以被引用条目为准（未配置回退 600s 硬顶），
+// 不再被候选级超时（默认 60s）抢先；失败规则显式配置的超时阈值仍然优先喵。
+func TestResolveCustomCandidateExecutionTimeoutSeconds(t *testing.T) {
+	tests := []struct {
+		name                   string
+		candidateRules         []model.VirtualModelFailureRule
+		globalRules            []model.VirtualModelFailureRule
+		hasUpstreamReference   bool
+		upstreamTimeoutSeconds int
+		candidateTimeoutSecond int
+		want                   int
+	}{
+		{name: "direct fill keeps candidate timeout", hasUpstreamReference: false, candidateTimeoutSecond: 60, want: 60},
+		{name: "direct fill keeps candidate hard cap", hasUpstreamReference: false, candidateTimeoutSecond: 600, want: 600},
+		// 喵~关键回归：条目未配置超时（0=600 硬顶）时，候选的 60s 不得抢先喵。
+		{name: "referenced upstream unset wins over candidate timeout", hasUpstreamReference: true, upstreamTimeoutSeconds: 0, candidateTimeoutSecond: 60, want: 600},
+		{name: "referenced upstream unset wins over one second candidate timeout", hasUpstreamReference: true, upstreamTimeoutSeconds: 0, candidateTimeoutSecond: 1, want: 600},
+		{name: "referenced upstream explicit timeout kept", hasUpstreamReference: true, upstreamTimeoutSeconds: 90, candidateTimeoutSecond: 60, want: 90},
+		{name: "referenced upstream above hard cap falls back", hasUpstreamReference: true, upstreamTimeoutSeconds: 601, candidateTimeoutSecond: 60, want: 600},
+		{name: "referenced upstream negative falls back to hard cap", hasUpstreamReference: true, upstreamTimeoutSeconds: -5, candidateTimeoutSecond: 60, want: 600},
+		// 失败规则显式配置的超时阈值对两种来源都优先喵。
+		{
+			name:                   "candidate failure rule timeout wins for referenced upstream",
+			candidateRules:         []model.VirtualModelFailureRule{{TimeoutSeconds: 30}},
+			hasUpstreamReference:   true,
+			candidateTimeoutSecond: 60,
+			want:                   30,
+		},
+		{
+			name:                   "global failure rule timeout wins for direct fill",
+			globalRules:            []model.VirtualModelFailureRule{{TimeoutSeconds: 120}},
+			hasUpstreamReference:   false,
+			candidateTimeoutSecond: 60,
+			want:                   120,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, resolveCustomCandidateExecutionTimeoutSeconds(tc.candidateRules, tc.globalRules, tc.hasUpstreamReference, tc.upstreamTimeoutSeconds, tc.candidateTimeoutSecond))
+		})
+	}
+}

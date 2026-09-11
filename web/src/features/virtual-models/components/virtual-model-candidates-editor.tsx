@@ -76,6 +76,8 @@ type CandidateDraft = {
   apiKey: string
   authStyle: VirtualModelCandidateAuthStyle
   baseURL: string
+  // baseURLSummary 服务端返回的脱敏地址摘要（仅 scheme+host），只用于调用链展示，绝不参与保存喵。
+  baseURLSummary: string
   enabled: boolean
   // frozenUntil 当前手动冻结到期时间（Unix 秒），零表示未冻结，用于展示已冻结徽章喵。
   frozenUntil: number
@@ -109,6 +111,8 @@ function toCandidateDraft(candidate: VirtualModelCandidate): CandidateDraft {
     authStyle: candidate.auth_style ?? 'bearer',
     // 喵~防御：响应中的 base_url 仅是脱敏摘要，不能回传覆盖真实加密地址，因此既有候选草稿保持为空喵。
     baseURL: candidate.id ? '' : (candidate.base_url ?? ''),
+    // 脱敏摘要单独留存：调用链候选行展示地址时只读它，保存时不会把它当真实地址回传喵。
+    baseURLSummary: candidate.base_url ?? '',
     enabled: candidate.enabled,
     frozenUntil: candidate.frozen_until ?? 0,
     groupName: candidate.group_name ?? '',
@@ -127,6 +131,7 @@ function createCandidateDraft(sourceType: 'internal' | 'custom'): CandidateDraft
     apiKey: '',
     authStyle: 'bearer',
     baseURL: '',
+    baseURLSummary: '',
     enabled: true,
     frozenUntil: 0,
     groupName: '',
@@ -363,6 +368,20 @@ export function VirtualModelCandidatesEditor({
     return candidate.realModelName.trim() || t('Unnamed candidate')
   }
 
+  // candidateBaseURL 生成调用链候选行展示的上游地址喵。
+  // 内部候选没有上游地址，返回空串；引用用户上游模型时用条目地址；
+  // 直填候选优先用服务端脱敏摘要（仅 scheme+host），新建草稿则用主人刚填写的地址喵。
+  const candidateBaseURL = (candidate: CandidateDraft) => {
+    if (candidate.sourceType !== 'custom') {
+      return ''
+    }
+    if (candidate.upstreamModelID) {
+      const referencedModel = upstreamModels.find((upstreamItem) => upstreamItem.id === candidate.upstreamModelID)
+      return referencedModel?.base_url ?? ''
+    }
+    return candidate.baseURLSummary || candidate.baseURL.trim()
+  }
+
   const updateCandidate = (index: number, patch: Partial<CandidateDraft>) => {
     setDraftCandidates((currentCandidates) =>
       currentCandidates.map((candidate, candidateIndex) =>
@@ -570,6 +589,12 @@ export function VirtualModelCandidatesEditor({
                 {candidate.sourceType === 'internal' ? t('Internal') : t('Custom')}
               </Badge>
               <span className='min-w-0 flex-1 truncate font-medium'>{candidateDisplayName(candidate)}</span>
+              {/* url+key 候选节点补显示上游地址摘要，方便区分同名不同上游的节点喵。 */}
+              {candidateBaseURL(candidate) && (
+                <span className='text-muted-foreground max-w-[14rem] min-w-0 truncate text-xs' title={candidateBaseURL(candidate)}>
+                  {candidateBaseURL(candidate)}
+                </span>
+              )}
               <Badge variant={candidate.enabled ? 'default' : 'secondary'}>{candidate.enabled ? t('Enabled') : t('Disabled')}</Badge>
               {/* 已冻结候选展示冻结徽章与剩余分钟，方便运维快速识别不可用节点喵。 */}
               {candidate.frozenUntil > Math.floor(Date.now() / 1000) && (

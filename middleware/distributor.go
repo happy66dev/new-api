@@ -1229,6 +1229,22 @@ func recordVirtualModelCustomCommittedFailure(c *gin.Context, candidate *model.V
 	RecordVirtualModelOverallFailure(c, failure.ErrorClass, http.StatusBadGateway)
 }
 
+// resolveCustomCandidateExecutionTimeoutSeconds 解析一次自定义候选执行的墙钟超时（秒）喵。
+// 输入：候选级失败规则、模型级全局失败规则、候选是否引用自定义上游、被引用条目的超时配置、候选级超时喵。
+// 输出：最终执行超时（秒），无论候选来源如何都不会超过 600 秒硬顶喵。
+// 规则：失败规则显式配置的超时阈值优先（让「超过 N 秒判定超时」真正生效）；
+// 未配置时，引用自定义上游的候选以被引用条目为准（未配置、负数或超出硬顶一律回退 600s 硬顶），
+// 直填 url+key 的候选回退候选级超时，与自用上游共用同一 600s 硬超时口径喵。
+func resolveCustomCandidateExecutionTimeoutSeconds(candidateRules []model.VirtualModelFailureRule, globalRules []model.VirtualModelFailureRule, hasUpstreamReference bool, upstreamModelTimeoutSeconds int, candidateTimeoutSeconds int) int {
+	// 兜底值默认取候选级超时，覆盖直填 url+key 节点与未引用上游的历史语义喵。
+	fallbackTimeoutSeconds := candidateTimeoutSeconds
+	// 引用自定义上游的 url+key 节点：超时以被引用条目为准，并复用自用上游的 600s 硬顶规整喵。
+	if hasUpstreamReference {
+		fallbackTimeoutSeconds = resolveUserUpstreamModelTimeoutSeconds(upstreamModelTimeoutSeconds)
+	}
+	return virtualmodelservice.ResolveFailureTimeoutSeconds(candidateRules, globalRules, fallbackTimeoutSeconds)
+}
+
 // executeCustomVirtualModelCandidate 在当前 middleware 生命周期内安全完成单次自定义候选透传喵。
 // executionSnapshot 提供候选级与模型级全局兜底失败规则，候选未配置规则时自动回退全局规则喵。
 func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.VirtualModelInternalCandidateSnapshot, executionSnapshot *model.VirtualModelExecutionSnapshot) bool {
@@ -1241,11 +1257,11 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 	startTime := time.Now()
 	// 从候选级与模型级全局失败规则解析流式探测参数，供候选透传的放流前探测使用喵。
 	probeParameters := virtualmodelservice.ResolveProbeParameters(executionSnapshot.FailureRulesByCandidateID[candidate.CandidateID], executionSnapshot.GlobalFailureRules)
-	// 从失败规则解析超时条件判定阈值，非零时覆盖候选级执行超时，让「超过 N 秒判定超时」真正生效喵。
-	ruleTimeoutSeconds := virtualmodelservice.ResolveFailureTimeoutSeconds(executionSnapshot.FailureRulesByCandidateID[candidate.CandidateID], executionSnapshot.GlobalFailureRules, candidate.TimeoutSeconds)
 	// 解析候选执行来源：引用用户上游模型条目或直填凭据喵。
 	hasUpstreamReference := candidate.UpstreamModelID != nil && *candidate.UpstreamModelID > 0
 	var referencedUpstreamModel *model.UserUpstreamModel
+	// referencedUpstreamTimeoutSeconds 记录被引用自定义上游条目配置的调用超时（秒），供候选执行超时兜底使用喵。
+	var referencedUpstreamTimeoutSeconds int
 	var baseURL string
 	var apiKey string
 	candidateRealModelName := candidate.RealModelName
@@ -1278,6 +1294,8 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 		apiKey = decryptedAPIKey
 		candidateRealModelName = referencedUpstreamModel.RealModelName
 		candidateAuthStyle = model.VirtualModelAuthStyle(referencedUpstreamModel.AuthStyle)
+		// 记录条目配置的调用超时：未配置为零，由执行超时解析统一回退 600s 硬顶喵。
+		referencedUpstreamTimeoutSeconds = referencedUpstreamModel.TimeoutSeconds
 		// 活跃请求标签补全：引用上游候选的快照 RealModelName 可能为空，解析出真实模型名后更新运行状态，
 		// 让「正在选择候选」在候选开始被调用时转为「正在调用 <真实模型名>」喵。
 		displayLabel := candidateRealModelName
@@ -1305,6 +1323,10 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 		baseURL = decryptedBaseURL
 		apiKey = decryptedAPIKey
 	}
+	// 候选执行墙钟超时：失败规则显式配置的超时阈值优先，未配置时按候选来源取兜底值喵。
+	// 引用自定义上游的 url+key 节点以被引用条目的超时为准（未配置或超出硬顶一律回退 600s 硬顶，最大值 600 秒），
+	// 直填 url+key 的节点回退候选级超时，保证「超过 N 秒判定超时」与节点自身配置都真正生效喵。
+	ruleTimeoutSeconds := resolveCustomCandidateExecutionTimeoutSeconds(executionSnapshot.FailureRulesByCandidateID[candidate.CandidateID], executionSnapshot.GlobalFailureRules, hasUpstreamReference, referencedUpstreamTimeoutSeconds, candidate.TimeoutSeconds)
 	// 候选级与模型级全局兜底规则均随请求快照传入，禁止在候选执行期间二次读取已可能被控制面替换的规则喵。
 	maximumRetries := candidate.MaxRetries
 	// 喵~防御：自定义候选重试次数与控制面上限一致，并由总请求 deadline 进一步约束喵。
