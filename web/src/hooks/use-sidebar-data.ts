@@ -20,6 +20,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   Activity,
   Box,
+  ClipboardList,
   CreditCard,
   Cpu,
   FileText,
@@ -33,6 +34,7 @@ import {
   Radio,
   ServerCog,
   Settings,
+  ShieldCheck,
   Ticket,
   User,
   Users,
@@ -155,6 +157,12 @@ export function useSidebarData(): SidebarData {
               url: '/usage-logs/common',
               icon: FileText,
             },
+            // 审计日志入口（上游引入）：管理操作留痕页面，路由 /usage-logs/audit 由路由树提供喵。
+            {
+              title: t('Audit Logs'),
+              url: '/usage-logs/audit',
+              icon: ClipboardList,
+            },
             {
               title: t('Task Logs'),
               url: '/usage-logs/task',
@@ -193,6 +201,12 @@ export function useSidebarData(): SidebarData {
               title: t('Profile'),
               url: '/profile',
               icon: User,
+            },
+            // 安全与访问入口（上游引入）：登录设备、密钥等安全设置页，路由 /security 由路由树提供喵。
+            {
+              title: t('Security & Access'),
+              url: '/security',
+              icon: ShieldCheck,
             },
             ...customTabs
               .filter((tab) => tab.category === 'personal')

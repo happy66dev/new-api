@@ -43,6 +43,8 @@ import {
   getDiscountLabel,
   getPaymentIcon,
   getMinTopupAmount,
+  getPaymentMethodMinTopup,
+  getTopupPaymentMethods,
   calculatePresetPricing,
 } from '../lib'
 import type {
@@ -85,6 +87,8 @@ interface RechargeFormCardProps {
   onWaffoMethodSelect?: (method: WaffoPayMethod, index: number) => void
   enableWaffoPancakeTopup?: boolean
   enableMoneroTopup?: boolean
+  enableNowPaymentsTopup?: boolean
+  nowPaymentsCurrencies?: string[]
 }
 
 export function RechargeFormCard({
@@ -118,6 +122,8 @@ export function RechargeFormCard({
   onWaffoMethodSelect,
   enableWaffoPancakeTopup,
   enableMoneroTopup,
+  enableNowPaymentsTopup,
+  nowPaymentsCurrencies = [],
 }: RechargeFormCardProps) {
   const { t } = useTranslation()
   const [localAmount, setLocalAmount] = useState(topupAmount.toString())
@@ -137,15 +143,22 @@ export function RechargeFormCard({
     }
   }
 
+  const hasNowPayments =
+    Boolean(enableNowPaymentsTopup) && nowPaymentsCurrencies.length > 0
+  const paymentMethods = getTopupPaymentMethods(
+    topupInfo,
+    hasNowPayments,
+    nowPaymentsCurrencies
+  )
   const hasConfigurableTopup =
     topupInfo?.enable_online_topup ||
     topupInfo?.enable_stripe_topup ||
     enableWaffoTopup ||
     enableWaffoPancakeTopup ||
-    enableMoneroTopup
+    enableMoneroTopup ||
+    hasNowPayments
   const hasAnyTopup = hasConfigurableTopup || enableCreemTopup
-  const hasStandardPaymentMethods =
-    Array.isArray(topupInfo?.pay_methods) && topupInfo.pay_methods.length > 0
+  const hasStandardPaymentMethods = paymentMethods.length > 0
   const hasWaffoPaymentMethods =
     Array.isArray(waffoPayMethods) && waffoPayMethods.length > 0
   const minTopup = getMinTopupAmount(topupInfo)
@@ -293,7 +306,8 @@ export function RechargeFormCard({
                             {hasDiscount && savedAmount > 0 && (
                               <span className='text-green-600'>
                                 {' '}
-                                • {t('Save amount')} {formatCurrency(savedAmount)}
+                                • {t('Save amount')}{' '}
+                                {formatCurrency(savedAmount)}
                               </span>
                             )}
                           </div>
@@ -342,10 +356,10 @@ export function RechargeFormCard({
                 </Label>
                 {hasStandardPaymentMethods ? (
                   <div className='grid grid-cols-2 gap-1.5 sm:gap-3 lg:grid-cols-3'>
-                    {topupInfo?.pay_methods?.map((method) => {
-                      const minTopup = Math.max(
-                        method.min_topup || 0,
-                        getMinTopupAmount(topupInfo)
+                    {paymentMethods.map((method) => {
+                      const minTopup = getPaymentMethodMinTopup(
+                        method,
+                        topupInfo
                       )
                       const disabled = minTopup > topupAmount
                       const disabledReason = disabled
@@ -359,7 +373,7 @@ export function RechargeFormCard({
 
                       const button = (
                         <Button
-                          key={method.type}
+                          key={`${method.type}-${method.name}`}
                           variant='outline'
                           onClick={() => onPaymentMethodSelect(method)}
                           disabled={disabled || !!paymentLoading}
@@ -395,7 +409,7 @@ export function RechargeFormCard({
                       )
 
                       return disabled ? (
-                        <TooltipProvider key={method.type}>
+                        <TooltipProvider key={`${method.type}-${method.name}`}>
                           <Tooltip>
                             <TooltipTrigger render={button} />
                             <TooltipContent>{disabledReason}</TooltipContent>

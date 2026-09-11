@@ -20,13 +20,14 @@ func TestCanonicalizeUpstreamUsageAnthropic(t *testing.T) {
 	flat.PromptTokensDetails.CachedCreationTokens = 5
 	canonical := CanonicalizeUpstreamUsageBySemantic(flat, dto.BillingUsageSemanticAnthropic)
 	require.NotNil(t, canonical)
-	// 与内部 usageFromClaudeBillingUsage 直接转换结果逐字段一致喵。
-	internal := usageFromClaudeBillingUsage(dto.NewClaudeMessagesBillingUsage(&dto.ClaudeUsage{
+	// 与 relaykit 的统一规范化（上游 CanonicalUsage）直接转换结果逐字段一致喵。
+	internal, ok := dto.NewClaudeMessagesBillingUsage(&dto.ClaudeUsage{
 		InputTokens:              100,
 		OutputTokens:             20,
 		CacheReadInputTokens:     30,
 		CacheCreationInputTokens: 5,
-	}))
+	}).CanonicalUsage()
+	require.True(t, ok, "Claude 规范化应当识别出有效的 usage")
 	require.NotNil(t, internal)
 	assert.Equal(t, internal.PromptTokens, canonical.PromptTokens, "prompt 列必须等于原始 input_tokens（不含缓存读取）")
 	assert.Equal(t, internal.CompletionTokens, canonical.CompletionTokens)
@@ -48,7 +49,9 @@ func TestCanonicalizeUpstreamUsageOpenAI(t *testing.T) {
 	flat.PromptTokensDetails.CachedTokens = 5
 	canonical := CanonicalizeUpstreamUsageBySemantic(flat, dto.BillingUsageSemanticOpenAI)
 	require.NotNil(t, canonical)
-	internal := usageFromOpenAIBillingUsage(dto.NewOpenAIChatBillingUsage(flat))
+	// relaykit 的统一规范化（上游 CanonicalUsage）作为对照口径喵。
+	internal, ok := dto.NewOpenAIChatBillingUsage(flat).CanonicalUsage()
+	require.True(t, ok, "OpenAI 规范化应当识别出有效的 usage")
 	require.NotNil(t, internal)
 	assert.Equal(t, internal.PromptTokens, canonical.PromptTokens)
 	assert.Equal(t, internal.CompletionTokens, canonical.CompletionTokens)

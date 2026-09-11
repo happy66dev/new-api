@@ -124,7 +124,7 @@ func GetOptions(c *gin.Context) {
 	optionValues := make(map[string]string)
 	common.OptionMapRWMutex.Lock()
 	for k, v := range common.OptionMap {
-		if k == "theme.frontend" {
+		if k == "theme.frontend" || k == "billing_setting.billing_mode" || k == "billing_setting.billing_expr" {
 			continue
 		}
 		value := common.Interface2String(v)
@@ -159,6 +159,19 @@ func GetOptions(c *gin.Context) {
 		}
 	}
 	common.OptionMapRWMutex.Unlock()
+	// Expose the same effective expressions used by pricing and settlement,
+	// including built-in defaults that are intentionally not persisted.
+	for key, values := range map[string]map[string]string{
+		"billing_setting.billing_mode": billing_setting.GetBillingModeCopy(),
+		"billing_setting.billing_expr": billing_setting.GetBillingExprCopy(),
+	} {
+		encoded, err := common.Marshal(values)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": err.Error()})
+			return
+		}
+		options = append(options, &model.Option{Key: key, Value: string(encoded)})
+	}
 	options = append(options, &model.Option{
 		Key:   "CompletionRatioMeta",
 		Value: buildCompletionRatioMetaValue(optionValues),
@@ -344,6 +357,59 @@ func UpdateOption(c *gin.Context) {
 		rate, parseErr := strconv.ParseFloat(option.Value.(string), 64)
 		if parseErr != nil || math.IsNaN(rate) || math.IsInf(rate, 0) || rate < 0 {
 			common.ApiErrorMsg(c, "Monero USD to system currency rate must be a non-negative finite number")
+			return
+		}
+	case "NowPaymentsAPIBaseURL":
+		parsedURL, parseErr := url.ParseRequestURI(strings.TrimSpace(option.Value.(string)))
+		if parseErr != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || parsedURL.Host == "" {
+			common.ApiErrorMsg(c, "NOWPayments API base URL must be a valid HTTP or HTTPS URL")
+			return
+		}
+	case "NowPaymentsPayCurrencies":
+		value := strings.TrimSpace(option.Value.(string))
+		if value == "" || len(value) > 2048 {
+			common.ApiErrorMsg(c, "NOWPayments currencies must be a non-empty comma-separated list")
+			return
+		}
+		seen := make(map[string]struct{})
+		for _, rawCurrency := range strings.Split(value, ",") {
+			currency := strings.ToLower(strings.TrimSpace(rawCurrency))
+			if currency == "" || len(currency) > 32 {
+				common.ApiErrorMsg(c, "NOWPayments currency codes must be between 1 and 32 characters")
+				return
+			}
+			for _, character := range currency {
+				if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '_' && character != '-' {
+					common.ApiErrorMsg(c, "NOWPayments currency codes may only contain letters, numbers, underscores, and hyphens")
+					return
+				}
+			}
+			if _, exists := seen[currency]; exists {
+				common.ApiErrorMsg(c, "NOWPayments currency codes must not be duplicated")
+				return
+			}
+			seen[currency] = struct{}{}
+			if len(seen) > 50 {
+				common.ApiErrorMsg(c, "NOWPayments supports at most 50 configured currencies")
+				return
+			}
+		}
+	case "NowPaymentsMinTopUp":
+		minimum, parseErr := strconv.Atoi(option.Value.(string))
+		if parseErr != nil || minimum < 0 || minimum > common.MaxWalletQuota {
+			common.ApiErrorMsg(c, "NOWPayments minimum top-up must be a supported non-negative integer")
+			return
+		}
+	case "NowPaymentsUSDToCurrencyRate":
+		rate, parseErr := strconv.ParseFloat(option.Value.(string), 64)
+		if parseErr != nil || math.IsNaN(rate) || math.IsInf(rate, 0) || rate < 0 {
+			common.ApiErrorMsg(c, "NOWPayments USD to system currency rate must be a non-negative finite number")
+			return
+		}
+	case "NowPaymentsPaymentExpirationMins":
+		minutes, parseErr := strconv.Atoi(option.Value.(string))
+		if parseErr != nil || minutes < 5 || minutes > 1440 {
+			common.ApiErrorMsg(c, "NOWPayments payment expiration must be between 5 and 1440 minutes")
 			return
 		}
 	case "WaffoPancakeUSDToCurrencyRate":

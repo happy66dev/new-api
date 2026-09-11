@@ -22,11 +22,12 @@ import { useTranslation } from 'react-i18next'
 
 import { Skeleton } from '@/components/ui/skeleton'
 import { formatLogQuota } from '@/lib/format'
+import { requireServerSuccess } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
 
 import { getLogStats, getUserLogStats } from '../api'
 import { DEFAULT_LOG_STATS } from '../constants'
-import { getUsageLogsAutoRefreshInterval } from '../lib/auto-refresh'
+import { getUsageLogsAutoRefreshOptions } from '../lib/auto-refresh'
 import { buildApiParams } from '../lib/utils'
 import { useLogsViewScope, useUsageLogsContext } from './usage-logs-provider'
 
@@ -54,7 +55,7 @@ export function CommonLogsStats() {
   const searchParams = route.useSearch()
   const { sensitiveVisible, autoRefreshEnabled } = useUsageLogsContext()
   const page = Number(searchParams.page ?? 1)
-  const autoRefreshInterval = getUsageLogsAutoRefreshInterval(
+  const autoRefreshOptions = getUsageLogsAutoRefreshOptions(
     autoRefreshEnabled,
     'common',
     page - 1
@@ -72,19 +73,24 @@ export function CommonLogsStats() {
       })
 
       // 普通用户「全部」范围：统计口径与日志列表一致，附带共享模型被调日志喵。
-      const result = isAdmin
-        ? await getLogStats(params)
-        : viewScope === 'all'
-          ? await getUserLogStats({ ...params, scope: 'all' })
-          : await getUserLogStats(params)
+      // 用 if/else 取代嵌套三元，避免可读性变差（规范禁止两层及以上嵌套三元）喵。
+      let result
+      if (isAdmin) {
+        result = requireServerSuccess(await getLogStats(params))
+      } else if (viewScope === 'all') {
+        result = requireServerSuccess(
+          await getUserLogStats({ ...params, scope: 'all' })
+        )
+      } else {
+        result = requireServerSuccess(await getUserLogStats(params))
+      }
 
       return result.success
         ? result.data || DEFAULT_LOG_STATS
         : DEFAULT_LOG_STATS
     },
     placeholderData: (previousData) => previousData,
-    refetchInterval: autoRefreshInterval,
-    refetchIntervalInBackground: false,
+    ...autoRefreshOptions,
   })
 
   if (isLoading) {

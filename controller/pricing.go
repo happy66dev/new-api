@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"maps"
 	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
@@ -44,9 +45,7 @@ func GetPricing(c *gin.Context) {
 	userId, exists := c.Get("id")
 	usableGroup := map[string]string{}
 	groupRatio := map[string]float64{}
-	for s, f := range ratio_setting.GetGroupRatioCopy() {
-		groupRatio[s] = f
-	}
+	maps.Copy(groupRatio, ratio_setting.GetGroupRatioCopy())
 	var group string
 	if exists {
 		user, err := model.GetUserCache(userId.(int))
@@ -71,19 +70,20 @@ func GetPricing(c *gin.Context) {
 	for groupName, description := range usableGroup {
 		pricingGroups[groupName] = description
 	}
+	visibleDescriptions := console_setting.GetModelSquareVisibleGroupDescriptions()
 	for _, groupName := range visibleGroups {
 		if _, exists := pricingGroups[groupName]; !exists {
-			pricingGroups[groupName] = setting.GetUsableGroupDescription(groupName)
+			if description, ok := visibleDescriptions[groupName]; ok && description != "" {
+				pricingGroups[groupName] = description
+			} else {
+				pricingGroups[groupName] = setting.GetUsableGroupDescription(groupName)
+			}
 		}
 	}
 	pricing = filterPricingByUsableGroups(pricing, pricingGroups)
 	// 追加共享中的用户上游模型条目，供模型广场在 user-shared 分组展示喵。
 	pricing = appendSharedUpstreamPricing(pricing, userId)
-	// 收集分组描述：以系统全局描述为底，再叠加当前用户可用分组的描述（上游引入 group 描述）喵。
-	groupDescriptions := setting.GetGroupDescriptionsCopy()
-	for groupName, description := range usableGroup {
-		groupDescriptions[groupName] = description
-	}
+	// 分组描述已由上游的 visibleDescriptions（console 设置）统一提供，此处不再重复拼装喵。
 	// check groupRatio contains usableGroup
 	for group := range ratio_setting.GetGroupRatioCopy() {
 		if _, ok := pricingGroups[group]; !ok {
@@ -92,16 +92,16 @@ func GetPricing(c *gin.Context) {
 	}
 
 	c.JSON(200, gin.H{
-		"success":             true,
-		"data":                pricing,
-		"vendors":             model.GetVendors(),
-		"group_ratio":         groupRatio,
-		"usable_group":        usableGroup,
-		"group_descriptions":  groupDescriptions,
-		"model_square_groups": visibleGroups,
-		"supported_endpoint":  model.GetSupportedEndpointMap(),
-		"auto_groups":         service.GetUserAutoGroupForUser(userID, group),
-		"pricing_version":     "a42d372ccf0b5dd13ecf71203521f9d2",
+		"success":                         true,
+		"data":                            pricing,
+		"vendors":                         model.GetVendors(),
+		"group_ratio":                     groupRatio,
+		"usable_group":                    usableGroup,
+		"model_square_groups":             visibleGroups,
+		"model_square_group_descriptions": visibleDescriptions,
+		"supported_endpoint":              model.GetSupportedEndpointMap(),
+		"auto_groups":                     service.GetUserAutoGroupForUser(userID, group),
+		"pricing_version":                 "a42d372ccf0b5dd13ecf71203521f9d2",
 	})
 }
 

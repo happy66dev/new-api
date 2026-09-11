@@ -50,7 +50,7 @@ import { SettingsSection } from '../components/settings-section'
 import { useUpdateOption } from '../hooks/use-update-option'
 
 const thinkingBlacklistExample = JSON.stringify(
-  ['moonshotai/kimi-k2-thinking', 'kimi-k2-thinking'],
+  ['moonshotai/kimi-k2-thinking', 'kimi-k2-thinking', 're:.*@sha256:.*'],
   null,
   2
 )
@@ -99,14 +99,10 @@ const responsesToChatCompletionsPolicyAllChannelsExample = JSON.stringify(
 
 const effortModelRoutesExample = JSON.stringify(
   {
-    gemini: {
-      'gemini-3.1-flash-lite': {
-        high: 'gemini-3.1-flash-lite-high',
-        low: 'gemini-3.1-flash-lite-low',
-      },
+    'gemini-3.1-flash-lite': {
+      high: 'gemini-3.1-flash-lite-high',
+      low: 'gemini-3.1-flash-lite-low',
     },
-    anthropic: {},
-    openai: {},
   },
   null,
   2
@@ -293,7 +289,7 @@ export function GlobalSettingsCard({ defaultValues }: GlobalSettingsCardProps) {
                 </FormControl>
                 <FormDescription>
                   {t(
-                    'Models listed here will not automatically append or remove -thinking / -nothinking suffixes.'
+                    'Models listed here skip automatic -thinking / -nothinking suffix handling. Matched names are also exempt from @-modifier parsing and 400 validation. Prefix an entry with re: to match the full model name as a Go regular expression, for example re:.*@sha256:.*'
                   )}
                 </FormDescription>
                 <FormMessage />
@@ -321,7 +317,7 @@ export function GlobalSettingsCard({ defaultValues }: GlobalSettingsCardProps) {
                 </FormControl>
                 <FormDescription>
                   {t(
-                    'Route models by channel type and reasoning effort. Keys are openai, anthropic, or gemini; each effort maps to an explicit upstream model.'
+                    'Route models by reasoning effort. Each model maps effort names such as high or low to an explicit upstream model.'
                   )}
                 </FormDescription>
                 <FormMessage />
@@ -370,8 +366,10 @@ export function GlobalSettingsCard({ defaultValues }: GlobalSettingsCardProps) {
                   </FormControl>
                   <FormDescription>
                     {t('Empty value will be saved as {}.')}
-                    <span className='block mt-1'>
-                      {t('Use model_patterns to match specific models by regex, e.g. ["^gpt-4o.*$"]. Leave empty to match all models.')}
+                    <span className='mt-1 block'>
+                      {t(
+                        'Use model_patterns to match specific models by regex, e.g. ["^gpt-4o.*$"]. Leave empty to match all models.'
+                      )}
                     </span>
                   </FormDescription>
                   <div className='flex flex-wrap gap-2'>
@@ -451,8 +449,10 @@ export function GlobalSettingsCard({ defaultValues }: GlobalSettingsCardProps) {
                   </FormControl>
                   <FormDescription>
                     {t('Empty value will be saved as {}.')}
-                    <span className='block mt-1'>
-                      {t('Use model_patterns to match specific models by regex, e.g. ["^deepseek-.*$", "^glm-.*$"]. Leave empty to match all models.')}
+                    <span className='mt-1 block'>
+                      {t(
+                        'Use model_patterns to match specific models by regex, e.g. ["^deepseek-.*$", "^glm-.*$"]. Leave empty to match all models.'
+                      )}
                     </span>
                   </FormDescription>
                   <div className='flex flex-wrap gap-2'>

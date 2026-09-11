@@ -20,35 +20,17 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// isNoThinkingRequest 判断 Gemini 请求是否明确要求「不思考」喵。
+// 判定依据是 generationConfig.thinkingConfig.thinkingBudget 显式给成 0，未配置时视为可能思考喵。
 func isNoThinkingRequest(req *dto.GeminiChatRequest) bool {
-	if req.GenerationConfig.ThinkingConfig != nil && req.GenerationConfig.ThinkingConfig.ThinkingBudget != nil {
-		configBudget := req.GenerationConfig.ThinkingConfig.ThinkingBudget
-		if configBudget != nil && *configBudget == 0 {
-			// 如果思考预算为 0，则认为是非思考请求
-			return true
-		}
+	// 喵~防御：请求或思考配置缺失时按「有思考」处理，避免误判成 -nothinking 少计费喵。
+	if req == nil || req.GenerationConfig.ThinkingConfig == nil {
+		return false
+	}
+	if budget := req.GenerationConfig.ThinkingConfig.ThinkingBudget; budget != nil && *budget == 0 {
+		return true
 	}
 	return false
-}
-
-func trimModelThinking(modelName string) string {
-	// 去除模型名称中的 -nothinking 后缀
-	if strings.HasSuffix(modelName, "-nothinking") {
-		return strings.TrimSuffix(modelName, "-nothinking")
-	}
-	// 去除模型名称中的 -thinking 后缀
-	if strings.HasSuffix(modelName, "-thinking") {
-		return strings.TrimSuffix(modelName, "-thinking")
-	}
-
-	// 去除模型名称中的 -thinking-number
-	if strings.Contains(modelName, "-thinking-") {
-		parts := strings.Split(modelName, "-thinking-")
-		if len(parts) > 1 {
-			return parts[0] + "-thinking"
-		}
-	}
-	return modelName
 }
 
 func GeminiHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types.NewAPIError) {
@@ -69,7 +51,13 @@ func GeminiHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 	if err != nil {
 		return types.NewError(err, types.ErrorCodeChannelModelMappedError, types.ErrOptionWithSkipRetry())
 	}
+	// 上游把模型名后缀（-thinking/-nothinking/effort 尾部）的解析统一抽到 helper.ApplyReasoningModelSuffix，
+	// 顺带记录转换诊断并同步出站请求的模型名，这里先执行它喵。
+	if err := helper.ApplyReasoningModelSuffix(c, info, request); err != nil {
+		return newConvertRequestFailedError(c, info, err)
+	}
 
+	// 思考适配（站点开关）：请求明确不思考且存在带价的 -nothinking 变体时，切到该变体计费喵。
 	if model_setting.GetGeminiSettings().ThinkingAdapterEnabled {
 		if isNoThinkingRequest(request) {
 			// check is thinking
@@ -85,7 +73,10 @@ func GeminiHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 			}
 		}
 		if request.GenerationConfig.ThinkingConfig == nil {
-			relayconvert.ApplyGeminiThinkingConfig(request, info)
+			// 上游把该辅助函数改名为 Checked 版本并返回错误，这里统一转成客户端可见的转换错误喵。
+			if err := relayconvert.ApplyGeminiThinkingConfigChecked(request, info); err != nil {
+				return newConvertRequestFailedError(c, info, err)
+			}
 		}
 	}
 	if helper.ApplyEffortModelRoute(info) {
@@ -150,7 +141,7 @@ func GeminiHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 		// 使用 ConvertGeminiRequest 转换请求格式
 		convertedRequest, err := adaptor.ConvertGeminiRequest(c, info, request)
 		if err != nil {
-			return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+			return newConvertRequestFailedError(c, info, err)
 		}
 		relaycommon.AppendRequestConversionFromRequest(info, convertedRequest)
 		jsonData, err := common.Marshal(convertedRequest)
@@ -248,6 +239,9 @@ func GeminiEmbeddingHandler(c *gin.Context, info *relaycommon.RelayInfo) (newAPI
 	err = helper.ModelMappedHelper(c, info, req)
 	if err != nil {
 		return types.NewError(err, types.ErrorCodeChannelModelMappedError, types.ErrOptionWithSkipRetry())
+	}
+	if err := helper.ApplyReasoningModelSuffix(c, info, req); err != nil {
+		return newConvertRequestFailedError(c, info, err)
 	}
 
 	req.SetModelName("models/" + info.UpstreamModelName)

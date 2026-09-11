@@ -9,10 +9,12 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relaykit/relayconvert/reasoning"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	hostreasoning "github.com/QuantumNous/new-api/setting/reasoning"
 	hosttypes "github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
@@ -71,18 +73,23 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hostty
 }
 
 func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens int, meta *types.TokenCountMeta) (hosttypes.PriceData, error) {
+	// 上游引入「计费模型名」解析：带 @修饰符 的请求（如 model@thinking:on）回落到有价的基础模型，
+	// 命中思考后缀豁免名单（黑名单里的 re: 规则）时保持原名，按字面价计费喵。
+	if matched := resolveBillingModelName(info.GetOriginModelName()); matched != "" && matched != info.OriginModelName {
+		info.BillingModelName = matched
+	}
 	// 必须先确定最终分组再读价格：分组定制定价允许同一个模型 id 在不同分组下用不同计费方式
 	// （比如 A 组按次、B 组按量），所以 UsingGroup 一定要在取任何价格之前定下来喵。
 	groupRatioInfo := HandleGroupRatio(c, info)
 
-
-	// 阶梯计费表达式同样支持按分组覆盖，按最终分组判一次计费方式喵。
-	if billing_setting.GetBillingModeForGroup(info.UsingGroup, info.OriginModelName) == billing_setting.BillingModeTieredExpr {
+	// 阶梯计费表达式同样支持按分组覆盖，按「最终分组 + 计费模型名」判一次计费方式喵。
+	if billing_setting.GetBillingModeForGroup(info.UsingGroup, info.GetBillingModelName()) == billing_setting.BillingModeTieredExpr {
 		return modelPriceHelperTiered(c, info, promptTokens, meta, groupRatioInfo)
 	}
 
 	// 合并分组定制价与全局价，得到该分组下此模型真正生效的定价快照喵。
-	pricing := ratio_setting.ResolveModelPricing(info.UsingGroup, info.OriginModelName)
+	// 模型名用「计费模型名」：带 @修饰符 的请求在上方已归一到有价的基础模型喵。
+	pricing := ratio_setting.ResolveModelPricing(info.UsingGroup, info.GetBillingModelName())
 	modelPrice := pricing.ModelPrice
 	usePrice := pricing.UsePrice
 
@@ -282,11 +289,56 @@ func HasModelBillingConfigForGroup(group string, modelName string) bool {
 	return ok && strings.TrimSpace(expr) != ""
 }
 
+// HasPriceOrRatioEntry 判断模型名在全局配置里是否有价格、倍率或阶梯表达式（上游引入，供计费模型名解析使用）喵。
+func HasPriceOrRatioEntry(name string) bool {
+	formatted := ratio_setting.FormatMatchingModelName(name)
+	if _, ok := ratio_setting.GetModelPrice(formatted, false); ok {
+		return true
+	}
+	if ratio_setting.HasConfiguredModelRatio(formatted) {
+		return true
+	}
+	return billing_setting.GetBillingMode(formatted) == billing_setting.BillingModeTieredExpr
+}
+
+// resolveBillingModelName 把带 @修饰符 的模型名归一到真正用来计费的模型名（上游引入）喵。
+// 归一顺序：原名（无修饰符时）→ 思考意图的等价写法 → 基础模型名，取第一个有价的；
+// 命中思考后缀豁免名单时（CanonicalBillingModelNames 返回 nil）直接回落到基础模型名喵。
+func resolveBillingModelName(origin string) string {
+	var candidates []string
+	if !reasoning.ParseModelModifiers(origin).HasModifiers() {
+		candidates = append(candidates, origin)
+	}
+	candidates = append(candidates, hostreasoning.CanonicalBillingModelNames(origin)...)
+	base := hostreasoning.BaseModelName(origin)
+	candidates = append(candidates, base)
+
+	seen := make(map[string]struct{}, len(candidates))
+	for _, name := range candidates {
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		if HasPriceOrRatioEntry(name) {
+			return name
+		}
+	}
+	return base
+}
+
 func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, promptTokens int, meta *types.TokenCountMeta, groupRatioInfo hosttypes.GroupRatioInfo) (hosttypes.PriceData, error) {
-	// 表达式按最终分组解析：分组级表达式优先，没配再回落全局表达式喵。
-	exprStr, ok := billing_setting.GetBillingExprForGroup(info.UsingGroup, info.OriginModelName)
+	// 计费模型名（上游口径）：没有别名归一时就等于 OriginModelName，供错误文案与阶梯快照记录用喵。
+	billingModelName := info.GetBillingModelName()
+	// 表达式按最终分组解析：分组级表达式优先，没配再回落全局表达式；模型名同样取计费模型名喵。
+	exprStr, ok := billing_setting.GetBillingExprForGroup(info.UsingGroup, info.GetBillingModelName())
 	if !ok {
-		return hosttypes.PriceData{}, fmt.Errorf("model %s is configured as tiered_expr but has no billing expression", info.OriginModelName)
+		return hosttypes.PriceData{}, fmt.Errorf("model %s is configured as tiered_expr but has no billing expression", billingModelName)
+	}
+	if info.RelayFormat == types.RelayFormatOpenAIRealtime && billingexpr.UsesFixedPricing(exprStr) {
+		return hosttypes.PriceData{}, fmt.Errorf("fixed pricing is not supported for Realtime requests")
 	}
 
 	estimatedCompletionTokens := meta.MaxTokens
@@ -305,7 +357,7 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, promptT
 		Len: float64(promptTokens),
 	}, requestInput)
 	if err != nil {
-		return hosttypes.PriceData{}, fmt.Errorf("model %s tiered expr run failed: %w", info.OriginModelName, err)
+		return hosttypes.PriceData{}, fmt.Errorf("model %s tiered expr run failed: %w", billingModelName, err)
 	}
 
 	// Expression coefficients are $/1M tokens prices; convert to quota the same way per-call billing does.
@@ -326,7 +378,7 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, promptT
 	exprHash := billingexpr.ExprHashString(exprStr)
 	snapshot := &billingexpr.BillingSnapshot{
 		BillingMode:               billing_setting.BillingModeTieredExpr,
-		ModelName:                 info.OriginModelName,
+		ModelName:                 billingModelName,
 		ExprString:                exprStr,
 		ExprHash:                  exprHash,
 		GroupRatio:                groupRatioInfo.GroupRatio,
@@ -335,6 +387,8 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, promptT
 		EstimatedQuotaBeforeGroup: quotaBeforeGroup,
 		EstimatedQuotaAfterGroup:  preConsumedQuota,
 		EstimatedTier:             trace.MatchedTier,
+		EstimatedBillingUnit:      trace.BillingUnit,
+		EstimatedFixedPrice:       trace.FixedPrice,
 		QuotaPerUnit:              common.QuotaPerUnit,
 		ExprVersion:               billingexpr.ExprVersion(exprStr),
 	}
@@ -347,11 +401,11 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, promptT
 		QuotaToPreConsume: preConsumedQuota,
 	}
 	// 表达式来自分组定制时记下来源分组，供日志审计「这笔为什么按这个表达式算」喵。
-	if _, fromGroup := billing_setting.GetGroupBillingExpr(info.UsingGroup, info.OriginModelName); fromGroup {
+	if _, fromGroup := billing_setting.GetGroupBillingExpr(info.UsingGroup, info.GetBillingModelName()); fromGroup {
 		priceData.PricingGroupOverride = info.UsingGroup
 	}
 
-	logger.LogDebug(c, "model_price_helper_tiered result: model=%s preConsume=%d quotaBeforeGroup=%.2f groupRatio=%.2f tier=%s", info.OriginModelName, preConsumedQuota, quotaBeforeGroup, groupRatioInfo.GroupRatio, trace.MatchedTier)
+	logger.LogDebug(c, "model_price_helper_tiered result: model=%s preConsume=%d quotaBeforeGroup=%.2f groupRatio=%.2f tier=%s", billingModelName, preConsumedQuota, quotaBeforeGroup, groupRatioInfo.GroupRatio, trace.MatchedTier)
 
 	info.PriceData = priceData
 	return priceData, nil

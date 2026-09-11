@@ -37,7 +37,9 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { toast } from 'sonner'
+
+import { handleServerError } from '@/lib/handle-server-error'
+import { requireServerSuccess } from '@/lib/server-error-message'
 
 import { USER_UPSTREAM_GROUP_VALUE, VIRTUAL_GROUP_VALUE } from '@/components/model-group-selector'
 import { getVirtualModels } from '@/features/virtual-models/api'
@@ -86,7 +88,9 @@ export function usePlaygroundOptions({
     isLoading: isLoadingModels,
   } = useQuery({
     queryKey: ['playground-models', currentGroup],
-    queryFn: () => getUserModels(currentGroup),
+    // requireServerSuccess 为上游引入：接口返回 success=false 时抛错，交给 react-query 走错误分支喵。
+    queryFn: async () =>
+      requireServerSuccess(await getUserModels(currentGroup)),
     // 喵~防御：追加分组下不请求真实分组模型接口（后端无此分组），避免 404 喵。
     enabled: currentGroup !== '' && !isAppendedGroup,
   })
@@ -109,13 +113,14 @@ export function usePlaygroundOptions({
     isError: isGroupsError,
   } = useQuery({
     queryKey: ['playground-groups'],
-    queryFn: getUserGroups,
+    queryFn: async () => requireServerSuccess(await getUserGroups()),
   })
 
   useEffect(() => {
     if (!isModelsError) return
 
-    toast.error(
+    handleServerError(
+      modelsError,
       getOptionLoadErrorMessage(
         modelsError,
         t('Failed to load playground models')
@@ -126,7 +131,8 @@ export function usePlaygroundOptions({
   useEffect(() => {
     if (!isGroupsError) return
 
-    toast.error(
+    handleServerError(
+      groupsError,
       getOptionLoadErrorMessage(
         groupsError,
         t('Failed to load playground groups')

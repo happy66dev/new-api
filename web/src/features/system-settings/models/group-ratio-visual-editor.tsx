@@ -57,16 +57,9 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
+import { Combobox } from '@/components/ui/combobox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
 import {
   Sheet,
   SheetContent,
@@ -74,6 +67,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet'
+import { Textarea } from '@/components/ui/textarea'
 
 import { safeJsonParse } from '../utils/json-parser'
 
@@ -136,10 +130,22 @@ function parseUsableMap(value: string): Record<string, string> {
 }
 
 function parseVisibleGroups(value: string): string[] {
-  return safeJsonParse<string[]>(value, {
-    fallback: [],
-    silent: true,
-  })
+  const parsed = safeJsonParse<unknown>(value, { fallback: [], silent: true })
+  if (Array.isArray(parsed)) {
+    return parsed.filter((item): item is string => typeof item === 'string')
+  }
+  if (parsed && typeof parsed === 'object') return Object.keys(parsed)
+  return []
+}
+
+function parseVisibleGroupDescriptions(value: string): Record<string, string> {
+  const parsed = safeJsonParse<unknown>(value, { fallback: {}, silent: true })
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+  return Object.fromEntries(
+    Object.entries(parsed).filter(
+      ([, description]) => typeof description === 'string'
+    )
+  )
 }
 
 function parseNestedRatioMap(
@@ -161,6 +167,9 @@ function buildGroupPricingRows(
   const ratioMap = parseRatioMap(groupRatio)
   const usableMap = parseUsableMap(userUsableGroups)
   const visibleGroups = new Set(parseVisibleGroups(modelSquareVisibleGroups))
+  const visibleDescriptions = parseVisibleGroupDescriptions(
+    modelSquareVisibleGroups
+  )
   const topupMap = parseRatioMap(topupGroupRatio)
   const retryTimesMap = parseRatioMap(groupRetryTimes)
   const names = new Set([
@@ -181,7 +190,7 @@ function buildGroupPricingRows(
       : '',
     selectable: Object.hasOwn(usableMap, name),
     modelSquareVisible: visibleGroups.has(name),
-    description: String(usableMap[name] ?? ''),
+    description: String(usableMap[name] ?? visibleDescriptions[name] ?? ''),
   }))
 }
 
@@ -212,12 +221,33 @@ function serializeGroupPricingRows(rows: GroupPricingRow[]) {
     }
   }
 
+  const visibleDescriptions = Object.fromEntries(
+    rows
+      .filter(
+        (row) =>
+          row.modelSquareVisible &&
+          !row.selectable &&
+          row.description.trim() !== ''
+      )
+      .map((row) => [row.name.trim(), row.description])
+  )
   return {
     GroupRatio: JSON.stringify(groupRatio, null, 2),
     UserUsableGroups: JSON.stringify(userUsableGroups, null, 2),
     TopupGroupRatio: JSON.stringify(topupGroupRatio, null, 2),
     GroupRetryTimes: JSON.stringify(groupRetryTimes, null, 2),
-    ModelSquareVisibleGroups: JSON.stringify(modelSquareVisibleGroups, null, 2),
+    ModelSquareVisibleGroups: JSON.stringify(
+      Object.keys(visibleDescriptions).length > 0
+        ? Object.fromEntries(
+            modelSquareVisibleGroups.map((name) => [
+              name,
+              visibleDescriptions[name] ?? '',
+            ])
+          )
+        : modelSquareVisibleGroups,
+      null,
+      2
+    ),
   }
 }
 
@@ -229,6 +259,9 @@ function groupPricingSignature(rows: GroupPricingRow[]): string {
     topupGroupRatio: parseRatioMap(serialized.TopupGroupRatio),
     groupRetryTimes: parseRatioMap(serialized.GroupRetryTimes),
     modelSquareVisibleGroups: parseVisibleGroups(
+      serialized.ModelSquareVisibleGroups
+    ),
+    modelSquareGroupDescriptions: parseVisibleGroupDescriptions(
       serialized.ModelSquareVisibleGroups
     ),
   })
@@ -247,6 +280,9 @@ function sourceGroupPricingSignature(
     topupGroupRatio: parseRatioMap(topupGroupRatio),
     groupRetryTimes: parseRatioMap(groupRetryTimes),
     modelSquareVisibleGroups: parseVisibleGroups(modelSquareVisibleGroups),
+    modelSquareGroupDescriptions: parseVisibleGroupDescriptions(
+      modelSquareVisibleGroups
+    ),
   })
 }
 
@@ -277,25 +313,16 @@ function GroupNameSelect(props: GroupNameSelectProps) {
   }, [props.options, props.value])
 
   return (
-    <Select
-      value={props.value === '' ? null : props.value}
-      onValueChange={(v) => {
-        if (typeof v === 'string' && v !== '') props.onValueChange(v)
+    <Combobox
+      options={options.map((name) => ({ value: name, label: name }))}
+      value={props.value}
+      onValueChange={(value) => {
+        if (value) props.onValueChange(value)
       }}
-    >
-      <SelectTrigger className={props.className ?? 'w-48'}>
-        <SelectValue placeholder={props.placeholder} />
-      </SelectTrigger>
-      <SelectContent alignItemWithTrigger={false}>
-        <SelectGroup>
-          {options.map((name) => (
-            <SelectItem key={name} value={name}>
-              {name}
-            </SelectItem>
-          ))}
-        </SelectGroup>
-      </SelectContent>
-    </Select>
+      className={props.className ?? 'w-48'}
+      placeholder={props.placeholder}
+      aria-label={props.placeholder}
+    />
   )
 }
 
@@ -714,7 +741,11 @@ function GroupPricingTable({
                     <Checkbox
                       checked={row.modelSquareVisible}
                       onCheckedChange={(checked) =>
-                        updateRow(row._id, 'modelSquareVisible', checked === true)
+                        updateRow(
+                          row._id,
+                          'modelSquareVisible',
+                          checked === true
+                        )
                       }
                       aria-label={t('Model plaza visible')}
                     />
@@ -725,20 +756,17 @@ function GroupPricingTable({
                 id: 'description',
                 header: t('Description'),
                 className: 'min-w-56',
-                cell: (row) =>
-                  row.selectable ? (
-                    <Input
-                      value={row.description}
-                      placeholder={t('Group description')}
-                      onChange={(event) =>
-                        updateRow(row._id, 'description', event.target.value)
-                      }
-                    />
-                  ) : (
-                    <span className='text-muted-foreground px-3 text-sm'>
-                      -
-                    </span>
-                  ),
+                cell: (row) => (
+                  <Textarea
+                    rows={2}
+                    className='min-h-16 resize-y'
+                    value={row.description}
+                    placeholder={t('Group description')}
+                    onChange={(event) =>
+                      updateRow(row._id, 'description', event.target.value)
+                    }
+                  />
+                ),
               },
               {
                 id: 'actions',

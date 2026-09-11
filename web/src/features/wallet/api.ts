@@ -44,6 +44,8 @@ import type {
   WaffoPancakePaymentResponse,
   MoneroPaymentResponse,
   MoneroPaymentStatusResponse,
+  NowPaymentsPaymentResponse,
+  NowPaymentsPaymentStatusResponse,
   RedemptionPurchaseAmountResponse,
   RedemptionPurchaseRequest,
   RedemptionPurchaseResponse,
@@ -212,6 +214,28 @@ export async function getMoneroPaymentStatus(
     {
       skipBusinessError: true,
     } as Record<string, unknown>
+  )
+  return res.data
+}
+
+export async function requestNowPaymentsPayment(
+  amount: number,
+  payCurrency: string
+): Promise<NowPaymentsPaymentResponse> {
+  const res = await api.post(
+    '/api/user/nowpayments/pay',
+    { amount, pay_currency: payCurrency },
+    { skipBusinessError: true } as Record<string, unknown>
+  )
+  return res.data
+}
+
+export async function getNowPaymentsPaymentStatus(
+  paymentId: string
+): Promise<NowPaymentsPaymentStatusResponse> {
+  const res = await api.get(
+    `/api/user/nowpayments/payment?id=${encodeURIComponent(paymentId)}`,
+    { skipBusinessError: true } as Record<string, unknown>
   )
   return res.data
 }

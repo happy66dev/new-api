@@ -173,6 +173,14 @@ func InitOptionMap() {
 	common.OptionMap["MoneroConfirmations"] = strconv.Itoa(setting.MoneroConfirmations)
 	common.OptionMap["MoneroMaxSubaddresses"] = strconv.Itoa(setting.MoneroMaxSubaddresses)
 	common.OptionMap["MoneroUSDToCurrencyRate"] = strconv.FormatFloat(setting.MoneroUSDToCurrencyRate, 'f', -1, 64)
+	common.OptionMap["NowPaymentsEnabled"] = strconv.FormatBool(setting.NowPaymentsEnabled)
+	common.OptionMap["NowPaymentsAPIKey"] = setting.NowPaymentsAPIKey
+	common.OptionMap["NowPaymentsIPNSecret"] = setting.NowPaymentsIPNSecret
+	common.OptionMap["NowPaymentsAPIBaseURL"] = setting.NowPaymentsAPIBaseURL
+	common.OptionMap["NowPaymentsPayCurrencies"] = setting.NowPaymentsPayCurrencies
+	common.OptionMap["NowPaymentsMinTopUp"] = strconv.Itoa(setting.NowPaymentsMinTopUp)
+	common.OptionMap["NowPaymentsUSDToCurrencyRate"] = strconv.FormatFloat(setting.NowPaymentsUSDToCurrencyRate, 'f', -1, 64)
+	common.OptionMap["NowPaymentsPaymentExpirationMins"] = strconv.Itoa(setting.NowPaymentsPaymentExpirationMins)
 	common.OptionMap["TopupGroupRatio"] = common.TopupGroupRatio2JSONString()
 	common.OptionMap["Chats"] = setting.Chats2JsonString()
 	common.OptionMap["AutoGroups"] = setting.AutoGroups2JsonString()
@@ -217,7 +225,6 @@ func InitOptionMap() {
 	common.OptionMap["GroupDefaultModel"] = ratio_setting.GroupDefaultModel2JSONString()
 	common.OptionMap["GroupRetryTimes"] = ratio_setting.GroupRetryTimes2JSONString()
 	common.OptionMap["UserUsableGroups"] = setting.UserUsableGroups2JSONString()
-	common.OptionMap["GroupDescriptions"] = setting.GroupDescriptions2JSONString()
 	common.OptionMap["CompletionRatio"] = ratio_setting.CompletionRatio2JSONString()
 	common.OptionMap["ImageRatio"] = ratio_setting.ImageRatio2JSONString()
 	common.OptionMap["AudioRatio"] = ratio_setting.AudioRatio2JSONString()
@@ -697,6 +704,22 @@ func updateOptionMap(key string, value string) (err error) {
 		setting.MoneroMaxSubaddresses, _ = strconv.Atoi(value)
 	case "MoneroUSDToCurrencyRate":
 		setting.MoneroUSDToCurrencyRate, _ = strconv.ParseFloat(value, 64)
+	case "NowPaymentsEnabled":
+		setting.NowPaymentsEnabled = value == "true"
+	case "NowPaymentsAPIKey":
+		setting.NowPaymentsAPIKey = value
+	case "NowPaymentsIPNSecret":
+		setting.NowPaymentsIPNSecret = value
+	case "NowPaymentsAPIBaseURL":
+		setting.NowPaymentsAPIBaseURL = value
+	case "NowPaymentsPayCurrencies":
+		setting.NowPaymentsPayCurrencies = value
+	case "NowPaymentsMinTopUp":
+		setting.NowPaymentsMinTopUp, _ = strconv.Atoi(value)
+	case "NowPaymentsUSDToCurrencyRate":
+		setting.NowPaymentsUSDToCurrencyRate, _ = strconv.ParseFloat(value, 64)
+	case "NowPaymentsPaymentExpirationMins":
+		setting.NowPaymentsPaymentExpirationMins, _ = strconv.Atoi(value)
 	case "TopupGroupRatio":
 		err = common.UpdateTopupGroupRatioByJSONString(value)
 	case "GitHubClientId":
@@ -830,8 +853,6 @@ func updateOptionMap(key string, value string) (err error) {
 		err = ratio_setting.UpdateGroupRetryTimesByJSONString(value)
 	case "UserUsableGroups":
 		err = setting.UpdateUserUsableGroupsByJSONString(value)
-	case "GroupDescriptions":
-		err = setting.UpdateGroupDescriptionsByJSONString(value)
 	case "CompletionRatio":
 		err = ratio_setting.UpdateCompletionRatioByJSONString(value)
 	case "ModelPrice":

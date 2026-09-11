@@ -26,6 +26,8 @@ import { unitsToYuan } from '@/lib/upstream-model-units'
 import { cn } from '@/lib/utils'
 
 import { DEFAULT_TOKEN_UNIT } from '../constants'
+// 阶梯表达式含时间函数时，卡片价格需要按「当前计费时刻」预览，上游引入的分钟级时钟喵。
+import { useBillingTime } from '../hooks/use-billing-time'
 import {
   getCardExamplePrice,
   getDynamicDisplayGroupRatio,
@@ -79,7 +81,11 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
     Boolean(priceModel.billing_expr)
   const isUnconfiguredTaskUsage = isUnconfiguredTaskUsageModel(priceModel)
   const hasCachedPrice = isTokenBased && priceModel.cache_ratio != null
+  // 表达式不含时间函数时返回 undefined，此时下游会退回「当前本地时间」喵。
+  const billingTime = useBillingTime(priceModel.billing_expr)
   const dynamicPriceOptions = {
+    // 上游引入：把计费时刻传给定价预览，分时段阶梯价才能显示当下生效的那一档喵。
+    now: billingTime === undefined ? undefined : new Date(billingTime),
     tokenUnit,
     showRechargePrice,
     priceRate,

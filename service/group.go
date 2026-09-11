@@ -27,23 +27,18 @@ func (access UserGroupAccess) Allows(group string) bool {
 
 func GetUserUsableGroups(userGroup string) map[string]string {
 	groupsCopy := setting.GetUserUsableGroupsCopy()
-	for group, description := range setting.GetGroupDescriptionsCopy() {
-		if _, usable := groupsCopy[group]; usable && strings.TrimSpace(description) != "" {
-			groupsCopy[group] = description
-		}
-	}
 	if userGroup != "" {
 		specialSettings, b := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup.Get(userGroup)
 		if b {
 			// 处理特殊可用分组
 			for specialGroup, desc := range specialSettings {
-				if strings.HasPrefix(specialGroup, "-:") {
+				if after, ok := strings.CutPrefix(specialGroup, "-:"); ok {
 					// 移除分组
-					groupToRemove := strings.TrimPrefix(specialGroup, "-:")
+					groupToRemove := after
 					delete(groupsCopy, groupToRemove)
-				} else if strings.HasPrefix(specialGroup, "+:") {
+				} else if after, ok := strings.CutPrefix(specialGroup, "+:"); ok {
 					// 添加分组
-					groupToAdd := strings.TrimPrefix(specialGroup, "+:")
+					groupToAdd := after
 					groupsCopy[groupToAdd] = desc
 				} else {
 					// 直接添加分组

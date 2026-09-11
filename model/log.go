@@ -11,7 +11,6 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	"github.com/QuantumNous/new-api/setting/console_setting"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
@@ -68,8 +67,6 @@ type Log struct {
 	Username          string `json:"username" gorm:"index;index:index_username_model_name,priority:2;default:''"`
 	TokenName         string `json:"token_name" gorm:"index;default:''"`
 	ModelName         string `json:"model_name" gorm:"index;index:index_username_model_name,priority:1;default:''"`
-	ModelIcon         string `json:"model_icon,omitempty" gorm:"-"`
-	ProviderIcon      string `json:"provider_icon,omitempty" gorm:"-"`
 	Quota             int    `json:"quota" gorm:"default:0"`
 	PromptTokens      int    `json:"prompt_tokens" gorm:"default:0"`
 	CompletionTokens  int    `json:"completion_tokens" gorm:"default:0"`
@@ -86,8 +83,7 @@ type Log struct {
 }
 
 // GetLogMultiKeyIndex returns the submit-time multi-key index recorded in a
-// task consumption log. It lets async polling recover the original credential
-// for tasks created before providers persisted their selected key.
+// task consumption log so async polling can recover the original credential.
 func GetLogMultiKeyIndex(requestID string, channelID int) (int, bool, error) {
 	if LOG_DB == nil || requestID == "" || channelID == 0 {
 		return 0, false, nil
@@ -155,19 +151,7 @@ func assignDisplayLogIds(logs []*Log, startIdx int) {
 func formatUserLogs(logs []*Log, startIdx int) {
 	for i := range logs {
 		logs[i].ChannelName = ""
-		var otherMap map[string]interface{}
-		otherMap, _ = common.StrToMap(logs[i].Other)
-		if otherMap != nil {
-			// Remove admin-only debug fields.
-			delete(otherMap, "admin_info")
-			// Remove diagnostics reserved for root.
-			delete(otherMap, "root_info")
-			// Remove operation-audit details (operator/route info), admin-only.
-			delete(otherMap, "audit_info")
-			// delete(otherMap, "reject_reason")
-			// delete(otherMap, "stream_status")
-		}
-		logs[i].Other = common.MapToJsonStr(otherMap)
+		logs[i].Other = formatLogOtherJSON(logs[i].Other, logOtherVisibilityUser)
 	}
 	assignDisplayLogIds(logs, startIdx)
 }
@@ -176,12 +160,15 @@ func formatUserLogs(logs []*Log, startIdx int) {
 // admin_info. Root callers must not pass their results through this formatter.
 func FormatAdminLogs(logs []*Log) {
 	for i := range logs {
-		otherMap, _ := common.StrToMap(logs[i].Other)
-		if otherMap == nil {
-			continue
-		}
-		delete(otherMap, "root_info")
-		logs[i].Other = common.MapToJsonStr(otherMap)
+		logs[i].Other = formatLogOtherJSON(logs[i].Other, logOtherVisibilityAdmin)
+	}
+}
+
+// FormatRootLogs normalizes legacy metadata into the current scoped shape
+// without removing root-only diagnostics.
+func FormatRootLogs(logs []*Log) {
+	for i := range logs {
+		logs[i].Other = formatLogOtherJSON(logs[i].Other, logOtherVisibilityRoot)
 	}
 }
 
@@ -192,7 +179,6 @@ func GetLogByTokenId(tokenId int) (logs []*Log, err error) {
 	}
 	err = LOG_DB.Model(&Log{}).Where("token_id = ?", tokenId).Order(order).Limit(common.MaxRecentItems).Find(&logs).Error
 	formatUserLogs(logs, 0)
-	fillLogModelIcons(logs)
 	return logs, err
 }
 
@@ -214,8 +200,9 @@ func RecordLog(userId int, logType int, content string) {
 	}
 }
 
-// RecordLogWithAdminInfo 记录操作日志，并将管理员相关信息存入 Other.admin_info，
-func RecordLogWithAdminInfo(userId int, logType int, content string, adminInfo map[string]interface{}) {
+// RecordLogWithAdminInfo stores operator metadata under other.admin_info and
+// an optional, user-visible operation descriptor under other.op for localization.
+func RecordLogWithAdminInfo(userId int, logType int, content string, adminInfo *AuditAdminInfo, operation *AuditOperation, request ...*gin.Context) {
 	if logType == LogTypeConsume && !common.LogConsumeEnabled {
 		return
 	}
@@ -227,98 +214,87 @@ func RecordLogWithAdminInfo(userId int, logType int, content string, adminInfo m
 		Type:      logType,
 		Content:   content,
 	}
-	if len(adminInfo) > 0 {
-		other := map[string]interface{}{
-			"admin_info": adminInfo,
+	if logType == LogTypeManage {
+		var c *gin.Context
+		if len(request) > 0 {
+			c = request[0]
 		}
-		log.Other = common.MapToJsonStr(other)
+		actorRole := 0
+		if c != nil {
+			actorRole = c.GetInt("role")
+		}
+		RecordAuditLog(c, AuditLog{UserId: userId, Username: username, ActorRole: actorRole, Category: AuditCategoryOperation, Content: content, Other: AuditOther{AdminInfo: adminInfo, Op: operation}, Success: true})
+		return
+	}
+	if len(request) > 0 && request[0] != nil {
+		log.RequestId = request[0].GetString(common.RequestIdKey)
+	}
+	if adminInfo != nil || operation != nil {
+		data, err := common.Marshal(AuditOther{AdminInfo: adminInfo, Op: operation})
+		if err != nil {
+			common.SysError("failed to encode log admin info: " + err.Error())
+			return
+		}
+		log.Other = string(data)
 	}
 	if err := createLog(log); err != nil {
 		common.SysLog("failed to record log: " + err.Error())
 	}
 }
 
-// buildOpField 构建语言无关的操作描述（写入 Other.op）。
-// 前端依据 action(稳定操作标识) + params(结构化参数) 在渲染期用 i18n 本地化展示，
-// 因此不在数据库中存储自然语言句子。
-func buildOpField(action string, params map[string]interface{}) map[string]interface{} {
-	op := map[string]interface{}{
-		"action": action,
-	}
-	if len(params) > 0 {
-		op["params"] = params
-	}
-	return op
-}
-
-// RecordLoginLog 记录用户登录成功的审计日志（type=LogTypeLogin）。
+// RecordLoginLog writes new login events to the independent audit table.
 // username 由调用方传入（登录流程已持有用户对象），避免额外的数据库查询。
 // content 为英文兜底文本（用于导出）；action+params 供前端本地化渲染。
-// extra 可携带 login_method、user_agent 等附加信息（普通用户可见）。
-func RecordLoginLog(userId int, username string, content string, ip string, action string, params map[string]interface{}, extra map[string]interface{}) {
-	other := map[string]interface{}{}
-	for k, v := range extra {
-		other[k] = v
+// other 包含 login_method、user_agent 等结构化信息。
+func RecordLoginLog(userId, actorRole int, username string, content string, ip string, action string, params map[string]any, other AuditOther, request ...*gin.Context) {
+	other.Op = &AuditOperation{Action: action, Params: params}
+	var c *gin.Context
+	if len(request) > 0 {
+		c = request[0]
 	}
-	other["op"] = buildOpField(action, params)
-	log := &Log{
-		UserId:    userId,
-		Username:  username,
-		CreatedAt: common.GetTimestamp(),
-		Type:      LogTypeLogin,
-		Content:   content,
-		Ip:        ip,
-		Other:     common.MapToJsonStr(other),
-	}
-	if err := createLog(log); err != nil {
-		common.SysLog("failed to record login log: " + err.Error())
-	}
+	RecordAuditLog(c, AuditLog{UserId: userId, Username: username, ActorRole: actorRole, Category: AuditCategoryLogin, Action: action, Content: content, Ip: ip, Other: other, Success: true})
 }
 
-// RecordOperationAuditLog 记录管理/高危操作审计日志（type=LogTypeManage）。
-// logUserId 为日志归属者：资源操作通常归操作者，针对用户的操作归目标用户。
-// username 内部按 logUserId 查询。content 为英文兜底文本（供导出使用）。
+// RecordOperationAuditLog writes new operation/security events to the audit table.
+// logUserId 为日志归属者，管理审计日志应归属实际操作者；目标资源/用户放入
+// action params。username 内部按 logUserId 查询。content 为英文兜底文本（供导出使用）。
 // action+params 写入 Other.op，供前端本地化渲染（普通用户可见，不含敏感信息）。
 // adminInfo 存放操作者身份（写入 Other.admin_info，普通用户查询时剥离）；
 // auditInfo 存放路由/方法/结果等中间件兜底信息（写入 Other.audit_info，普通用户查询时剥离）。
-func RecordOperationAuditLog(logUserId int, content string, ip string, action string, params map[string]interface{}, adminInfo map[string]interface{}, auditInfo map[string]interface{}) {
+func RecordOperationAuditLog(logUserId, actorRole int, content string, ip string, action string, params map[string]any, adminInfo *AuditAdminInfo, auditInfo *AuditRequestInfo, request ...*gin.Context) {
 	username, _ := GetUsernameById(logUserId, false)
-	other := map[string]interface{}{
-		"op": buildOpField(action, params),
+	other := AuditOther{
+		Op:        &AuditOperation{Action: action, Params: params},
+		AdminInfo: adminInfo,
+		AuditInfo: auditInfo,
 	}
-	if len(adminInfo) > 0 {
-		other["admin_info"] = adminInfo
+	var c *gin.Context
+	if len(request) > 0 {
+		c = request[0]
 	}
-	if len(auditInfo) > 0 {
-		other["audit_info"] = auditInfo
+	category := AuditCategoryOperation
+	if adminInfo == nil {
+		category = AuditCategorySecurity
 	}
-	log := &Log{
-		UserId:    logUserId,
-		Username:  username,
-		CreatedAt: common.GetTimestamp(),
-		Type:      LogTypeManage,
-		Content:   content,
-		Ip:        ip,
-		Other:     common.MapToJsonStr(other),
+	status, success := 200, true
+	if auditInfo != nil {
+		status = auditInfo.Status
+		success = auditInfo.Success
 	}
-	if err := createLog(log); err != nil {
-		common.SysLog("failed to record operation audit log: " + err.Error())
-	}
+	RecordAuditLog(c, AuditLog{UserId: logUserId, Username: username, ActorRole: actorRole, Category: category, Action: action, Content: content, Ip: ip, Status: status, Success: success, Other: other})
 }
 
 func RecordTopupLog(userId int, content string, callerIp string, paymentMethod string, callbackPaymentMethod string) {
 	username, _ := GetUsernameById(userId, false)
-	adminInfo := map[string]interface{}{
+	other := NewLogOther()
+	other.MergeAdmin(map[string]any{
 		"server_ip":               common.GetIp(),
 		"node_name":               common.NodeName,
 		"caller_ip":               callerIp,
 		"payment_method":          paymentMethod,
 		"callback_payment_method": callbackPaymentMethod,
 		"version":                 common.Version,
-	}
-	other := map[string]interface{}{
-		"admin_info": adminInfo,
-	}
+	})
 	log := &Log{
 		UserId:    userId,
 		Username:  username,
@@ -326,7 +302,7 @@ func RecordTopupLog(userId int, content string, callerIp string, paymentMethod s
 		Type:      LogTypeTopup,
 		Content:   content,
 		Ip:        callerIp,
-		Other:     common.MapToJsonStr(other),
+		Other:     other.JSONString(),
 	}
 	err := createLog(log)
 	if err != nil {
@@ -335,12 +311,12 @@ func RecordTopupLog(userId int, content string, callerIp string, paymentMethod s
 }
 
 func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string, tokenName string, content string, tokenId int, useTimeSeconds int,
-	isStream bool, group string, other map[string]interface{}) {
+	isStream bool, group string, other *LogOther) {
 	logger.LogInfo(c, fmt.Sprintf("record error log: userId=%d, channelId=%d, modelName=%s, tokenName=%s, content=%s", userId, channelId, modelName, tokenName, common.LocalLogPreview(content)))
 	username := c.GetString("username")
 	requestId := c.GetString(common.RequestIdKey)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
-	otherStr := common.MapToJsonStr(other)
+	otherStr := other.JSONString()
 	// 判断是否需要记录 IP
 	needRecordIp := false
 	if settingMap, err := GetUserSetting(userId, false); err == nil {
@@ -397,10 +373,11 @@ type RecordConsumeLogParams struct {
 	// UseTimeMs 请求级总耗时的毫秒精确值，仅虚拟模型 internal 候选注入候选尝试序列使用，普通请求为零喵。
 	UseTimeMs int64 `json:"-"`
 	// FirstByteMs 请求级首字耗时（毫秒），仅虚拟模型 internal 候选注入候选尝试序列使用，普通请求为零喵。
-	FirstByteMs int64                  `json:"-"`
-	IsStream    bool                   `json:"is_stream"`
-	Group       string                 `json:"group"`
-	Other       map[string]interface{} `json:"other"`
+	FirstByteMs int64  `json:"-"`
+	IsStream    bool   `json:"is_stream"`
+	Group       string `json:"group"`
+	// Other 为上游引入的强类型元数据容器（按 user/admin/root 可见性分区存储）喵。
+	Other *LogOther `json:"other"`
 }
 
 // InjectVirtualModelAttempts 若请求处于虚拟模型上下文，把候选尝试摘要写入 other 的 candidates 字段喵。
@@ -489,7 +466,10 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 		logType = virtualLogType
 		// 虚拟模型 internal 候选成功：先追加成功尝试（带该候选自己的额度与用量），再注入全部候选尝试序列到 Other 喵。
 		appendVirtualModelSuccessAttempt(c, params.ModelName, params.UseTimeMs, params.FirstByteMs, params.Quota, params.PromptTokens, params.CompletionTokens)
-		InjectVirtualModelAttempts(c, params.Other)
+		// 上游把消费日志的 Other 改成强类型 *LogOther：候选尝试先收集成 map，再合并进 public 可见区喵。
+		candidateAttemptsOther := make(map[string]interface{}, 1)
+		InjectVirtualModelAttempts(c, candidateAttemptsOther)
+		params.Other.MergePublic(candidateAttemptsOther)
 		// 日志行代表整次虚拟模型请求：额度与 token 改写为全候选累计，候选级明细由 candidates 序列承载喵。
 		cumulativeBilling := virtualModelCumulativeBilling(c)
 		if cumulativeBilling.Quota > 0 {
@@ -506,7 +486,7 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	requestId := c.GetString(common.RequestIdKey)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
 	createdAt := common.GetTimestamp()
-	otherStr := common.MapToJsonStr(params.Other)
+	otherStr := params.Other.JSONString()
 	// 判断是否需要记录 IP
 	needRecordIp := false
 	if settingMap, err := GetUserSetting(userId, false); err == nil {
@@ -694,7 +674,7 @@ type RecordTaskBillingLogParams struct {
 	Quota     int
 	TokenId   int
 	Group     string
-	Other     map[string]interface{}
+	Other     *LogOther
 	NodeName  string // 任务发起节点；为空时回退当前节点
 }
 
@@ -722,7 +702,7 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 		ChannelId: params.ChannelId,
 		TokenId:   params.TokenId,
 		Group:     params.Group,
-		Other:     common.MapToJsonStr(params.Other),
+		Other:     params.Other.JSONString(),
 	}
 	err := createLog(log)
 	if err != nil {
@@ -837,7 +817,6 @@ func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName
 			logs[i].ChannelName = channelMap[logs[i].ChannelId]
 		}
 	}
-	fillLogModelIcons(logs)
 
 	return logs, total, err
 }
@@ -898,68 +877,7 @@ func GetUserLogs(userId int, sharedModelNames []string, logType int, startTimest
 	}
 
 	formatUserLogs(logs, startIdx)
-	fillLogModelIcons(logs)
-	if console_setting.GetConsoleSetting().HideUpstreamRequestID {
-		for _, entry := range logs {
-			entry.UpstreamRequestId = ""
-		}
-	}
 	return logs, total, err
-}
-
-func fillLogModelIcons(logs []*Log) {
-	if len(logs) == 0 || DB == nil {
-		return
-	}
-	names := make([]string, 0, len(logs))
-	seen := make(map[string]struct{}, len(logs))
-	for _, entry := range logs {
-		if entry.ModelName == "" {
-			continue
-		}
-		if _, ok := seen[entry.ModelName]; ok {
-			continue
-		}
-		seen[entry.ModelName] = struct{}{}
-		names = append(names, entry.ModelName)
-	}
-	if len(names) == 0 {
-		return
-	}
-	var models []Model
-	if err := DB.Select("model_name", "icon", "vendor_id").Where("model_name IN ?", names).Find(&models).Error; err != nil {
-		return
-	}
-	icons := make(map[string]string, len(models))
-	vendorIDs := make([]int, 0, len(models))
-	seenVendors := make(map[int]struct{})
-	for _, item := range models {
-		icons[item.ModelName] = item.Icon
-		if item.VendorID > 0 {
-			if _, ok := seenVendors[item.VendorID]; !ok {
-				seenVendors[item.VendorID] = struct{}{}
-				vendorIDs = append(vendorIDs, item.VendorID)
-			}
-		}
-	}
-	vendorIcons := make(map[int]string, len(vendorIDs))
-	if len(vendorIDs) > 0 {
-		var vendors []Vendor
-		if err := DB.Select("id", "icon").Where("id IN ?", vendorIDs).Find(&vendors).Error; err == nil {
-			for _, vendor := range vendors {
-				vendorIcons[vendor.Id] = vendor.Icon
-			}
-		}
-	}
-	for _, entry := range logs {
-		entry.ModelIcon = icons[entry.ModelName]
-		for _, item := range models {
-			if item.ModelName == entry.ModelName {
-				entry.ProviderIcon = vendorIcons[item.VendorID]
-				break
-			}
-		}
-	}
 }
 
 type Stat struct {
@@ -968,8 +886,7 @@ type Stat struct {
 	Tpm   int `json:"tpm"`
 }
 
-// GetTokenRPM returns consume-log counts for the last minute in one grouped
-// query. Keeping this grouped avoids an N+1 query when rendering the key list.
+// GetTokenRPM returns consume-log counts for the last minute in one grouped query.
 func GetTokenRPM(tokenIDs []int) (map[int]int, error) {
 	result := make(map[int]int, len(tokenIDs))
 	if len(tokenIDs) == 0 {

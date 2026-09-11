@@ -48,7 +48,7 @@ func TestRecordConsumeLogVirtualModelType(t *testing.T) {
 		ModelName:        "gpt-4o",
 		Quota:            300,
 		Group:            "default",
-		Other:            map[string]interface{}{"prompt_tokens": 10},
+		Other:            logOtherForTest(map[string]interface{}{"prompt_tokens": 10}),
 		// 请求级毫秒耗时与首字耗时随 internal 成功尝试写入候选序列喵。
 		UseTimeMs:   1234,
 		FirstByteMs: 300,
@@ -180,4 +180,12 @@ func TestSumUsedQuotaMatchesGetUserLogsSharedScope(t *testing.T) {
 	}
 	require.Equal(t, listQuota, int64(stat.Quota))
 	require.Equal(t, 300, stat.Quota)
+}
+
+// logOtherForTest 把测试用的扁平字段包装成强类型 *LogOther（统一写入 public 可见区）喵。
+// 上游把 RecordConsumeLogParams.Other 从 map 改成 *LogOther 后，测试需要走该辅助函数喵。
+func logOtherForTest(values map[string]interface{}) *LogOther {
+	other := NewLogOther()
+	other.MergePublic(values)
+	return other
 }

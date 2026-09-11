@@ -35,6 +35,8 @@ import { AffiliateRewardsCard } from './components/affiliate-rewards-card'
 import { BillingHistoryDialog } from './components/dialogs/billing-history-dialog'
 import { CreemConfirmDialog } from './components/dialogs/creem-confirm-dialog'
 import { MoneroPaymentDialog } from './components/dialogs/monero-payment-dialog'
+import { NowPaymentsCurrencyDialog } from './components/dialogs/nowpayments-currency-dialog'
+import { NowPaymentsPaymentDialog } from './components/dialogs/nowpayments-payment-dialog'
 import { PaymentConfirmDialog } from './components/dialogs/payment-confirm-dialog'
 import { TransferDialog } from './components/dialogs/transfer-dialog'
 import { TransferToUserDialog } from './components/dialogs/transfer-to-user-dialog'
@@ -52,10 +54,12 @@ import {
   useWaffoPayment,
   useWaffoPancakePayment,
   useMoneroPayment,
+  useNowPaymentsPayment,
 } from './hooks'
 import {
   getDefaultPaymentType,
   getMinTopupAmount,
+  getPaymentMethodMinTopup,
   dispatchSelectedPayment,
 } from './lib'
 import type {
@@ -65,6 +69,7 @@ import type {
   CreemProduct,
   WaffoPayMethod,
   MoneroInvoice,
+  NowPaymentsInvoice,
 } from './types'
 
 interface WalletProps {
@@ -96,6 +101,13 @@ export function Wallet(props: WalletProps) {
   const [showSubscriptionPanel, setShowSubscriptionPanel] = useState(true)
   const [moneroInvoice, setMoneroInvoice] = useState<MoneroInvoice | null>(null)
   const [moneroDialogOpen, setMoneroDialogOpen] = useState(false)
+  const [nowPaymentsInvoice, setNowPaymentsInvoice] =
+    useState<NowPaymentsInvoice | null>(null)
+  const [nowPaymentsDialogOpen, setNowPaymentsDialogOpen] = useState(false)
+  const [nowPaymentsCurrencyDialogOpen, setNowPaymentsCurrencyDialogOpen] =
+    useState(false)
+  const [selectedNowPaymentsCurrency, setSelectedNowPaymentsCurrency] =
+    useState('')
 
   const { status } = useStatus()
   const { currency } = useSystemConfig()
@@ -149,6 +161,10 @@ export function Wallet(props: WalletProps) {
   const { processing: pancakeProcessing, processWaffoPancakePayment } =
     useWaffoPancakePayment()
   const { processing: moneroProcessing, createInvoice } = useMoneroPayment()
+  const {
+    processing: nowPaymentsProcessing,
+    createInvoice: createNowPaymentsInvoice,
+  } = useNowPaymentsPayment()
 
   // Fetch and refresh user data
   const fetchUser = useCallback(async () => {
@@ -195,6 +211,16 @@ export function Wallet(props: WalletProps) {
     }
   }, [topupInfo, calculatePaymentAmount])
 
+  useEffect(() => {
+    const currencies = topupInfo?.nowpayments_pay_currencies || []
+    if (
+      currencies.length > 0 &&
+      !currencies.includes(selectedNowPaymentsCurrency)
+    ) {
+      setSelectedNowPaymentsCurrency(currencies[0])
+    }
+  }, [topupInfo?.nowpayments_pay_currencies, selectedNowPaymentsCurrency])
+
   // Get current payment type (selected or default)
   const getCurrentPaymentType = useCallback(() => {
     return selectedPaymentMethod?.type || getDefaultPaymentType(topupInfo)
@@ -221,9 +247,11 @@ export function Wallet(props: WalletProps) {
     setPaymentLoading(method.type)
 
     try {
-      // Validate minimum topup
-      const minTopup = getMinTopupAmount(topupInfo)
+      // Validate the selected method's minimum, which may differ from the
+      // global minimum when multiple gateways are enabled.
+      const minTopup = getPaymentMethodMinTopup(method, topupInfo)
       if (topupAmount < minTopup) {
+        toast.error(t('Minimum topup amount: {{amount}}', { amount: minTopup }))
         return
       }
 
@@ -237,10 +265,31 @@ export function Wallet(props: WalletProps) {
         return
       }
 
+      if (method.type === PAYMENT_TYPES.NOWPAYMENTS) {
+        setNowPaymentsCurrencyDialogOpen(true)
+        return
+      }
+
       await calculatePaymentAmount(topupAmount, method.type)
       setConfirmDialogOpen(true)
     } finally {
       setPaymentLoading(null)
+    }
+  }
+
+  const handleNowPaymentsCurrencyConfirm = async () => {
+    const currency =
+      selectedNowPaymentsCurrency || topupInfo?.nowpayments_pay_currencies?.[0]
+    if (!currency) {
+      toast.error(t('No cryptocurrency payment currency is enabled'))
+      return
+    }
+
+    const invoice = await createNowPaymentsInvoice(topupAmount, currency)
+    if (invoice) {
+      setNowPaymentsCurrencyDialogOpen(false)
+      setNowPaymentsInvoice(invoice)
+      setNowPaymentsDialogOpen(true)
     }
   }
 
@@ -474,6 +523,8 @@ export function Wallet(props: WalletProps) {
                     topupInfo?.enable_waffo_pancake_topup
                   }
                   enableMoneroTopup={topupInfo?.enable_monero_topup}
+                  enableNowPaymentsTopup={topupInfo?.enable_nowpayments_topup}
+                  nowPaymentsCurrencies={topupInfo?.nowpayments_pay_currencies}
                 />
               </div>
 
@@ -519,7 +570,11 @@ export function Wallet(props: WalletProps) {
         paymentMethod={selectedPaymentMethod}
         calculating={calculating}
         processing={
-          processing || waffoProcessing || pancakeProcessing || moneroProcessing
+          processing ||
+          waffoProcessing ||
+          pancakeProcessing ||
+          moneroProcessing ||
+          nowPaymentsProcessing
         }
         discountRate={getDiscountRate()}
         usdExchangeRate={effectiveUsdExchangeRate}
@@ -557,6 +612,21 @@ export function Wallet(props: WalletProps) {
         open={moneroDialogOpen}
         onOpenChange={setMoneroDialogOpen}
         invoice={moneroInvoice}
+        onPaymentSuccess={handleMoneroPaymentSuccess}
+      />
+      <NowPaymentsCurrencyDialog
+        open={nowPaymentsCurrencyDialogOpen}
+        onOpenChange={setNowPaymentsCurrencyDialogOpen}
+        currencies={topupInfo?.nowpayments_pay_currencies || []}
+        selectedCurrency={selectedNowPaymentsCurrency}
+        onSelectedCurrencyChange={setSelectedNowPaymentsCurrency}
+        onConfirm={handleNowPaymentsCurrencyConfirm}
+        loading={nowPaymentsProcessing}
+      />
+      <NowPaymentsPaymentDialog
+        open={nowPaymentsDialogOpen}
+        onOpenChange={setNowPaymentsDialogOpen}
+        invoice={nowPaymentsInvoice}
         onPaymentSuccess={handleMoneroPaymentSuccess}
       />
     </>
