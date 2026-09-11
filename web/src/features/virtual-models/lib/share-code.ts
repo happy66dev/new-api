@@ -142,30 +142,48 @@ export function resolveShareCodeStatus(
   return 'active'
 }
 
+// shareCodeMaxModelNameLength 与后端 NormalizeVirtualModelName 的 96 字符上限保持一致喵。
+const shareCodeMaxModelNameLength = 96
+
+// shareCodeModelNamePattern 与后端 virtualModelNamePattern 口径一致：只允许 ASCII 字母、数字、短横线与下划线喵。
+const shareCodeModelNamePattern = /[^A-Za-z0-9_-]/g
+
+// normalizeShareCodeSuggestedName 把快照显示名推导成一个合法的模型标识建议值喵。
+// 只用于预填输入框，最终合法性仍然由后端 NormalizeVirtualModelName 决定喵。
+export function normalizeShareCodeSuggestedName(displayName: string): string {
+  const trimmedDisplayName = displayName.trim()
+  // 喵~防御：空显示名推导不出建议值，返回空串让输入框留空由用户自己填喵。
+  if (trimmedDisplayName === '') {
+    return ''
+  }
+  // 先剥掉 virtual/ 前缀，与后端"允许用户连前缀一起填"的口径保持一致喵。
+  const withoutPrefix = trimmedDisplayName.startsWith('virtual/')
+    ? trimmedDisplayName.slice('virtual/'.length)
+    : trimmedDisplayName
+  // 非法字符统一换成短横线，避免纯中文显示名被清空后一个字符都不剩喵。
+  const sanitizedName = withoutPrefix
+    .replaceAll(shareCodeModelNamePattern, '-')
+    .replaceAll(/^-+|-+$/g, '')
+  // 喵~防御：清洗后什么都不剩就说明这个名字推导不出标识，交给用户自己填喵。
+  if (sanitizedName === '') {
+    return ''
+  }
+  // 喵~防御：先按后端上限截断，保证预填出来的建议值一定能通过后端校验喵。
+  return sanitizedName.slice(0, shareCodeMaxModelNameLength).toLowerCase()
+}
+
 // countShareableCandidates 统计会被真正写进分享码快照的候选数量喵。
-// 口径与后端 buildVirtualModelSharePayload 对齐：内部候选与直填型自定义候选都会进快照，
-// 引用型自定义候选（upstream_model_id 指向用户自己的上游条目）会被整体省略喵。
+// 口径与后端 buildVirtualModelSharePayload 对齐：内部候选与全部自定义候选都会进快照，
+// 其中引用型自定义候选（upstream_model_id 指向用户自己的上游条目）会被解析成 url 后照常导出喵。
 export function countShareableCandidates(
-  candidates:
-    | ReadonlyArray<{
-        source_type?: string
-        upstream_model_id?: number | null
-      }>
-    | undefined
+  candidates: ReadonlyArray<{ source_type?: string }> | undefined
 ): number {
   // 喵~防御：候选列表还没加载出来时按 0 处理，宁可先禁用按钮，也不放行一次注定失败的请求喵。
   if (!candidates) {
     return 0
   }
-  return candidates.filter((candidate) => {
-    if (candidate.source_type === 'internal') {
-      return true
-    }
-    // 未知来源不会被导出，按不可分享处理喵。
-    if (candidate.source_type !== 'custom') {
-      return false
-    }
-    // 引用型自定义候选会被后端省略，只有明确没有引用（零或缺失）才算可分享喵。
-    return (candidate.upstream_model_id ?? 0) <= 0
-  }).length
+  return candidates.filter(
+    (candidate) =>
+      candidate.source_type === 'internal' || candidate.source_type === 'custom'
+  ).length
 }

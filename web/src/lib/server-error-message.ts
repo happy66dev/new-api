@@ -34,6 +34,10 @@ const serverErrorMessageKeys = {
   TELEGRAM_BIND_INTERNAL_ERROR: 'Telegram binding failed. Please try again.',
   // 虚拟模型分享码相关错误：后端返回的是小写 code，这里按原样登记才能精确命中喵。
   virtual_model_share_no_candidate: 'This plan has no shareable candidate.',
+  virtual_model_share_name_required:
+    'Please enter a model ID for the imported model.',
+  virtual_model_share_display_name_required:
+    'Please enter a display name for the imported model.',
   virtual_model_share_code_not_found:
     'This share code does not exist or has been deleted.',
   virtual_model_share_code_expired: 'This share code has expired.',

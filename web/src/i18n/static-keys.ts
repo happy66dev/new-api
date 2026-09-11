@@ -619,6 +619,8 @@ export const STATIC_I18N_KEYS = [
 
   // Virtual model share code server error codes (selected dynamically by backend error code)
   'This plan has no shareable candidate.',
+  'Please enter a model ID for the imported model.',
+  'Please enter a display name for the imported model.',
   'This share code does not exist or has been deleted.',
   'This share code has expired.',
   'This share code has reached its import limit.',

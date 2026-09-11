@@ -355,8 +355,6 @@ export type VirtualModelShareCodeCreated = {
   candidate_count: number
   internal_candidate_count: number
   custom_candidate_count: number
-  // omitted_reference_candidates 是因引用用户上游而被省略的候选数量，它们不会进入分享码喵。
-  omitted_reference_candidates: number
   expires_at: number
   max_imports: number
   created_time: number
@@ -465,10 +463,11 @@ export async function precheckVirtualModelShareImport(
 
 // importVirtualModelShareCode 把分享码里的方案复制一份到当前用户名下喵。
 // 这里同样跳过全局错误弹窗，导入失败原因直接显示在导入弹窗里更方便重试喵。
+// normalized_name 与 display_name 都由导入方自己决定且必填，撞名时后端返回 409 冲突喵。
 export async function importVirtualModelShareCode(input: {
   code: string
-  normalized_name?: string
-  display_name?: string
+  normalized_name: string
+  display_name: string
 }): Promise<VirtualModelApiResponse<VirtualModelShareImportResult>> {
   const response = await api.post('/api/virtual-models/import', input, {
     skipErrorHandler: true,

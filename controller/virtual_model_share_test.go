@@ -74,6 +74,8 @@ func setupVirtualModelShareTestDB(t *testing.T) {
 		&model.VirtualModelTokenBinding{}, &model.VirtualModelManualFreeze{}, &model.VirtualModelInternalFreezeState{},
 		&model.VirtualModelCustomFreezeState{}, &model.VirtualModelAuditLog{}, &model.VirtualModelShareCode{},
 		&model.Ability{}, &model.EntityProbeState{},
+		// 引用型候选要按属主加载用户上游条目，因此夹具必须建出这张表喵。
+		&model.UserUpstreamModel{},
 	))
 	// 共享内存库跨用例存活，按表名逐一清空避免主键或唯一索引残留冲突喵。
 	clearTables := []string{
@@ -81,7 +83,7 @@ func setupVirtualModelShareTestDB(t *testing.T) {
 		"virtual_model_custom_candidates", "virtual_model_failure_rules", "virtual_model_global_failure_rules",
 		"virtual_model_token_bindings", "virtual_model_manual_freezes", "virtual_model_internal_freeze_states",
 		"virtual_model_custom_freeze_states", "virtual_model_audit_logs", "virtual_model_share_codes",
-		"abilities", "entity_probe_states",
+		"abilities", "entity_probe_states", "user_upstream_models",
 	}
 	for _, tableName := range clearTables {
 		require.NoError(t, model.DB.Exec("DELETE FROM "+tableName).Error)
@@ -166,8 +168,19 @@ func TestBuildVirtualModelSharePayloadStripsCredentials(t *testing.T) {
 	setupVirtualModelShareTestDB(t)
 	virtualModel, _, _, plainBaseURL := createVirtualModelShareTestModel(t, 7, "vm-share-strip")
 
-	// 追加一个引用型自定义候选：它必须被整体省略而不是导出成半残配置喵。
-	referenceUpstreamID := int64(42)
+	// 引用型自定义候选：它必须被解析成 url 导出，但被引用条目的 API Key 仍然不能进快照喵。
+	const referencedBaseURL = "https://referenced-upstream.example.com"
+	const referencedAPIKey = "sk-referenced-secret-key-0987654321"
+	referencedUpstream := &model.UserUpstreamModel{
+		OwnerUserID: 7, NormalizedName: "referenced-upstream", DisplayName: "被引用的上游",
+		Enabled: true, RealModelName: "claude-3-5-sonnet", AuthStyle: "anthropic",
+	}
+	referencedUpstream.EncryptedBaseURL, referencedUpstream.CredentialVersion, _ = virtualmodelservice.EncryptCredential(referencedBaseURL)
+	referencedUpstream.EncryptedAPIKey, _, _ = virtualmodelservice.EncryptCredential(referencedAPIKey)
+	referencedUpstream.APIKeyFingerprint = virtualmodelservice.CredentialFingerprint(referencedAPIKey)
+	require.NoError(t, model.DB.Create(referencedUpstream).Error)
+
+	referenceUpstreamID := referencedUpstream.ID
 	referenceCandidate := &model.VirtualModelCandidate{
 		VirtualModelID: virtualModel.ID, StableOrder: 2, SourceType: model.VirtualModelSourceCustom,
 		Enabled: true, TimeoutSeconds: 60,
@@ -177,10 +190,10 @@ func TestBuildVirtualModelSharePayloadStripsCredentials(t *testing.T) {
 		CandidateID: referenceCandidate.ID, UpstreamModelID: &referenceUpstreamID, AuthStyle: model.VirtualModelAuthBearer,
 	}).Error)
 
-	payload, omittedReferenceCandidates, buildError := buildVirtualModelSharePayload(virtualModel)
+	payload, buildError := buildVirtualModelSharePayload(virtualModel)
 	require.NoError(t, buildError)
-	require.Equal(t, 1, omittedReferenceCandidates)
-	require.Len(t, payload.Candidates, 2)
+	// 引用型候选不再被省略，因此三个候选都在快照里喵。
+	require.Len(t, payload.Candidates, 3)
 
 	encodedPayload, marshalError := common.Marshal(payload)
 	require.NoError(t, marshalError)
@@ -190,6 +203,8 @@ func TestBuildVirtualModelSharePayloadStripsCredentials(t *testing.T) {
 	assert.NotContains(t, payloadText, "sk-share-secret-key-1234567890")
 	assert.NotContains(t, payloadText, virtualmodelservice.CredentialFingerprint("sk-share-secret-key-1234567890"))
 	assert.NotContains(t, payloadText, virtualmodelservice.CredentialFingerprint(plainBaseURL))
+	assert.NotContains(t, payloadText, referencedAPIKey)
+	assert.NotContains(t, payloadText, referencedUpstream.APIKeyFingerprint)
 	assert.NotContains(t, payloadText, "api_key")
 	assert.NotContains(t, payloadText, "fingerprint")
 	assert.NotContains(t, payloadText, "upstream_model_id")
@@ -201,6 +216,13 @@ func TestBuildVirtualModelSharePayloadStripsCredentials(t *testing.T) {
 	// 内部候选零秘密，分组与真实模型原样导出喵。
 	assert.Equal(t, "default", payload.Candidates[0].GroupName)
 	assert.Equal(t, "gpt-4o", payload.Candidates[0].RealModelName)
+
+	// 引用型候选被映射成普通自定义候选：地址、真实模型名与认证方式都取自被引用条目喵。
+	resolvedReference := payload.Candidates[2]
+	assert.Equal(t, referencedBaseURL, resolvedReference.BaseURL)
+	assert.Equal(t, "claude-3-5-sonnet", resolvedReference.RealModelName)
+	assert.Equal(t, string(model.VirtualModelAuthAnthropic), resolvedReference.AuthStyle)
+	assert.True(t, resolvedReference.RequiresCredential)
 	// 模型级全局兜底规则一并导出喵。
 	require.Len(t, payload.GlobalFailureRules, 1)
 	assert.Equal(t, 500, payload.GlobalFailureRules[0].HTTPStatus)
@@ -290,7 +312,7 @@ func TestImportVirtualModelShareCodeCreatesDisabledCandidates(t *testing.T) {
 		CandidateID: inaccessibleCandidate.ID, GroupName: virtualModelShareUnusableGroup, RealModelName: "gpt-4o",
 	}).Error)
 
-	payload, _, buildError := buildVirtualModelSharePayload(sharerModel)
+	payload, buildError := buildVirtualModelSharePayload(sharerModel)
 	require.NoError(t, buildError)
 	encodedPayload, marshalError := common.Marshal(payload)
 	require.NoError(t, marshalError)
@@ -302,7 +324,8 @@ func TestImportVirtualModelShareCodeCreatesDisabledCandidates(t *testing.T) {
 	}
 	require.NoError(t, model.CreateVirtualModelShareCode(shareCode))
 
-	ctx, recorder := newVirtualModelShareContext(9, "default", `{"code":"sharetestcode234567"}`)
+	// 两个名字都由导入方自己填写，与手工创建虚拟模型的字段口径一致喵。
+	ctx, recorder := newVirtualModelShareContext(9, "default", `{"code":"sharetestcode234567","normalized_name":"my-imported-plan","display_name":"我的导入方案"}`)
 	ImportVirtualModelShareCode(ctx)
 	// 分享码大小写不敏感，规范化后应能命中喵。
 	require.Equal(t, http.StatusOK, recorder.Code)
@@ -382,6 +405,138 @@ func TestImportVirtualModelShareCodeCreatesDisabledCandidates(t *testing.T) {
 	var leakedCount int64
 	require.NoError(t, model.DB.Model(&model.VirtualModel{}).Where("id = ? AND owner_user_id = ?", sharerModel.ID, 9).Count(&leakedCount).Error)
 	assert.Zero(t, leakedCount)
+}
+
+// TestImportResolvesReferenceCandidateIntoURLCandidate 验证引用型候选经由分享码变成"带地址、缺凭据"的自定义候选喵。
+// 这是本轮产品要求的核心链路：用户上游条目（非直接 url+key）也要能被映射成 url 分享出去喵。
+func TestImportResolvesReferenceCandidateIntoURLCandidate(t *testing.T) {
+	setupVirtualModelShareTestDB(t)
+	const referencedBaseURL = "https://referenced-share.example.com"
+	// 分享者自己建立一条上游条目，凭据只属于他自己喵。
+	sharerUpstream := &model.UserUpstreamModel{
+		OwnerUserID: 7, NormalizedName: "sharer-upstream", DisplayName: "分享者的上游",
+		Enabled: true, RealModelName: "claude-3-5-sonnet", AuthStyle: "anthropic",
+	}
+	sharerUpstream.EncryptedBaseURL, sharerUpstream.CredentialVersion, _ = virtualmodelservice.EncryptCredential(referencedBaseURL)
+	sharerUpstream.EncryptedAPIKey, _, _ = virtualmodelservice.EncryptCredential("sk-sharer-only-key-123456789")
+	require.NoError(t, model.DB.Create(sharerUpstream).Error)
+
+	sharerModel := &model.VirtualModel{
+		OwnerUserID: 7, NormalizedName: "vm-share-reference", DisplayName: "引用型方案",
+		Enabled: true, TotalTimeoutSeconds: 120, MaxLoopRounds: 1, CreatedTime: common.GetTimestamp(),
+	}
+	require.NoError(t, model.DB.Create(sharerModel).Error)
+	upstreamModelID := sharerUpstream.ID
+	referenceCandidate := &model.VirtualModelCandidate{
+		VirtualModelID: sharerModel.ID, StableOrder: 0, SourceType: model.VirtualModelSourceCustom,
+		Enabled: true, TimeoutSeconds: 60,
+	}
+	require.NoError(t, model.DB.Create(referenceCandidate).Error)
+	require.NoError(t, model.DB.Create(&model.VirtualModelCustomCandidate{
+		CandidateID: referenceCandidate.ID, UpstreamModelID: &upstreamModelID, AuthStyle: model.VirtualModelAuthBearer,
+	}).Error)
+
+	payload, buildError := buildVirtualModelSharePayload(sharerModel)
+	require.NoError(t, buildError)
+	encodedPayload, marshalError := common.Marshal(payload)
+	require.NoError(t, marshalError)
+	shareCode := &model.VirtualModelShareCode{
+		Code: "REFERENCETRAVEL2345", OwnerUserID: 7, SourceVirtualModelID: sharerModel.ID,
+		DisplayName: sharerModel.DisplayName, Payload: string(encodedPayload),
+		PayloadDigest: model.VirtualModelSharePayloadDigest(string(encodedPayload)),
+		Visibility:    model.VirtualModelShareVisibilityPrivate,
+	}
+	require.NoError(t, model.CreateVirtualModelShareCode(shareCode))
+
+	ctx, recorder := newVirtualModelShareContext(9, "default", `{"code":"referencetravel2345","normalized_name":"imported-reference","display_name":"导入的引用方案"}`)
+	ImportVirtualModelShareCode(ctx)
+	require.Equal(t, http.StatusOK, recorder.Code)
+
+	var importResponse struct {
+		Data struct {
+			ID                     int `json:"id"`
+			ImportedCandidateCount int `json:"imported_candidate_count"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.UnmarshalJsonStr(recorder.Body.String(), &importResponse))
+	assert.Equal(t, 1, importResponse.Data.ImportedCandidateCount)
+
+	var importedCandidate model.VirtualModelCandidate
+	require.NoError(t, model.DB.Where("virtual_model_id = ?", importResponse.Data.ID).First(&importedCandidate).Error)
+	assert.False(t, importedCandidate.Enabled)
+	var importedCustom model.VirtualModelCustomCandidate
+	require.NoError(t, model.DB.Where("candidate_id = ?", importedCandidate.ID).First(&importedCustom).Error)
+
+	// 地址与真实模型名来自被引用条目，认证方式同样跟着条目走喵。
+	decryptedBaseURL, decryptError := virtualmodelservice.DecryptCredential(importedCustom.EncryptedBaseURL, importedCustom.CredentialVersion)
+	require.NoError(t, decryptError)
+	assert.Equal(t, referencedBaseURL, decryptedBaseURL)
+	assert.Equal(t, "claude-3-5-sonnet", importedCustom.RealModelName)
+	assert.Equal(t, model.VirtualModelAuthAnthropic, importedCustom.AuthStyle)
+
+	// 喵~防御：分享码永不携带凭据，导入方拿到的必须是"缺 Key 且不引用任何条目"的干净候选喵。
+	assert.Empty(t, importedCustom.EncryptedAPIKey)
+	assert.Empty(t, importedCustom.APIKeyFingerprint)
+	assert.Nil(t, importedCustom.UpstreamModelID)
+}
+
+// TestImportVirtualModelShareCodeRequiresBothNames 验证缺名字或撞名时导入被拒绝且不落库喵。
+func TestImportVirtualModelShareCodeRequiresBothNames(t *testing.T) {
+	setupVirtualModelShareTestDB(t)
+	seedVirtualModelShareAbility(t, "default", "gpt-4o", 1)
+	sharerModel, _, _, _ := createVirtualModelShareTestModel(t, 7, "vm-share-name-required")
+	payload, buildError := buildVirtualModelSharePayload(sharerModel)
+	require.NoError(t, buildError)
+	encodedPayload, marshalError := common.Marshal(payload)
+	require.NoError(t, marshalError)
+	shareCode := &model.VirtualModelShareCode{
+		Code: "NAMEREQUIRED2345678", OwnerUserID: 7, SourceVirtualModelID: sharerModel.ID,
+		DisplayName: sharerModel.DisplayName, Payload: string(encodedPayload),
+		PayloadDigest: model.VirtualModelSharePayloadDigest(string(encodedPayload)),
+		Visibility:    model.VirtualModelShareVisibilityPrivate,
+	}
+	require.NoError(t, model.CreateVirtualModelShareCode(shareCode))
+	// 导入方先占住一个名字，用来触发撞名分支喵。
+	require.NoError(t, model.DB.Create(&model.VirtualModel{
+		OwnerUserID: 9, NormalizedName: "taken-name", DisplayName: "已占用", CreatedTime: common.GetTimestamp(),
+	}).Error)
+
+	testCases := []struct {
+		name              string
+		body              string
+		expectedCode      int
+		expectedErrorCode string
+	}{
+		{
+			name: "缺模型标识", body: `{"code":"namerequired2345678","display_name":"显示名"}`,
+			expectedCode: http.StatusBadRequest, expectedErrorCode: "virtual_model_share_name_required",
+		},
+		{
+			name: "缺显示名", body: `{"code":"namerequired2345678","normalized_name":"fresh-name"}`,
+			expectedCode: http.StatusBadRequest, expectedErrorCode: "virtual_model_share_display_name_required",
+		},
+		{
+			name: "模型名撞车", body: `{"code":"namerequired2345678","normalized_name":"taken-name","display_name":"显示名"}`,
+			expectedCode: http.StatusConflict, expectedErrorCode: "virtual_model_name_conflict",
+		},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx, recorder := newVirtualModelShareContext(9, "default", testCase.body)
+			ImportVirtualModelShareCode(ctx)
+			require.Equal(t, testCase.expectedCode, recorder.Code)
+			var errorResponse struct {
+				Code string `json:"code"`
+			}
+			require.NoError(t, common.UnmarshalJsonStr(recorder.Body.String(), &errorResponse))
+			assert.Equal(t, testCase.expectedErrorCode, errorResponse.Code)
+		})
+	}
+
+	// 喵~防御：三次失败都不能留下模型记录，导入方名下只应有预占的那一条喵。
+	var createdCount int64
+	require.NoError(t, model.DB.Model(&model.VirtualModel{}).Where("owner_user_id = ?", 9).Count(&createdCount).Error)
+	assert.Equal(t, int64(1), createdCount)
 }
 
 // TestImportVirtualModelShareCodeRejectsWhenNothingImportable 验证候选全不可用时整体拒绝导入喵。
@@ -492,7 +647,6 @@ func TestDeleteVirtualModelShareCodeIsOwnerScoped(t *testing.T) {
 }
 
 // TestCreateVirtualModelShareCodeRejectsPlanWithoutCandidate 验证快照里一条候选都没有时禁止生成分享码喵。
-// 引用型自定义候选因归属问题会被整体省略，所以"只有引用型候选"的模型正好命中这个分支喵。
 func TestCreateVirtualModelShareCodeRejectsPlanWithoutCandidate(t *testing.T) {
 	setupVirtualModelShareTestDB(t)
 	virtualModel := &model.VirtualModel{
@@ -500,15 +654,6 @@ func TestCreateVirtualModelShareCodeRejectsPlanWithoutCandidate(t *testing.T) {
 		Enabled: true, TotalTimeoutSeconds: 120, MaxLoopRounds: 1, CreatedTime: common.GetTimestamp(),
 	}
 	require.NoError(t, model.DB.Create(virtualModel).Error)
-	referenceUpstreamID := int64(42)
-	candidate := &model.VirtualModelCandidate{
-		VirtualModelID: virtualModel.ID, StableOrder: 0, SourceType: model.VirtualModelSourceCustom,
-		Enabled: true, TimeoutSeconds: 60,
-	}
-	require.NoError(t, model.DB.Create(candidate).Error)
-	require.NoError(t, model.DB.Create(&model.VirtualModelCustomCandidate{
-		CandidateID: candidate.ID, UpstreamModelID: &referenceUpstreamID, AuthStyle: model.VirtualModelAuthBearer,
-	}).Error)
 
 	ctx, recorder := newVirtualModelShareContext(7, "default", fmt.Sprintf(`{"virtual_model_id":%d}`, virtualModel.ID))
 	CreateVirtualModelShareCode(ctx)
@@ -520,30 +665,129 @@ func TestCreateVirtualModelShareCodeRejectsPlanWithoutCandidate(t *testing.T) {
 	assert.Zero(t, shareCodeCount)
 }
 
-// TestResolveVirtualModelShareImportNameSuffixesOnConflict 验证未指定名称时自动追加序号避开冲突喵。
-func TestResolveVirtualModelShareImportNameSuffixesOnConflict(t *testing.T) {
+// TestCreateVirtualModelShareCodeRejectsDanglingUpstreamReference 验证引用条目缺失时拒绝分享喵。
+// 引用型候选现在会被解析成 url 导出，解析不到就说明这条引用已经悬空，此时宁可整体失败喵。
+func TestCreateVirtualModelShareCodeRejectsDanglingUpstreamReference(t *testing.T) {
 	setupVirtualModelShareTestDB(t)
-	// 预先占用基础名，导入时应自动改用带 -2 后缀的名称喵。
+	virtualModel := &model.VirtualModel{
+		OwnerUserID: 7, NormalizedName: "vm-share-dangling", DisplayName: "悬空引用",
+		Enabled: true, TotalTimeoutSeconds: 120, MaxLoopRounds: 1, CreatedTime: common.GetTimestamp(),
+	}
+	require.NoError(t, model.DB.Create(virtualModel).Error)
+	// 9999 在 user_upstream_models 里不存在喵。
+	missingUpstreamID := int64(9999)
+	candidate := &model.VirtualModelCandidate{
+		VirtualModelID: virtualModel.ID, StableOrder: 0, SourceType: model.VirtualModelSourceCustom,
+		Enabled: true, TimeoutSeconds: 60,
+	}
+	require.NoError(t, model.DB.Create(candidate).Error)
+	require.NoError(t, model.DB.Create(&model.VirtualModelCustomCandidate{
+		CandidateID: candidate.ID, UpstreamModelID: &missingUpstreamID, AuthStyle: model.VirtualModelAuthBearer,
+	}).Error)
+
+	ctx, recorder := newVirtualModelShareContext(7, "default", fmt.Sprintf(`{"virtual_model_id":%d}`, virtualModel.ID))
+	CreateVirtualModelShareCode(ctx)
+	// 喵~防御：服务端内部原因只回受控的 503，不把"哪条引用坏了"暴露出去喵。
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+
+	var shareCodeCount int64
+	require.NoError(t, model.DB.Model(&model.VirtualModelShareCode{}).Where("owner_user_id = ?", 7).Count(&shareCodeCount).Error)
+	assert.Zero(t, shareCodeCount)
+}
+
+// TestCreateVirtualModelShareCodeRejectsOtherOwnerUpstreamReference 验证不能借分享码导出别人的上游条目喵。
+func TestCreateVirtualModelShareCodeRejectsOtherOwnerUpstreamReference(t *testing.T) {
+	setupVirtualModelShareTestDB(t)
+	// 上游条目属于用户 8，而虚拟模型属于用户 7，两者对不上就该拒绝喵。
+	otherOwnerUpstream := &model.UserUpstreamModel{
+		OwnerUserID: 8, NormalizedName: "other-owner-upstream", DisplayName: "别人的上游",
+		Enabled: true, RealModelName: "gpt-4o", AuthStyle: "bearer",
+	}
+	otherOwnerUpstream.EncryptedBaseURL, otherOwnerUpstream.CredentialVersion, _ = virtualmodelservice.EncryptCredential("https://other-owner.example.com")
+	require.NoError(t, model.DB.Create(otherOwnerUpstream).Error)
+
+	virtualModel := &model.VirtualModel{
+		OwnerUserID: 7, NormalizedName: "vm-share-cross-owner", DisplayName: "跨属主引用",
+		Enabled: true, TotalTimeoutSeconds: 120, MaxLoopRounds: 1, CreatedTime: common.GetTimestamp(),
+	}
+	require.NoError(t, model.DB.Create(virtualModel).Error)
+	otherOwnerUpstreamID := otherOwnerUpstream.ID
+	candidate := &model.VirtualModelCandidate{
+		VirtualModelID: virtualModel.ID, StableOrder: 0, SourceType: model.VirtualModelSourceCustom,
+		Enabled: true, TimeoutSeconds: 60,
+	}
+	require.NoError(t, model.DB.Create(candidate).Error)
+	require.NoError(t, model.DB.Create(&model.VirtualModelCustomCandidate{
+		CandidateID: candidate.ID, UpstreamModelID: &otherOwnerUpstreamID, AuthStyle: model.VirtualModelAuthBearer,
+	}).Error)
+
+	ctx, recorder := newVirtualModelShareContext(7, "default", fmt.Sprintf(`{"virtual_model_id":%d}`, virtualModel.ID))
+	CreateVirtualModelShareCode(ctx)
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+
+	var shareCodeCount int64
+	require.NoError(t, model.DB.Model(&model.VirtualModelShareCode{}).Where("owner_user_id = ?", 7).Count(&shareCodeCount).Error)
+	assert.Zero(t, shareCodeCount)
+}
+
+// TestResolveVirtualModelShareImportNameRequiresBothNames 验证模型标识与显示名都是必填项喵。
+func TestResolveVirtualModelShareImportNameRequiresBothNames(t *testing.T) {
+	setupVirtualModelShareTestDB(t)
+	ctx, _ := newVirtualModelShareContext(9, "default", "{}")
+
+	// 两个都填好了才会通过，并规范化成小写模型名喵。
+	normalizedName, displayName, resolveError := resolveVirtualModelShareImportName(ctx, virtualModelShareCodeImportInput{
+		NormalizedName: "virtual/My-Plan", DisplayName: "  我的方案  ",
+	})
+	require.NoError(t, resolveError)
+	assert.Equal(t, "my-plan", normalizedName)
+	assert.Equal(t, "我的方案", displayName)
+
+	// 缺模型标识：明确报"要填模型标识"，而不是替他瞎猜一个名字喵。
+	_, _, missingNameError := resolveVirtualModelShareImportName(ctx, virtualModelShareCodeImportInput{DisplayName: "只填了显示名"})
+	assert.ErrorIs(t, missingNameError, errVirtualModelShareNameRequired)
+
+	// 缺显示名：同样明确报错喵。
+	_, _, missingDisplayNameError := resolveVirtualModelShareImportName(ctx, virtualModelShareCodeImportInput{NormalizedName: "only-name"})
+	assert.ErrorIs(t, missingDisplayNameError, errVirtualModelShareDisplayNameRequired)
+
+	// 只填空白等同于没填喵。
+	_, _, blankNameError := resolveVirtualModelShareImportName(ctx, virtualModelShareCodeImportInput{NormalizedName: "   ", DisplayName: "显示名"})
+	assert.ErrorIs(t, blankNameError, errVirtualModelShareNameRequired)
+
+	// 非法字符被 NormalizeVirtualModelName 拦下，跟手工创建模型是同一套规则喵。
+	_, _, invalidNameError := resolveVirtualModelShareImportName(ctx, virtualModelShareCodeImportInput{NormalizedName: "带中文的名字", DisplayName: "显示名"})
+	require.Error(t, invalidNameError)
+	assert.NotErrorIs(t, invalidNameError, errVirtualModelShareNameRequired)
+}
+
+// TestResolveVirtualModelShareImportNameRejectsTakenNames 验证撞名一律报冲突而不是自动改名喵。
+func TestResolveVirtualModelShareImportNameRejectsTakenNames(t *testing.T) {
+	setupVirtualModelShareTestDB(t)
+	// 预先占用基础名，导入时不允许静默改成 imported-plan-2 喵。
 	require.NoError(t, model.DB.Create(&model.VirtualModel{
 		OwnerUserID: 9, NormalizedName: "imported-plan", DisplayName: "已存在的方案", CreatedTime: common.GetTimestamp(),
 	}).Error)
 
 	ctx, _ := newVirtualModelShareContext(9, "default", "{}")
-	payload := &model.VirtualModelSharePayload{DisplayName: "imported plan"}
-	normalizedName, displayName, resolveError := resolveVirtualModelShareImportName(ctx, virtualModelShareCodeImportInput{}, payload)
-	require.NoError(t, resolveError)
-	assert.Equal(t, "imported-plan-2", normalizedName)
-	assert.Equal(t, "imported plan", displayName)
-
-	// 显式指定已占用的名称时必须返回冲突而不是静默改名喵。
-	_, _, conflictError := resolveVirtualModelShareImportName(ctx, virtualModelShareCodeImportInput{NormalizedName: "imported-plan"}, payload)
+	_, _, conflictError := resolveVirtualModelShareImportName(ctx, virtualModelShareCodeImportInput{
+		NormalizedName: "imported-plan", DisplayName: "又一个方案",
+	})
 	assert.ErrorIs(t, conflictError, errVirtualModelShareNameConflict)
+
+	// 别人占用的同名不影响自己，唯一性口径跟创建虚拟模型一致是"单用户内唯一"喵。
+	_, _, otherOwnerNameError := resolveVirtualModelShareImportName(ctx, virtualModelShareCodeImportInput{
+		NormalizedName: "not-taken-by-me", DisplayName: "空闲的名字",
+	})
+	require.NoError(t, otherOwnerNameError)
 
 	// 软删除的行仍占用唯一索引，因此也不允许复用该名称喵。
 	softDeleted := &model.VirtualModel{OwnerUserID: 9, NormalizedName: "gone-plan", DisplayName: "已删除", CreatedTime: common.GetTimestamp()}
 	require.NoError(t, model.DB.Create(softDeleted).Error)
 	require.NoError(t, model.DB.Delete(&model.VirtualModel{}, softDeleted.ID).Error)
-	_, _, softDeleteConflictError := resolveVirtualModelShareImportName(ctx, virtualModelShareCodeImportInput{NormalizedName: "gone-plan"}, payload)
+	_, _, softDeleteConflictError := resolveVirtualModelShareImportName(ctx, virtualModelShareCodeImportInput{
+		NormalizedName: "gone-plan", DisplayName: "显示名",
+	})
 	assert.ErrorIs(t, softDeleteConflictError, errVirtualModelShareNameConflict)
 }
 

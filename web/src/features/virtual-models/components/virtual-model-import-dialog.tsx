@@ -29,7 +29,10 @@ import {
   precheckVirtualModelShareImport,
   type VirtualModelShareImportPreview,
 } from '../api'
-import { describeShareCodeError } from '../lib/share-code'
+import {
+  describeShareCodeError,
+  normalizeShareCodeSuggestedName,
+} from '../lib/share-code'
 import { VirtualModelShareSkippedList } from './virtual-model-share-skipped-list'
 
 // VirtualModelImportDialog 用分享码把别人的虚拟模型方案复制一份到当前账号喵。
@@ -44,7 +47,9 @@ export function VirtualModelImportDialog({
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [code, setCode] = useState('')
-  // displayName 是导入后可修改的显示名，预检通过后按快照显示名预填喵。
+  // normalizedName 是导入后对外使用的模型标识（virtual/ 后面那段），由用户自己填写喵。
+  const [normalizedName, setNormalizedName] = useState('')
+  // displayName 是导入后可修改的显示名，预检通过后按快照显示名预填，但仍需用户确认喵。
   const [displayName, setDisplayName] = useState('')
   const [preview, setPreview] = useState<VirtualModelShareImportPreview | null>(
     null
@@ -53,6 +58,7 @@ export function VirtualModelImportDialog({
   // resetDraft 清空弹窗内的临时状态，避免上一次的码与预检结果残留到下次打开喵。
   const resetDraft = () => {
     setCode('')
+    setNormalizedName('')
     setDisplayName('')
     setPreview(null)
   }
@@ -70,7 +76,16 @@ export function VirtualModelImportDialog({
     },
     onSuccess: (previewData) => {
       setPreview(previewData)
-      // 预检成功才预填显示名，避免用上一次的码覆盖用户正在编辑的名称喵。
+      // 预检成功才预填两个名字，避免用上一次的码覆盖用户正在编辑的名称喵。
+      // 模型标识只在还空着时预填一个建议值，用户仍然可以改；显示名恒按快照刷新喵。
+      const suggestedName = normalizeShareCodeSuggestedName(
+        previewData.display_name
+      )
+      if (suggestedName !== '') {
+        setNormalizedName((currentName) =>
+          currentName.trim() === '' ? suggestedName : currentName
+        )
+      }
       setDisplayName(previewData.display_name)
     },
     onError: (error) => {
@@ -91,9 +106,20 @@ export function VirtualModelImportDialog({
     mutationFn: async () => {
       // 喵~防御：没有预检结果时拒绝导入，保证"先预检再导入"的流程不被绕过喵。
       if (!preview) throw new Error(t('Run the check first'))
+      const trimmedNormalizedName = normalizedName.trim()
+      // 喵~防御：模型标识必填，空值时本地就拦下，省掉一次注定失败的往返喵。
+      if (trimmedNormalizedName === '') {
+        throw new Error(t('Enter a model ID first'))
+      }
+      const trimmedDisplayName = displayName.trim()
+      // 喵~防御：显示名同样是必填项喵。
+      if (trimmedDisplayName === '') {
+        throw new Error(t('Enter a display name first'))
+      }
       const response = await importVirtualModelShareCode({
         code: code.trim(),
-        display_name: displayName.trim() || undefined,
+        normalized_name: trimmedNormalizedName,
+        display_name: trimmedDisplayName,
       })
       if (!response.success || !response.data) {
         throw new Error(response.message || t('Unable to import the plan'))
@@ -125,6 +151,10 @@ export function VirtualModelImportDialog({
     if (!nextOpen) resetDraft()
     onOpenChange(nextOpen)
   }
+
+  // canConfirmImport 表示两个必填名字都已填写，可以提交导入喵。
+  const canConfirmImport =
+    normalizedName.trim() !== '' && displayName.trim() !== ''
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -166,6 +196,21 @@ export function VirtualModelImportDialog({
               </AlertDescription>
             </Alert>
             <label className='grid gap-1 text-sm font-medium'>
+              {t('Model ID')}
+              <Input
+                onChange={(event) => setNormalizedName(event.target.value)}
+                placeholder={t('my-model-id')}
+                value={normalizedName}
+              />
+              <span className='text-muted-foreground text-xs'>
+                {/* 前缀是固定的，用户只需要填后面那段，这里把最终调用名展示出来避免歧义喵。 */}
+                {t(
+                  'The model will be available as virtual/{{name}}. Only ASCII letters, digits, hyphens and underscores are allowed, and the name must be free.',
+                  { name: normalizedName.trim() || t('my-model-id') }
+                )}
+              </span>
+            </label>
+            <label className='grid gap-1 text-sm font-medium'>
               {t('Display name')}
               <Input
                 onChange={(event) => setDisplayName(event.target.value)}
@@ -185,7 +230,8 @@ export function VirtualModelImportDialog({
           </Button>
           {preview ? (
             <Button
-              disabled={importMutation.isPending}
+              // 喵~防御：两个名字都是必填项，缺任意一个就禁用按钮，避免用户白点一次喵。
+              disabled={!canConfirmImport || importMutation.isPending}
               onClick={() => importMutation.mutate()}
             >
               {importMutation.isPending ? t('Importing') : t('Confirm import')}

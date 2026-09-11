@@ -182,7 +182,7 @@ export function VirtualModelShareDialog({
         <Alert>
           <AlertDescription>
             {t(
-              'A share code keeps internal candidates as-is and keeps the upstream address of custom candidates. The receiver still has to fill in their own API Key.'
+              'A share code keeps internal candidates as-is and exports the upstream address of custom candidates, including candidates that reference your own upstream models. The receiver still has to fill in their own API Key.'
             )}
           </AlertDescription>
         </Alert>
@@ -213,16 +213,6 @@ export function VirtualModelShareDialog({
                 )}
               </p>
             </div>
-            {createdShareCode.omitted_reference_candidates > 0 && (
-              <p className='text-muted-foreground text-xs'>
-                {t(
-                  '{{count}} candidate(s) that reference your own upstream models were left out and cannot be shared.',
-                  {
-                    count: createdShareCode.omitted_reference_candidates,
-                  }
-                )}
-              </p>
-            )}
           </div>
         )}
 

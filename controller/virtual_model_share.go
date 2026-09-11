@@ -67,9 +67,10 @@ type virtualModelShareCodeCreateInput struct {
 type virtualModelShareCodeImportInput struct {
 	// Code 是用户粘贴的分享码本体喵。
 	Code string `json:"code"`
-	// NormalizedName 是可选的自定义模型名；留空时按快照显示名自动生成喵。
+	// NormalizedName 是导入方自己填写的模型名（virtual/ 后面那段），必填喵。
+	// 喵~防御：不再自动推导或追加序号，撞名直接报错让用户换一个，避免导入出"名字跟想的不一样"的模型喵。
 	NormalizedName string `json:"normalized_name"`
-	// DisplayName 是可选的自定义显示名；留空时沿用快照里的显示名喵。
+	// DisplayName 是导入方自己填写的显示名，必填喵。
 	DisplayName string `json:"display_name"`
 }
 
@@ -111,23 +112,22 @@ func virtualModelShareUnavailable(c *gin.Context, reason error) {
 }
 
 // buildVirtualModelSharePayload 把虚拟模型组装成脱敏快照喵。
-// 返回值第二个是"因属于用户上游引用而未纳入快照"的候选数量，供分享者知情喵。
 //
 // 脱敏规则（与产品约定一致）喵：
 //  1. 内部候选零秘密，分组与真实模型名原样导出喵。
 //  2. 直填型自定义候选导出上游地址明文、真实模型名与认证方式，但绝不导出 API Key 喵。
-//  3. 引用型自定义候选（UpstreamModelID 非空）整体不导出：它的凭据与地址归属
-//     user_upstream_models 这个独立资源，该资源有自己的共享开关、额度与白名单语义，
-//     若经由分享码绕过会造成语义冲突；且它的 upstream_model_id 对导入方是跨用户悬空外键喵。
+//  3. 引用型自定义候选（UpstreamModelID 非空）按属主加载被引用的用户上游条目，
+//     把该条目的上游地址、真实模型名与认证方式映射成普通自定义候选导出；
+//     接收方拿到的同样是"缺凭据"候选，导入后自行补填自己的 API Key 喵。
 //  4. API Key 指纹与地址指纹一律不导出：指纹跨实例稳定，导出等于送给对方一个可离线校验器喵。
-func buildVirtualModelSharePayload(virtualModel *model.VirtualModel) (*model.VirtualModelSharePayload, int, error) {
+func buildVirtualModelSharePayload(virtualModel *model.VirtualModel) (*model.VirtualModelSharePayload, error) {
 	// 喵~防御：没有模型就无法生成快照，避免产出空方案喵。
 	if virtualModel == nil || virtualModel.ID <= 0 {
-		return nil, 0, errors.New("虚拟模型无效")
+		return nil, errors.New("虚拟模型无效")
 	}
 	var candidates []model.VirtualModelCandidate
 	if err := model.DB.Where("virtual_model_id = ?", virtualModel.ID).Order("stable_order asc, id asc").Find(&candidates).Error; err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	payload := &model.VirtualModelSharePayload{
 		Version:             model.VirtualModelSharePayloadVersion,
@@ -140,8 +140,6 @@ func buildVirtualModelSharePayload(virtualModel *model.VirtualModel) (*model.Vir
 		StreamCutRetries:    virtualModel.StreamCutRetries,
 		Candidates:          make([]model.VirtualModelShareCandidate, 0, len(candidates)),
 	}
-	// omittedReferenceCandidates 统计被整体省略的引用型候选数量喵。
-	omittedReferenceCandidates := 0
 	for _, candidate := range candidates {
 		shareCandidate := model.VirtualModelShareCandidate{
 			StableOrder:        candidate.StableOrder,
@@ -157,7 +155,7 @@ func buildVirtualModelSharePayload(virtualModel *model.VirtualModel) (*model.Vir
 			queryError := model.DB.Where("candidate_id = ?", candidate.ID).First(&internalCandidate).Error
 			// 喵~防御：来源配置缺失或读取失败时拒绝生成快照，避免导出无法执行的空候选喵。
 			if queryError != nil {
-				return nil, 0, queryError
+				return nil, queryError
 			}
 			shareCandidate.GroupName = internalCandidate.GroupName
 			shareCandidate.RealModelName = internalCandidate.RealModelName
@@ -166,40 +164,55 @@ func buildVirtualModelSharePayload(virtualModel *model.VirtualModel) (*model.Vir
 			queryError := model.DB.Where("candidate_id = ?", candidate.ID).First(&customCandidate).Error
 			// 喵~防御：同上，读不到来源配置就不能确定这个候选到底指向哪里，宁可整体失败喵。
 			if queryError != nil {
-				return nil, 0, queryError
+				return nil, queryError
 			}
-			// 引用型候选整体省略，只计数并继续处理下一个候选喵。
+			// 自定义候选的地址与真实模型名有两个来源：引用用户上游条目，或者直填在候选自己身上喵。
+			// 先把直填字段当作默认值，命中引用时再整体换成被引用条目的字段喵。
+			encryptedBaseURL := customCandidate.EncryptedBaseURL
+			credentialVersion := customCandidate.CredentialVersion
+			realModelName := customCandidate.RealModelName
+			authStyle := customCandidate.AuthStyle
 			if customCandidate.UpstreamModelID != nil && *customCandidate.UpstreamModelID > 0 {
-				omittedReferenceCandidates++
-				continue
+				// 喵~防御：必须按快照属主加载被引用的上游条目，避免把其他用户的条目导出去喵。
+				referencedUpstream, resolveError := model.GetUserUpstreamModelByOwnerID(*customCandidate.UpstreamModelID, virtualModel.OwnerUserID)
+				if resolveError != nil {
+					return nil, resolveError
+				}
+				encryptedBaseURL = referencedUpstream.EncryptedBaseURL
+				credentialVersion = referencedUpstream.CredentialVersion
+				realModelName = referencedUpstream.RealModelName
+				authStyle = model.VirtualModelAuthStyle(referencedUpstream.AuthStyle)
+				// 主人注意：这里刻意不解被引用条目的 API Key——分享码本来就不带 Key，
+				// 为一个根本不导出的字段让整次分享失败并不划算喵。
 			}
-			// 喵~防御：直填型候选必须能解出地址密文，解不开说明密钥轮换或数据损坏，
+			// 喵~防御：地址密文必须解得开，解不开说明密钥轮换或数据损坏，
 			// 此时不能把候选降级成"没有地址"的半残配置导出喵。
-			plainBaseURL, decryptError := virtualmodelservice.DecryptCredential(customCandidate.EncryptedBaseURL, customCandidate.CredentialVersion)
+			plainBaseURL, decryptError := virtualmodelservice.DecryptCredential(encryptedBaseURL, credentialVersion)
 			if decryptError != nil {
-				return nil, 0, decryptError
+				return nil, decryptError
 			}
 			shareCandidate.BaseURL = plainBaseURL
-			shareCandidate.RealModelName = customCandidate.RealModelName
-			shareCandidate.AuthStyle = string(model.VirtualModelAuthStyleFromStorage(customCandidate.AuthStyle))
+			shareCandidate.RealModelName = realModelName
+			// 认证枚举经历史值归一化后再导出，避免把内部旧枚举写进快照喵。
+			shareCandidate.AuthStyle = string(model.VirtualModelAuthStyleFromStorage(authStyle))
 			// 导入方拿到的是脱敏快照，凭据必须由他自行补填，因此恒标记为需要凭据喵。
 			shareCandidate.RequiresCredential = true
 		} else {
-			return nil, 0, errors.New("虚拟模型候选来源无效")
+			return nil, errors.New("虚拟模型候选来源无效")
 		}
 		failureRules, rulesError := loadVirtualModelShareFailureRules(candidate.ID)
 		if rulesError != nil {
-			return nil, 0, rulesError
+			return nil, rulesError
 		}
 		shareCandidate.FailureRules = failureRules
 		payload.Candidates = append(payload.Candidates, shareCandidate)
 	}
 	globalFailureRules, globalRulesError := loadVirtualModelShareGlobalFailureRules(virtualModel.ID)
 	if globalRulesError != nil {
-		return nil, 0, globalRulesError
+		return nil, globalRulesError
 	}
 	payload.GlobalFailureRules = globalFailureRules
-	return payload, omittedReferenceCandidates, nil
+	return payload, nil
 }
 
 // loadVirtualModelShareFailureRules 读取候选级失败规则并转换成快照结构喵。
@@ -270,14 +283,13 @@ func CreateVirtualModelShareCode(c *gin.Context) {
 	if !ok {
 		return
 	}
-	payload, omittedReferenceCandidates, buildError := buildVirtualModelSharePayload(virtualModel)
+	payload, buildError := buildVirtualModelSharePayload(virtualModel)
 	if buildError != nil {
 		virtualModelShareUnavailable(c, buildError)
 		return
 	}
 	// 喵~防御：没有任何候选的方案分享出去对接收方毫无意义，直接拒绝生成分享码喵。
-	// 主人注意：判定口径是快照里的候选总数。自定义候选（需接收方自行补填凭据）也算候选，
-	// 只有引用型自定义候选因归属问题被整体省略，所以若一个模型只有这类候选，快照就会是 0 条喵。
+	// 主人注意：内部候选与两类自定义候选现在都会进快照，所以这里为 0 只可能是模型本身没有候选喵。
 	if len(payload.Candidates) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "code": "virtual_model_share_no_candidate", "message": "该方案没有可分享的候选，无法生成分享码"})
 		return
@@ -335,16 +347,15 @@ func CreateVirtualModelShareCode(c *gin.Context) {
 		common.SysError("virtual model share code audit failed: " + auditError.Error())
 	}
 	common.ApiSuccess(c, gin.H{
-		"id":                          shareCode.ID,
-		"code":                        shareCode.Code,
-		"display_name":                shareCode.DisplayName,
-		"candidate_count":             len(payload.Candidates),
-		"internal_candidate_count":    internalCandidateCount,
-		"custom_candidate_count":      customCandidateCount,
-		"omitted_reference_candidates": omittedReferenceCandidates,
-		"expires_at":                  shareCode.ExpiresAt,
-		"max_imports":                 shareCode.MaxImports,
-		"created_time":                shareCode.CreatedTime,
+		"id":                       shareCode.ID,
+		"code":                     shareCode.Code,
+		"display_name":             shareCode.DisplayName,
+		"candidate_count":          len(payload.Candidates),
+		"internal_candidate_count": internalCandidateCount,
+		"custom_candidate_count":   customCandidateCount,
+		"expires_at":               shareCode.ExpiresAt,
+		"max_imports":              shareCode.MaxImports,
+		"created_time":             shareCode.CreatedTime,
 	})
 }
 
@@ -635,13 +646,20 @@ func ImportVirtualModelShareCode(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "code": "virtual_model_share_nothing_importable", "message": "该分享码的候选在当前账号下均不可用，无法导入"})
 		return
 	}
-	normalizedName, displayName, nameError := resolveVirtualModelShareImportName(c, input, payload)
+	normalizedName, displayName, nameError := resolveVirtualModelShareImportName(c, input)
 	if nameError != nil {
-		if errors.Is(nameError, errVirtualModelShareNameConflict) {
+		switch {
+		// 名字撞车：409 让前端提示用户换一个名字喵。
+		case errors.Is(nameError, errVirtualModelShareNameConflict):
 			c.JSON(http.StatusConflict, gin.H{"success": false, "code": "virtual_model_name_conflict", "message": "该模型名已被占用，请更换一个名称"})
-			return
+		// 两个名字都是必填项，缺哪个就明确告诉用户缺哪个喵。
+		case errors.Is(nameError, errVirtualModelShareNameRequired):
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "code": "virtual_model_share_name_required", "message": "请填写模型标识"})
+		case errors.Is(nameError, errVirtualModelShareDisplayNameRequired):
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "code": "virtual_model_share_display_name_required", "message": "请填写模型显示名"})
+		default:
+			virtualModelShareInvalidRequest(c, nameError.Error())
 		}
-		virtualModelShareInvalidRequest(c, nameError.Error())
 		return
 	}
 	createdModelID := 0
@@ -719,14 +737,14 @@ func ImportVirtualModelShareCode(c *gin.Context) {
 		return
 	}
 	common.ApiSuccess(c, gin.H{
-		"id":                         createdModelID,
-		"normalized_name":            normalizedName,
-		"display_name":               displayName,
-		"imported_candidate_count":   len(plan.KeptCandidates),
-		"skipped_candidates":         plan.SkippedCandidates,
-		"warnings":                   plan.Warnings,
+		"id":                       createdModelID,
+		"normalized_name":          normalizedName,
+		"display_name":             displayName,
+		"imported_candidate_count": len(plan.KeptCandidates),
+		"skipped_candidates":       plan.SkippedCandidates,
+		"warnings":                 plan.Warnings,
 		// 喵~防御：导入的模型默认停用，响应里明确告诉前端"还需要用户手动启用"喵。
-		"enabled":                    false,
+		"enabled": false,
 	})
 }
 
@@ -830,61 +848,38 @@ func createImportedVirtualModelCandidate(tx *gorm.DB, virtualModelID int, shareC
 // errVirtualModelShareNameConflict 表示用户显式指定的模型名已被占用喵。
 var errVirtualModelShareNameConflict = errors.New("virtual_model_share_name_conflict")
 
-// resolveVirtualModelShareImportName 决定导入模型的规范化名与显示名喵。
-// 用户显式给名字时冲突就报错让他换；用户没给名字时自动追加序号，省掉一次来回喵。
-func resolveVirtualModelShareImportName(c *gin.Context, input virtualModelShareCodeImportInput, payload *model.VirtualModelSharePayload) (string, string, error) {
-	ownerUserID := c.GetInt("id")
+// errVirtualModelShareNameRequired 表示导入方没有填写模型名喵。
+var errVirtualModelShareNameRequired = errors.New("virtual_model_share_name_required")
+
+// errVirtualModelShareDisplayNameRequired 表示导入方没有填写显示名喵。
+var errVirtualModelShareDisplayNameRequired = errors.New("virtual_model_share_display_name_required")
+
+// resolveVirtualModelShareImportName 校验导入方自己填写的模型名与显示名喵。
+// 两个名字都由导入方决定：模型名撞车直接报错让他换，不再自动追加序号喵。
+// 校验规则与手工创建虚拟模型完全一致（同一个 NormalizeVirtualModelName 与同一条唯一索引）喵。
+func resolveVirtualModelShareImportName(c *gin.Context, input virtualModelShareCodeImportInput) (string, string, error) {
+	// 喵~防御：模型名必须由导入方填写，缺失时不能替他瞎猜一个名字喵。
 	requestedName := strings.TrimSpace(input.NormalizedName)
+	if requestedName == "" {
+		return "", "", errVirtualModelShareNameRequired
+	}
+	// 喵~防御：显示名同样必填，避免导入出一批全部叫"导入方案"分不清谁是谁的模型喵。
 	displayName := strings.TrimSpace(input.DisplayName)
 	if displayName == "" {
-		displayName = strings.TrimSpace(payload.DisplayName)
+		return "", "", errVirtualModelShareDisplayNameRequired
 	}
-	if requestedName != "" {
-		normalizedName, normalizeError := model.NormalizeVirtualModelName(requestedName)
-		if normalizeError != nil {
-			return "", "", normalizeError
-		}
-		available, availabilityError := isVirtualModelNameAvailable(ownerUserID, normalizedName)
-		if availabilityError != nil {
-			return "", "", availabilityError
-		}
-		if !available {
-			return "", "", errVirtualModelShareNameConflict
-		}
-		if displayName == "" {
-			displayName = normalizedName
-		}
-		return normalizedName, truncateVirtualModelShareDisplayName(displayName), nil
-	}
-	// 未指定名称：先按快照显示名推导，推导失败再退回一个固定前缀喵。
-	baseName, normalizeError := model.NormalizeVirtualModelName(payload.DisplayName)
+	normalizedName, normalizeError := model.NormalizeVirtualModelName(requestedName)
 	if normalizeError != nil {
-		baseName = "imported-plan"
+		return "", "", normalizeError
 	}
-	if displayName == "" {
-		displayName = baseName
+	available, availabilityError := isVirtualModelNameAvailable(c.GetInt("id"), normalizedName)
+	if availabilityError != nil {
+		return "", "", availabilityError
 	}
-	// 主人注意：这里最多尝试 100 次后缀，正常情况下第 1 或第 2 次就能命中空闲名；
-	// 极端情况下（用户已有一百个同前缀模型）返回冲突错误让用户自己命名喵。
-	for suffix := 0; suffix < 100; suffix++ {
-		candidateName := baseName
-		if suffix > 0 {
-			candidateName = fmt.Sprintf("%s-%d", baseName, suffix+1)
-		}
-		normalizedName, suffixNormalizeError := model.NormalizeVirtualModelName(candidateName)
-		// 喵~防御：追加后缀后长度可能超出上限，此时继续试下一个而不是直接失败喵。
-		if suffixNormalizeError != nil {
-			continue
-		}
-		available, availabilityError := isVirtualModelNameAvailable(ownerUserID, normalizedName)
-		if availabilityError != nil {
-			return "", "", availabilityError
-		}
-		if available {
-			return normalizedName, truncateVirtualModelShareDisplayName(displayName), nil
-		}
+	if !available {
+		return "", "", errVirtualModelShareNameConflict
 	}
-	return "", "", errVirtualModelShareNameConflict
+	return normalizedName, truncateVirtualModelShareDisplayName(displayName), nil
 }
 
 // isVirtualModelNameAvailable 判断某用户下该规范化名是否空闲喵。
@@ -904,12 +899,15 @@ func isVirtualModelNameAvailable(ownerUserID int, normalizedName string) (bool, 
 // truncateVirtualModelShareDisplayName 把显示名裁剪到模型允许的长度上限内喵。
 func truncateVirtualModelShareDisplayName(displayName string) string {
 	trimmedName := strings.TrimSpace(displayName)
-	// 喵~防御：显示名不能为空且不得超过 128 字符，否则保存时会被校验拒绝喵。
+	// 喵~防御：显示名不能为空，否则保存时会被校验拒绝喵。
 	if trimmedName == "" {
 		return "imported-plan"
 	}
-	if len(trimmedName) > 128 {
-		return trimmedName[:128]
+	// 主人注意：必须按字符（rune）截断而不是按字节，否则中文显示名会在第 128 字节被从中间切断，
+	// 落库后就是一段非法 UTF-8，前端渲染出来是乱码问号喵。
+	displayNameRunes := []rune(trimmedName)
+	if len(displayNameRunes) > 128 {
+		return string(displayNameRunes[:128])
 	}
 	return trimmedName
 }

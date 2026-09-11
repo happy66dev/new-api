@@ -15,6 +15,7 @@ import {
   describeShareWarning,
   extractShareCodeErrorMessage,
   isShareCodeGone,
+  normalizeShareCodeSuggestedName,
   resolveShareCodeStatus,
 } from '../lib/share-code'
 
@@ -94,31 +95,23 @@ describe('countShareableCandidates', () => {
     ).toBe(2)
   })
 
-  it('直填型自定义候选（没有引用上游条目）计入分享快照', () => {
+  it('直填型自定义候选计入分享快照', () => {
     expect(
       countShareableCandidates([
-        { source_type: 'custom', upstream_model_id: null },
-        { source_type: 'custom', upstream_model_id: 0 },
+        { source_type: 'custom' },
+        { source_type: 'custom' },
       ])
     ).toBe(2)
   })
 
-  it('引用型自定义候选会被后端整体省略，不计入分享快照', () => {
+  it('引用型自定义候选同样计入快照，因为后端会把它解析成 url 导出', () => {
+    // 喵~防御：这里只声明 source_type，前端不靠 upstream_model_id 区分可分享性喵。
     expect(
       countShareableCandidates([
-        { source_type: 'custom', upstream_model_id: 42 },
+        { source_type: 'custom' },
         { source_type: 'internal' },
       ])
-    ).toBe(1)
-  })
-
-  it('候选全是引用型自定义时返回零，与后端拒绝分享的口径一致', () => {
-    expect(
-      countShareableCandidates([
-        { source_type: 'custom', upstream_model_id: 7 },
-        { source_type: 'custom', upstream_model_id: 8 },
-      ])
-    ).toBe(0)
+    ).toBe(2)
   })
 
   it('未知来源类型不计入分享快照', () => {
@@ -128,6 +121,38 @@ describe('countShareableCandidates', () => {
   it('候选列表为空或尚未加载时返回零而不是抛错', () => {
     expect(countShareableCandidates([])).toBe(0)
     expect(countShareableCandidates(undefined)).toBe(0)
+  })
+})
+
+describe('normalizeShareCodeSuggestedName', () => {
+  it('把普通显示名转成小写标识', () => {
+    expect(normalizeShareCodeSuggestedName('My Plan')).toBe('my-plan')
+  })
+
+  it('剥掉用户可能一起填进来的 virtual/ 前缀', () => {
+    expect(normalizeShareCodeSuggestedName('virtual/My-Plan')).toBe('my-plan')
+  })
+
+  it('中文与空格被换成短横线，保留其中的 ASCII 片段', () => {
+    expect(normalizeShareCodeSuggestedName('我的 方案 v2')).toBe('v2')
+  })
+
+  it('纯中文显示名推导不出标识时返回空串，交给用户自己填', () => {
+    expect(normalizeShareCodeSuggestedName('我的方案')).toBe('')
+  })
+
+  it('首尾的短横线被清掉，避免生成 -my-plan- 这种难看名字', () => {
+    expect(normalizeShareCodeSuggestedName('  --My Plan--  ')).toBe('my-plan')
+  })
+
+  it('超过后端 96 字符上限时截断，保证预填值一定能通过校验', () => {
+    const suggestedName = normalizeShareCodeSuggestedName('a'.repeat(200))
+    expect(suggestedName).toHaveLength(96)
+  })
+
+  it('空值与纯空白返回空串而不是抛错', () => {
+    expect(normalizeShareCodeSuggestedName('')).toBe('')
+    expect(normalizeShareCodeSuggestedName('   ')).toBe('')
   })
 })
 
