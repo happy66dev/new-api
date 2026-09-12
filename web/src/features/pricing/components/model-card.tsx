@@ -55,7 +55,6 @@ export interface ModelCardProps {
   showRechargePrice?: boolean
   selectedGroup?: string
   perf?: ModelPerfBadgeData
-  backgroundImage?: string
 }
 
 export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
@@ -255,8 +254,11 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
   return (
     <div
       className={cn(
+        // 卡片底色统一用 bg-card：设置背景图时由布局层的
+        // [data-console-background='image'] .bg-card 规则统一做半透明与模糊，
+        // 卡片自身不再单独处理背景图喵。
         'group relative flex flex-col rounded-xl border p-3 transition-colors sm:p-5',
-        props.backgroundImage ? 'bg-card/50 backdrop-blur-sm' : 'bg-card',
+        'bg-card',
         'hover:bg-muted/20'
       )}
     >
@@ -265,8 +267,8 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
         <div className='flex min-w-0 items-start gap-2.5 sm:gap-3'>
           <div
             className={cn(
-              'flex size-9 shrink-0 items-center justify-center rounded-lg sm:size-10 sm:rounded-xl',
-              props.backgroundImage ? 'bg-muted/50' : 'bg-muted/40'
+              // 图标底板固定 40% 透明度：本身已是半透明，无需再按背景图切换喵。
+              'flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted/40 sm:size-10 sm:rounded-xl'
             )}
           >
             {modelIcon || (
