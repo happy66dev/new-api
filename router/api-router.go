@@ -243,6 +243,10 @@ func SetApiRouter(router *gin.Engine) {
 		{
 			optionRoute.GET("/", controller.GetOptions)
 			optionRoute.PUT("/", controller.UpdateOption)
+			// 模型定价配置的读取与批量更新：上游 0c76e4dae 注册过，后续 merge 丢失，
+			// 导致模型定价页请求落到中继兜底并返回 Invalid URL，此处补回喵。
+			optionRoute.GET("/model_pricing", controller.GetModelPricingConfig)
+			optionRoute.PATCH("/model_pricing", controller.UpdateModelPricingConfig)
 			optionRoute.POST("/smtp/test", controller.SendSMTPTestEmail)
 			optionRoute.DELETE("/support", controller.ClearSupportData)
 			optionRoute.POST("/payment_compliance", controller.ConfirmPaymentCompliance)
@@ -465,6 +469,10 @@ func SetApiRouter(router *gin.Engine) {
 		vendorRoute := apiRouter.Group("/vendors")
 		vendorRoute.Use(middleware.AdminAuth())
 		{
+			// 厂商批量操作的预览与执行：同样由上游 0c76e4dae 注册过、后续 merge 丢失，
+			// 前端 vendor-api.ts 仍会调用，此处补回避免 Invalid URL 喵。
+			vendorRoute.POST("/operations/preview", controller.PreviewVendorOperation)
+			vendorRoute.POST("/operations", controller.ApplyVendorOperation)
 			vendorRoute.GET("/", controller.GetAllVendors)
 			vendorRoute.GET("/search", controller.SearchVendors)
 			vendorRoute.GET("/:id", controller.GetVendorMeta)
