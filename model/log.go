@@ -1009,28 +1009,31 @@ func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelNa
 	quotaQuery := LOG_DB.Table("logs").Select("COALESCE(sum(quota), 0) quota")
 	rpmTpmQuery := LOG_DB.Table("logs").Select("count(*) rpm, COALESCE(sum(prompt_tokens), 0) + COALESCE(sum(completion_tokens), 0) tpm")
 
-	// 普通用户「全部」范围：自己的消费日志 + 别人调用自己共享模型的消费日志（user-shared 分组、type=8）取并集喵。
+	// quota 求和维持原口径：普通用户「全部」范围 = 自己的消费日志 + 别人调用自己共享模型的消费日志（user-shared 分组、type=8）取并集喵。
 	if len(sharedModelNames) > 0 {
 		// 喵~防御：type 条件内嵌进 OR 表达式，避免外层的 type=消费 误杀共享被调日志喵。
 		if logType == LogTypeUnknown {
 			// 「全部」类型：自己的任意类型调用与共享被调日志取并集，与 GetUserLogs 列表口径一致喵。
 			scopeCondition := "(username = ?) OR (model_name IN ? AND " + logGroupCol + " = ? AND type = ?)"
+			// 仅对 quota 子查询应用共享并集范围；rpm/tpm 的范围见下方独立构建喵。
 			quotaQuery = quotaQuery.Where(scopeCondition, username, sharedModelNames, constant.GroupUserShared, LogTypeCustomUpstream)
-			rpmTpmQuery = rpmTpmQuery.Where(scopeCondition, username, sharedModelNames, constant.GroupUserShared, LogTypeCustomUpstream)
 		} else {
 			// 指定类型：自己的该类型调用 + 共享被调日志（恒为 type=8），与 GetUserLogs 列表口径一致喵。
 			scopeCondition := "(username = ? AND type = ?) OR (model_name IN ? AND " + logGroupCol + " = ? AND type = ?)"
+			// 仅对 quota 子查询应用共享并集范围喵。
 			quotaQuery = quotaQuery.Where(scopeCondition, username, logType, sharedModelNames, constant.GroupUserShared, LogTypeCustomUpstream)
-			rpmTpmQuery = rpmTpmQuery.Where(scopeCondition, username, logType, sharedModelNames, constant.GroupUserShared, LogTypeCustomUpstream)
 		}
 	} else {
-		// 其余范围（管理员全量 / 仅自己）：按用户名过滤喵。
+		// 其余范围（管理员全量 / 仅自己）：quota 按用户名过滤喵。
 		if quotaQuery, err = applyExplicitLogTextFilter(quotaQuery, "username", username); err != nil {
 			return stat, err
 		}
-		if rpmTpmQuery, err = applyExplicitLogTextFilter(rpmTpmQuery, "username", username); err != nil {
-			return stat, err
-		}
+	}
+
+	// rpm/tpm 范围与 quota 解耦：恒按被查询用户名过滤（空用户名=管理员全量），不并入「被别人调用的共享上游」日志喵。
+	// 共享被调日志恒为 user/ 前缀的自定义上游，按新口径（下方前缀过滤）本就不计入 rpm/tpm，故此处无需 OR 并集喵。
+	if rpmTpmQuery, err = applyExplicitLogTextFilter(rpmTpmQuery, "username", username); err != nil {
+		return stat, err
 	}
 	if tokenName != "" {
 		quotaQuery = quotaQuery.Where("token_name = ?", tokenName)
@@ -1057,11 +1060,18 @@ func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelNa
 		rpmTpmQuery = rpmTpmQuery.Where(logGroupCol+" = ?", group)
 	}
 
-	// 「全部」范围的 type 已内嵌进 OR 条件；其余范围统一限定消费日志喵。
+	// quota 求和：非共享范围统一限定普通消费日志（type=2），与原逻辑一致，不含虚拟模型 type=9 喵。
 	if len(sharedModelNames) == 0 {
 		quotaQuery = quotaQuery.Where("type = ?", LogTypeConsume)
-		rpmTpmQuery = rpmTpmQuery.Where("type = ?", LogTypeConsume)
 	}
+
+	// rpm/tpm 口径（与看板 model/usedata.go 的 user//virtual/ 前缀判据一致）：只反映 new-api 内部模型的实时吞吐喵。
+	// 计入：普通消费(type=2) + 虚拟模型内部候选(type=9，真实模型名无前缀)；忽略前端 logType 过滤，恒取这两类喵。
+	rpmTpmQuery = rpmTpmQuery.Where("type IN ?", []int{LogTypeConsume, LogTypeVirtualModel})
+	// 喵~防御：前缀以字面量绑定为 LIKE 参数，不含 % / _ 通配，SQLite/MySQL/PostgreSQL 均按纯前缀匹配，无需 ESCAPE 子句喵。
+	// 排除：用户自定义上游(user/ 前缀，含「被别人调用的共享上游」) 与 虚拟模型自定义候选(virtual/ 前缀)喵。
+	// 主人注意：NOT LIKE 无法走索引，但本条件在「created_at >= now-60s」窗口过滤之后执行，扫描行数极小，无性能风险喵。
+	rpmTpmQuery = rpmTpmQuery.Where("model_name NOT LIKE ? AND model_name NOT LIKE ?", "user/%", "virtual/%")
 
 	// 只统计最近60秒的rpm和tpm
 	rpmTpmQuery = rpmTpmQuery.Where("created_at >= ?", time.Now().Add(-60*time.Second).Unix())

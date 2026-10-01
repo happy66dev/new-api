@@ -18,6 +18,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	virtualmodelservice "github.com/QuantumNous/new-api/service/virtualmodel"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/bytedance/gopkg/util/gopool"
@@ -34,8 +35,11 @@ const (
 	// but connected client (full TCP buffer, no server WriteTimeout) could hang
 	// the handler forever.
 	streamWriteTimeout = 30 * time.Second
-	// probeBufferLimit 探测/伪流阶段缓存的数据行字节上限，与自定义上游 precommit 缓冲保持一致（2MB）喵。
+	// probeBufferLimit 普通探测阶段缓存的数据行字节上限：只缓存到内容门槛，2MB 足够喵。
 	probeBufferLimit = 2 * 1024 * 1024
+	// fakeStreamBufferLimit 伪流模式全量缓存上限，与自定义上游 service/virtualmodel 的同名上限保持一致（16MB）喵。
+	// 伪流要缓存整段回答再一次性回放，2MB 对长回答过小会把正常长回答误判断流（bug 5 的第三种表现），故独立放宽到 16MB 喵。
+	fakeStreamBufferLimit = 16 * 1024 * 1024
 )
 
 // errProbeBufferLimitExceeded 标记探测/伪流阶段缓存超限，防止异常上游无限发送数据行耗尽服务内存喵。
@@ -136,10 +140,27 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	var probePassed atomic.Bool
 	// probeBufferBytes 探测阶段已缓存数据行的累计字节数，用于伪流全量缓存上限控制喵。
 	var probeBufferBytes int
+	// 伪流需缓存整段回答，缓存上限独立放宽到 16MB；普通探测只缓存到门槛，沿用 2MB 喵。
+	probeBufferLimitBytes := probeBufferLimit
+	if fakeStreamEnabled {
+		probeBufferLimitBytes = fakeStreamBufferLimit
+	}
 	if probeConfig != nil {
 		probeFailedChan = make(chan error, 1)
 		probeState = &streamProbeState{config: probeConfig, failedChan: probeFailedChan}
-		probeTotalTimer := time.NewTimer(probeConfig.ProbeTotalTimeout)
+		// 探测总预算语义：普通探测模式它只约束"放流前的健康确认"（默认 300s）喵。
+		probeTotalBudget := probeConfig.ProbeTotalTimeout
+		// 伪流模式整段回答都在"放流前"缓存，若仍用 300s 探测预算会把它误当成整段回答时限，
+		// 导致任何 >300s 的正常长回答被判断流（bug B）；伪流改用候选级墙钟硬顶（600s）作为总预算兜底，
+		// 真·卡流由静默超时(ticker)兜底、真·断流由 EOF 分支兜底，不受本预算影响喵。
+		if fakeStreamEnabled {
+			// 取 max：若管理员显式把探测总预算配得比 600s 还大，尊重其配置，不人为缩短喵。
+			hardCapBudget := time.Duration(virtualmodelservice.CandidateRequestTimeoutHardCapSeconds) * time.Second
+			if probeTotalBudget < hardCapBudget {
+				probeTotalBudget = hardCapBudget
+			}
+		}
+		probeTotalTimer := time.NewTimer(probeTotalBudget)
 		defer probeTotalTimer.Stop()
 		probeTotalChan = probeTotalTimer.C
 	}
@@ -310,11 +331,21 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			if len(data) < 6 {
 				continue
 			}
-			if data[:5] != "data:" && data[:6] != "[DONE]" {
+			// 裸 [DONE] 行（无 data: 前缀）是部分上游直接发出的结束哨兵，单独识别喵。
+			isBareDone := data[:6] == "[DONE]"
+			// 非 data: 数据行且非裸 [DONE] 的行（注释、event:、id:、retry: 等）一律跳过喵。
+			if data[:5] != "data:" && !isBareDone {
 				continue
 			}
-			data = data[5:]
-			data = strings.TrimSpace(data)
+			if isBareDone {
+				// 喵~防御：裸 [DONE] 不含 data: 前缀，直接归一为哨兵；
+				// 旧逻辑的 data[5:] 会把 "[DONE]" 切成 "]" 误当内容转发，这里修正喵。
+				data = "[DONE]"
+			} else {
+				// 标准 data: 行：剥掉前缀并去除首尾空白得到事件负载喵。
+				data = data[5:]
+				data = strings.TrimSpace(data)
+			}
 			if data == "" {
 				continue
 			}
@@ -332,7 +363,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 					probeBufferBytes += len(data)
 					// 主人注意：伪流/探测全量缓存若无上限，恶意或异常上游可持续发送数据行导致内存无界增长喵。
 					// 超限即终止该候选：普通模式按卡流、伪流模式按断流分类，供虚拟模型失败规则编排喵。
-					if probeBufferBytes > probeBufferLimit {
+					if probeBufferBytes > probeBufferLimitBytes {
 						bufferOverflowError := fmt.Errorf("%w: %s", types.ErrStreamCut, errProbeBufferLimitExceeded)
 						if !fakeStreamEnabled {
 							bufferOverflowError = fmt.Errorf("%w: %s", types.ErrStalledStream, errProbeBufferLimitExceeded)
@@ -341,8 +372,30 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 						info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonScannerErr, bufferOverflowError)
 						return
 					}
-					// 流转伪流：全量缓存所有 data 行，不做内容门槛放流，等 [DONE] 后一次性回放喵。
+					// 流转伪流：全量缓存所有 data 行，不做内容门槛放流喵。
 					if fakeStreamEnabled {
+						// Anthropic 原生流无 [DONE]，正常结束只发 message_stop；此行已在上面随 bufferProbeData 入缓存，
+						// 这里识别到它即视为"流已完整"，一次性回放全部缓存（含 message_stop 本身）后正常收尾（bug A）喵。
+						// 不追加合成 [DONE]：Anthropic 客户端不期待 [DONE]，终止符由上层 HandleStreamFinalResponse 负责发喵。
+						if isAnthropicStreamEndPayload(data) {
+							probePassed.Store(true)
+							ticker.Reset(streamingTimeout)
+							for _, bufferedData := range probeState.drainBuffer() {
+								info.SetFirstResponseTime()
+								info.ReceivedResponseCount++
+								select {
+								case dataChan <- bufferedData:
+								case <-ctx.Done():
+									return
+								case <-stopChan:
+									return
+								}
+							}
+							info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
+							logger.LogDebug(c, "received anthropic message_stop, replaying buffered fake stream")
+							return
+						}
+						// 非结束事件：仅缓存，继续读下一行喵。
 						continue
 					}
 					// 心跳不构成业务内容，已在缓存前按 0 字符计入门槛喵。

@@ -19,8 +19,8 @@ func CalculateUpstreamModelCostCents(upstreamModel *model.UserUpstreamModel, usa
 		return 0, nil
 	}
 	modelRatio := parseModelRatio(upstreamModel.ModelRatio)
-	// 输入价格为零表示未定价，费用为 0 喵。
-	if modelRatio.IsZero() {
+	// 免费判定复用 model 层统一口径（空串=1元非免费；"0"/非法/负数=免费），与四处额度闸门严格同源喵。
+	if model.IsUserUpstreamModelFree(upstreamModel) {
 		return 0, nil
 	}
 	// 其余分类价格解析失败时回退为 1 元，避免单个坏配置导致整次计费失败喵。

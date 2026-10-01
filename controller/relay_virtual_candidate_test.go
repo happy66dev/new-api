@@ -4,8 +4,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -203,4 +206,44 @@ func TestShouldSuppressFinalErrorBody(t *testing.T) {
 
 	// 喵~防御：上下文为空时不得抑制，否则真实错误会被完全吞掉喵。
 	require.False(t, shouldSuppressFinalErrorBody(nil, true))
+}
+
+// TestGetChannelReusesInjectedUpstreamModelTempChannel 验证 bug2 修复：自定义上游直调已注入临时渠道(Id=0)时，
+// getChannel 直接复用该临时渠道，不再掉进 abilities 选渠道而误报无可用渠道喵。
+func TestGetChannelReusesInjectedUpstreamModelTempChannel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	// 模拟中间件已注入自定义上游临时渠道：relay 标记置真，Id 恒为 0，带类型与名称喵。
+	common.SetContextKey(ctx, constant.ContextKeyUpstreamModelRelay, true)
+	ctx.Set("channel_id", 0)
+	ctx.Set("channel_type", 1)
+	ctx.Set("channel_name", "user/foo")
+	ctx.Set("auto_ban", false)
+	// ChannelMeta 为 nil 模拟首尝试；OriginModelName 为 user/foo 喵。
+	info := &relaycommon.RelayInfo{OriginModelName: "user/foo"}
+	channel, channelErr := getChannel(ctx, info, &service.RetryParam{})
+	// 关键断言：复用临时渠道、无错误、未走 abilities 选渠道喵。
+	require.Nil(t, channelErr)
+	require.NotNil(t, channel)
+	require.Equal(t, 0, channel.Id)
+	require.Equal(t, 1, channel.Type)
+	require.Equal(t, "user/foo", channel.Name)
+}
+
+// TestGetChannelKeepsContextChannelReuseWithoutRelayFlag 验证未注入 relay 标记时不走临时渠道早返回分支，
+// 既有"上下文预选渠道复用(channel_id!=0)"行为保持不变喵。
+func TestGetChannelKeepsContextChannelReuseWithoutRelayFlag(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	// 不置 relay 标记：bug2 早返回分支不得生效喵。
+	ctx.Set("channel_id", 77)
+	ctx.Set("channel_type", 2)
+	ctx.Set("channel_name", "real-channel")
+	ctx.Set("auto_ban", true)
+	info := &relaycommon.RelayInfo{OriginModelName: "gpt-4o"}
+	channel, channelErr := getChannel(ctx, info, &service.RetryParam{})
+	// 走既有 channel_id!=0 的上下文复用分支，返回预选的真实渠道喵。
+	require.Nil(t, channelErr)
+	require.NotNil(t, channel)
+	require.Equal(t, 77, channel.Id)
 }

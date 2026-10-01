@@ -149,6 +149,30 @@ func TestHandleVirtualModelUpstreamFailurePassthrough(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, ctx.Writer.Status())
 }
 
+// TestHandleVirtualModelUpstreamFailurePassthroughSkipsWhenResponseAlreadyWritten 验证 bug3 放大器②：
+// passthrough 分支在响应已放流时不得二次写状态码/正文，避免破坏已提交的流式响应喵。
+func TestHandleVirtualModelUpstreamFailurePassthroughSkipsWhenResponseAlreadyWritten(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	passthroughRules := map[int][]model.VirtualModelFailureRule{
+		71: {{HTTPStatus: http.StatusUnauthorized, Action: model.VirtualModelActionPassthrough}},
+	}
+	candidates := []model.VirtualModelCandidateSnapshot{
+		{CandidateID: 71, VirtualModelID: 9, StableOrder: 0, SourceType: model.VirtualModelSourceInternal, Enabled: true, MaxRetries: 1, GroupName: "default", RealModelName: "user/upstream-a"},
+	}
+	executionState := newUpstreamFailureTestState(candidates, passthroughRules, nil)
+	ctx, _, recorder := newUpstreamFailureTestContext(executionState)
+	// 模拟响应已放流：先写出一段流式字节，使 Written()=true 喵。
+	_, writeErr := ctx.Writer.WriteString("data: partial\n\n")
+	require.NoError(t, writeErr)
+	require.True(t, ctx.Writer.Written())
+
+	outcome := handleVirtualModelUpstreamFailure(ctx, nil, false, newUpstreamFailure(), time.Now())
+	require.Equal(t, virtualModelUpstreamFailureEnd, outcome)
+	// 响应已提交：passthrough 守卫必须阻止二次写入，不得追加上游 401 错误正文喵。
+	require.Equal(t, "data: partial\n\n", recorder.Body.String())
+	require.NotContains(t, recorder.Body.String(), "invalid token")
+}
+
 // TestHandleVirtualModelUpstreamFailureGlobalFallback 验证候选无规则时回退全局兜底规则喵。
 func TestHandleVirtualModelUpstreamFailureGlobalFallback(t *testing.T) {
 	gin.SetMode(gin.TestMode)

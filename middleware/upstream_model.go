@@ -329,8 +329,9 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 		}
 		isShared = true
 	}
-	// 请求前硬检查：自用调用需余额与可用额度都大于 0；共享调用由查询条件保证三账户未耗尽喵。
-	if !isShared {
+	// 请求前硬检查：有价自用调用需余额与可用额度都大于 0；共享调用由查询条件保证闸门喵。
+	// 免费模型(单价规范化为0)整次费用恒为 0，豁免三账户>0 要求，三账户为 0 也可自用喵。
+	if !isShared && !model.IsUserUpstreamModelFree(upstreamModel) {
 		if upstreamModel.BalanceCents <= 0 {
 			// 配置态：余额耗尽不计入成功率，只更新最近调用时间喵。
 			recordUpstreamModelProbeState(upstreamModel, false, false, false, "", startTime, upstreamProbeExtras{})
@@ -379,9 +380,18 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 	// 虚拟模型 user/xxx 候选：保持哑代理透传（候选链编排依赖同步执行），请求同步结束后退出活跃计数喵。
 	if _, inVirtualModelContext := getVirtualModelExecutionState(c); inVirtualModelContext {
 		defer ExitUpstreamModelInflight(upstreamModel.ID, isShared)
-		// 注入候选墙钟硬超时：透传执行与失败规则 retry 共享同一截止，超过默认 600s（或更短配置）即由上下文取消强制断开喵。
+		// 候选级子 context：applyUserUpstreamModelDeadline 会把 c.Request 换成带超时的子 context；
+		// 原来的 defer cancelDeadline() 在本候选返回瞬间就把这条 c.Request.Context() 置为"已取消"，
+		// 导致后续 user/ 候选外发秒失败、且 activateNextVirtualModelCandidate 的 Context().Err()!=nil 让候选链再推不动喵。
+		// 这里先存父 context，候选结束后先还原再取消，使超时只作用于本候选、不污染请求级 context 喵。
+		originalRequestContext := c.Request.Context() // 保存注入墙钟超时前的父 context（未取消）喵
 		if cancelDeadline := applyUserUpstreamModelDeadline(c, upstreamModel.TimeoutSeconds); cancelDeadline != nil {
-			defer cancelDeadline()
+			defer func() {
+				// 喵~防御：先把请求 context 还原成未取消的父 context，供后续候选继续外发与候选推进判定喵。
+				c.Request = c.Request.WithContext(originalRequestContext)
+				// 再取消本候选的墙钟超时，释放计时器资源喵。
+				cancelDeadline()
+			}()
 		}
 		return executeUserUpstreamModelPassthrough(c, upstreamModel, modelRequest, baseURL, apiKey, isShared, preConsumedCents, startTime, &settled)
 	}
@@ -605,6 +615,12 @@ func handleVirtualModelUpstreamFailure(c *gin.Context, upstreamModel *model.User
 			requestGroup = executionState.modelRequest.Group
 		}
 		recordUserUpstreamModelFailureLog(c, upstreamModel, isShared, requestGroup, customFailure, startTime)
+		// 喵~防御：响应已放流时绝不二次写状态码/正文——否则会在已提交的流式响应后追加第二段互不兼容的正文，
+		// 让客户端把两段当成同一响应解析（对比下方候选耗尽分支已有 Written() 守卫，这里补齐喵）。
+		if c.Writer != nil && c.Writer.Written() {
+			c.Abort()
+			return virtualModelUpstreamFailureEnd
+		}
 		// 喵~防御：仅回传已受限缓冲的上游错误正文和过滤后的响应头，禁止写入 hop-by-hop 字段喵。
 		// 2xx 内嵌的 SSE error 事件也携带错误正文原样透传，仅网络类失败才回退通用错误喵。
 		if len(customFailure.ResponseBody) > 0 || customFailure.Failure.HTTPStatus >= http.StatusBadRequest {

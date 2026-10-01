@@ -631,6 +631,24 @@ func fastTokenCountMetaForPricing(request dto.Request) *types.TokenCountMeta {
 }
 
 func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service.RetryParam) (*model.Channel, *types.NewAPIError) {
+	// 修复 bug2：自定义上游直调已由中间件注入"临时渠道（Id 天然为 0）"，它是本请求唯一且合法的渠道喵。
+	// 333f5cf7c 为"候选切换后不复用旧渠道"加的 channel_id != 0 判别式，会把 Id=0 的临时渠道一起挡在复用之外，
+	// 于是请求掉进 CacheGetRandomSatisfiedChannel，用 /pg 路径写入的请求体分组(user-shared)去 abilities 找 user/xxx，
+	// abilities 没有 user-shared 行必然报无可用渠道。这里用"确有临时渠道"的语义标记优先复用，
+	// 与候选切换(清空 channel_id 但不置该标记)天然区分，首尝试与重试都只复用临时渠道喵。
+	if middleware.IsUpstreamModelRelayRequest(c) {
+		autoBan := c.GetBool("auto_ban") // 读取自动封禁开关，未设置默认 false 喵
+		autoBanInt := 1                  // 渠道结构用 int 表达自动封禁，1 表示开启喵
+		if !autoBan {                    // 开关为 false 时置 0，临时渠道不参与真实渠道禁用喵
+			autoBanInt = 0
+		}
+		return &model.Channel{
+			Id:      c.GetInt("channel_id"),      // 临时渠道 Id 恒为 0，仅作占位喵
+			Type:    c.GetInt("channel_type"),    // 复用注入的上游类型（OpenAI 兼容/Anthropic）喵
+			Name:    c.GetString("channel_name"), // 复用注入的临时渠道名（user/xxx）供日志展示喵
+			AutoBan: &autoBanInt,                 // 透传自动封禁标记喵
+		}, nil
+	}
 	// 渠道上下文已有可用渠道且本次尚未换候选：普通请求由 Distribute 预选、虚拟候选首个尝试
 	// 由中间件预选，此时直接复用上下文渠道即可喵。
 	if info.ChannelMeta == nil && c.GetInt("channel_id") != 0 {

@@ -55,6 +55,23 @@ func customProbeContentChars(dataPayload string) int {
 	return visibleCharacterCount
 }
 
+// IsCustomStreamEndPayload 判断已剥离 "data:" 前缀的 SSE 负载是否代表流正常结束喵。
+// 兼容 OpenAI 的 [DONE] 哨兵与 Anthropic 的 message_stop 事件；供自定义透传链与 relay 层伪流缓存共用同一口径喵。
+func IsCustomStreamEndPayload(dataPayload string) bool {
+	// 去除首尾空白，拿到真正的事件负载喵。
+	trimmedPayload := strings.TrimSpace(dataPayload)
+	// OpenAI 结束哨兵 [DONE] 喵。
+	if strings.EqualFold(trimmedPayload, "[DONE]") {
+		return true
+	}
+	// 喵~防御：非法 JSON 不是结束事件，gjson.Valid 失败直接返回 false，避免误判空/脏负载喵。
+	if gjson.Valid(trimmedPayload) {
+		// Anthropic 流式结束事件：顶层 type == message_stop 喵。
+		return gjson.Get(trimmedPayload, "type").String() == "message_stop"
+	}
+	return false
+}
+
 // isCustomStreamEndEvent 判断 SSE 行是否代表流正常结束喵。
 // 兼容 OpenAI 的 [DONE] 与 Anthropic 的 message_stop 事件，Anthropic 流式无 [DONE] 喵。
 func isCustomStreamEndEvent(lineBytes []byte) bool {
@@ -62,16 +79,8 @@ func isCustomStreamEndEvent(lineBytes []byte) bool {
 	if !strings.HasPrefix(trimmedLine, "data:") {
 		return false
 	}
-	dataPayload := strings.TrimSpace(strings.TrimPrefix(trimmedLine, "data:"))
-	// OpenAI 结束哨兵 [DONE] 喵。
-	if strings.EqualFold(dataPayload, "[DONE]") {
-		return true
-	}
-	// Anthropic 流式结束事件 message_stop 喵。
-	if gjson.Valid(dataPayload) {
-		return gjson.Get(dataPayload, "type").String() == "message_stop"
-	}
-	return false
+	// 剥掉 data: 前缀后交给负载级判定，保证与 relay 层伪流同口径喵。
+	return IsCustomStreamEndPayload(strings.TrimPrefix(trimmedLine, "data:"))
 }
 
 // ensureAnthropicVersionHeader 对 Anthropic /v1/messages 请求补充缺省的版本头喵。

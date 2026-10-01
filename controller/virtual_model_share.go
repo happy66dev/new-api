@@ -501,7 +501,8 @@ func resolveVirtualModelShareImportPlan(c *gin.Context, payload *model.VirtualMo
 			continue
 		}
 		modelSet := make(map[string]bool)
-		for _, enabledModelName := range model.GetGroupEnabledModels(groupName) {
+		// 同 anomaly：user-shared 分组走 service.GetGroupsEnabledModels 的共享上游特判，避免误判 user/xxx 候选不可导入喵。
+		for _, enabledModelName := range service.GetGroupsEnabledModels([]string{groupName}, ownerUserID) {
 			modelSet[enabledModelName] = true
 		}
 		enabledModelsByGroup[groupName] = modelSet

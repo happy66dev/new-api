@@ -743,8 +743,8 @@ func TestStreamScannerHandler_ProbePassedThenSilentIsNormalTimeout(t *testing.T)
 // TestStreamScannerHandler_FakeStreamBufferLimit 验证伪流全量缓存超过上限即终止并返回结构化错误喵。
 func TestStreamScannerHandler_FakeStreamBufferLimit(t *testing.T) {
 	params := virtualmodelservice.ProbeParameters{StallTimeoutSeconds: 60, MinContentChars: 10, ProbeTotalTimeoutSeconds: 60}
-	// 单行数据超过 2MB 缓存上限，触发伪流断流错误喵。
-	oversizedLine := "data: " + strings.Repeat("x", probeBufferLimit+64) + "\n"
+	// 单行数据超过伪流 16MB 缓存上限，触发伪流断流错误喵。
+	oversizedLine := "data: " + strings.Repeat("x", fakeStreamBufferLimit+64) + "\n"
 	c, resp, info, recorder := setupProbeStreamTest(t, io.NopCloser(strings.NewReader(oversizedLine)), params)
 	common.SetContextKey(c, constant.ContextKeyVirtualModelFakeStream, true)
 	probeErr := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
@@ -792,4 +792,85 @@ func TestStreamProbeEnabledFromContext(t *testing.T) {
 	c3.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	common.SetContextKey(c3, constant.ContextKeyVirtualModelFakeStream, true)
 	assert.True(t, StreamProbeEnabledFromContext(c3))
+}
+
+// TestStreamScannerHandler_FakeStreamAnthropicMessageStopIsNormalEnd 验证伪流下 Anthropic message_stop
+// 被识别为流正常结束（无 [DONE]），缓存被完整回放且不判断流（bug 5 A）喵。
+func TestStreamScannerHandler_FakeStreamAnthropicMessageStopIsNormalEnd(t *testing.T) {
+	params := virtualmodelservice.ProbeParameters{StallTimeoutSeconds: 60, MinContentChars: 10, ProbeTotalTimeoutSeconds: 60}
+	// Anthropic 原生流：文本增量 + message_stop，全程不含 [DONE] 喵。
+	body := io.NopCloser(strings.NewReader(
+		"event: content_block_delta\n" +
+			"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello world\"}}\n" +
+			"event: message_stop\n" +
+			"data: {\"type\":\"message_stop\"}\n"))
+	c, resp, info, _ := setupProbeStreamTest(t, body, params)
+	common.SetContextKey(c, constant.ContextKeyVirtualModelFakeStream, true)
+	var received []string
+	probeErr := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+		received = append(received, data)
+	})
+	require.Nil(t, probeErr, "message_stop 正常结束不得判断流")
+	require.NotNil(t, info.StreamStatus)
+	assert.Equal(t, relaycommon.StreamEndReasonDone, info.StreamStatus.EndReason)
+	// 缓存被完整回放：文本增量与 message_stop 都应送达客户端喵。
+	joined := strings.Join(received, "")
+	assert.Contains(t, joined, "Hello world")
+	assert.Contains(t, joined, "message_stop")
+}
+
+// TestStreamScannerHandler_FakeStreamCutStillDetected 验证伪流下上游未发结束事件直接 EOF 仍判断流（回归保护）喵。
+func TestStreamScannerHandler_FakeStreamCutStillDetected(t *testing.T) {
+	params := virtualmodelservice.ProbeParameters{StallTimeoutSeconds: 60, MinContentChars: 10, ProbeTotalTimeoutSeconds: 60}
+	// 只有一条内容事件后直接 EOF，无 [DONE] 也无 message_stop：真·断流喵。
+	body := io.NopCloser(strings.NewReader(
+		"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n"))
+	c, resp, info, recorder := setupProbeStreamTest(t, body, params)
+	common.SetContextKey(c, constant.ContextKeyVirtualModelFakeStream, true)
+	probeErr := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
+	require.NotNil(t, probeErr)
+	require.True(t, errors.Is(probeErr, types.ErrStreamCut), "伪流 EOF 无结束事件应判断流")
+	assert.Empty(t, recorder.Body.String())
+}
+
+// TestStreamScannerHandler_FakeStreamLongAnswerNotKilledByProbeBudget 验证伪流长回答不再被 300s 探测总预算误杀（bug 5 B）喵。
+// 探测总预算设为 1s，但伪流模式会改用候选 600s 硬顶兜底，故 1.5s 后才结束的回答应正常完成喵。
+func TestStreamScannerHandler_FakeStreamLongAnswerNotKilledByProbeBudget(t *testing.T) {
+	// ProbeTotalTimeoutSeconds=1：若伪流仍用它当整段时限会在 1s 判断流；StallTimeoutSeconds=60 保证静默不误触发喵。
+	params := virtualmodelservice.ProbeParameters{StallTimeoutSeconds: 60, MinContentChars: 10, ProbeTotalTimeoutSeconds: 1}
+	reader, writer := io.Pipe()
+	// 写端：先吐一段内容，静默 1.5s（> 旧 1s 预算，远 < 60s 静默与 600s 硬顶），再发 [DONE] 收尾喵。
+	go func() {
+		_, _ = writer.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n"))
+		time.Sleep(1500 * time.Millisecond)
+		_, _ = writer.Write([]byte("data: [DONE]\n"))
+		_ = writer.Close()
+	}()
+	c, resp, info, _ := setupProbeStreamTest(t, reader, params)
+	common.SetContextKey(c, constant.ContextKeyVirtualModelFakeStream, true)
+	var received []string
+	probeErr := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+		received = append(received, data)
+	})
+	require.Nil(t, probeErr, "伪流长回答不得被探测总预算误杀")
+	require.NotNil(t, info.StreamStatus)
+	assert.Equal(t, relaycommon.StreamEndReasonDone, info.StreamStatus.EndReason)
+	assert.Contains(t, strings.Join(received, ""), "Hello")
+}
+
+// TestStreamScannerHandler_BareDoneLineEndsStream 验证裸 [DONE] 行（无 data: 前缀）被识别为结束而非内容（修 :313/:316 口径）喵。
+func TestStreamScannerHandler_BareDoneLineEndsStream(t *testing.T) {
+	// 普通（非探测）模式：一条内容后紧跟裸 [DONE] 行喵。
+	body := "data: {\"id\":1}\n[DONE]\n"
+	c, resp, info := setupStreamTest(t, strings.NewReader(body))
+	var received []string
+	probeErr := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+		received = append(received, data)
+	})
+	require.Nil(t, probeErr)
+	// 修前裸 [DONE] 会被 data[5:] 切成 "]" 多转发一条；修后只应收到 1 条真实内容喵。
+	require.Len(t, received, 1)
+	assert.Contains(t, received[0], "\"id\":1")
+	require.NotNil(t, info.StreamStatus)
+	assert.Equal(t, relaycommon.StreamEndReasonDone, info.StreamStatus.EndReason)
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
 
@@ -279,6 +280,37 @@ type SharedUserUpstreamModelView struct {
 	ShareListMode string
 }
 
+// upstreamModelRatioIsFree 判定上游模型输入单价字符串是否代表"免费"（规范化后为 0）喵。
+// 这是四处额度闸门与计费早退共用的唯一真源，语义与 service/upstreammodel.parseModelRatio().IsZero() 严格一致喵：
+//   - 空串：计费侧回退为 1 元/百万 token，属于"有价"，返回 false（非免费）喵。
+//   - 合法 0（含 "0"、"0.0"、" 0 "）：返回 true（免费）喵。
+//   - 解析失败或负数：计费侧按 0 费用处理，这里同口径判为免费，防止闸门比计费更严而误拦喵。
+func upstreamModelRatioIsFree(modelRatio string) bool {
+	// 喵~防御：空串在计费侧回退为 1 元，不是免费喵。
+	trimmed := strings.TrimSpace(modelRatio)
+	if trimmed == "" {
+		return false
+	}
+	// 用 decimal 解析，才能正确识别 "0.0"/"0.00" 等等价零写法喵。
+	parsed, parseError := decimal.NewFromString(trimmed)
+	// 喵~防御：解析失败或负数在计费侧一律按 0 费用处理，这里同口径判为免费，保证闸门与扣费一致喵。
+	if parseError != nil || parsed.IsNegative() {
+		return true
+	}
+	// 合法非负值：字面规范化为 0 即免费喵。
+	return parsed.IsZero()
+}
+
+// IsUserUpstreamModelFree 判定一个上游模型是否为"免费模型"（输入单价规范化为 0，整次费用恒为 0）喵。
+// 免费模型豁免"余额/可用/共享三账户 > 0"的调用闸门：三账户为 0 也可共享、被调用与属主自用喵。
+func IsUserUpstreamModelFree(upstreamModel *UserUpstreamModel) bool {
+	// 喵~防御：空对象无法判定价格，保守按非免费处理（维持原三账户>0 门槛），绝不放宽未知对象喵。
+	if upstreamModel == nil {
+		return false
+	}
+	return upstreamModelRatioIsFree(upstreamModel.ModelRatio)
+}
+
 // isUserAllowedShared 判断 viewerID 是否被共享名单允许喵。
 // 属主总是豁免（不必把自己写进白名单）；黑名单命中即禁止；白名单非空时仅名单内放行喵。
 // mode 为空（旧数据）时回退旧逻辑：黑名单挡 + 白名单非空限制喵。
@@ -320,20 +352,29 @@ func containsSharedUserID(ids string, targetID int) bool {
 	return false
 }
 
-// GetSharedUserUpstreamModels 返回当前共享中（余额>0、可用>0、共享额度>0）的全部上游模型喵。
+// GetSharedUserUpstreamModels 返回当前共享中的全部上游模型喵。
+// 有价模型要求三账户(余额/可用/共享)>0；免费模型(单价规范化为0)豁免该要求、三账户为0也可共享喵。
 // viewerID 用于白名单/黑名单过滤：被挡用户看不到对应模型喵。
 func GetSharedUserUpstreamModels(viewerID int) ([]SharedUserUpstreamModelView, error) {
 	var views []SharedUserUpstreamModelView
-	// 三账户都是递减账户，任一耗尽即自动停止共享（从共享列表消失）喵。
+	// 只在 SQL 里做 share_enabled 过滤：三账户阈值与免费豁免跨库难以用一条 SQL 精确表达，
+	// 统一下沉到 Go 侧判定，与下面白名单/黑名单的 Go 过滤同策略喵。
 	if err := DB.Model(&UserUpstreamModel{}).
 		Select("id", "owner_user_id", "normalized_name", "display_name", "description", "icon", "real_model_name", "model_ratio", "completion_ratio", "cache_ratio", "share_limit_cents", "show_balance_enabled", "balance_cents", "available_cents", "share_whitelist", "share_blacklist", "share_list_mode").
-		Where("share_enabled = ? AND balance_cents > 0 AND available_cents > 0 AND share_limit_cents > 0", true).
+		Where("share_enabled = ?", true).
 		Find(&views).Error; err != nil {
 		return nil, err
 	}
-	// 白名单/黑名单在 Go 侧过滤（逗号分隔的 id 串不适合跨库 SQL 表达）喵。
+	// 主人注意：这里把"三账户>0"过滤从 SQL 挪到 Go 侧，返回行数变为"全部 share_enabled 行"（原为"账户都>0 的行"）。
+	// 共享模型为用户手工创建，量级通常几十到几百行，遍历成本可忽略；若未来共享规模很大，可加 share_enabled 索引或分页喵。
 	filtered := make([]SharedUserUpstreamModelView, 0, len(views))
 	for _, view := range views {
+		// 账户闸门：三账户任一耗尽即停止共享；但免费模型豁免该要求喵。
+		accountsAvailable := view.BalanceCents > 0 && view.AvailableCents > 0 && view.ShareLimitCents > 0
+		if !accountsAvailable && !upstreamModelRatioIsFree(view.ModelRatio) {
+			continue
+		}
+		// 白名单/黑名单在 Go 侧过滤（逗号分隔的 id 串不适合跨库 SQL 表达）喵。
 		if isUserAllowedShared(viewerID, view.OwnerUserID, view.ShareListMode, view.ShareWhitelist, view.ShareBlacklist) {
 			filtered = append(filtered, view)
 		}
@@ -376,17 +417,29 @@ func GetEnabledSharedUserUpstreamModelByName(normalizedName string, viewerID int
 	if strings.TrimSpace(normalizedName) == "" {
 		return nil, gorm.ErrRecordNotFound
 	}
-	var upstreamModel UserUpstreamModel
-	// 启用 + 共享开启 + 余额/可用/共享三账户都未耗尽才算"共享中"喵。
-	// Order("id asc") 保证存量重复命名数据（命名池上线前的历史遗留）下有确定选择，不依赖数据库返回顺序喵。
-	if err := DB.Where("normalized_name = ? AND enabled = ? AND share_enabled = ? AND balance_cents > 0 AND available_cents > 0 AND share_limit_cents > 0", normalizedName, true, true).Order("id asc").First(&upstreamModel).Error; err != nil {
+	var candidates []UserUpstreamModel
+	// 先按名称宽查"启用且共享开启"的候选，不在 SQL 里做三账户>0 过滤：
+	// 免费模型三账户允许为 0，账户阈值与免费豁免统一改到 Go 侧判定，跨库一致喵。
+	// Order("id asc") 保证存量重复命名数据（命名池上线前的历史遗留）下遍历顺序确定，不依赖数据库返回顺序喵。
+	if err := DB.Where("normalized_name = ? AND enabled = ? AND share_enabled = ?", normalizedName, true, true).Order("id asc").Find(&candidates).Error; err != nil {
 		return nil, err
 	}
-	// 白名单/黑名单过滤：被挡用户按记录不存在处理，避免泄露模型存在性喵。
-	if !isUserAllowedShared(viewerID, upstreamModel.OwnerUserID, upstreamModel.ShareListMode, upstreamModel.ShareWhitelist, upstreamModel.ShareBlacklist) {
-		return nil, gorm.ErrRecordNotFound
+	// 遍历候选：取第一个"账户充足 OR 免费"且通过白名单/黑名单的行作为可调用共享模型喵。
+	for i := range candidates {
+		candidate := &candidates[i]
+		// 账户闸门：三账户任一耗尽即停止共享；免费模型豁免该要求喵。
+		accountsAvailable := candidate.BalanceCents > 0 && candidate.AvailableCents > 0 && candidate.ShareLimitCents > 0
+		if !accountsAvailable && !IsUserUpstreamModelFree(candidate) {
+			continue
+		}
+		// 白名单/黑名单过滤：被挡用户跳过，避免泄露模型存在性喵。
+		if !isUserAllowedShared(viewerID, candidate.OwnerUserID, candidate.ShareListMode, candidate.ShareWhitelist, candidate.ShareBlacklist) {
+			continue
+		}
+		return candidate, nil
 	}
-	return &upstreamModel, nil
+	// 喵~防御：无任何候选满足账户/免费与名单要求时，统一按记录不存在处理喵。
+	return nil, gorm.ErrRecordNotFound
 }
 
 // ErrUpstreamModelNotSharing 表示目标模型存在但当前未处于共享状态喵。

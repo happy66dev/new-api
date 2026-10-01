@@ -67,15 +67,11 @@ func Distribute() func(c *gin.Context) {
 			if !handled {
 				return
 			}
-			// 虚拟模型 user/xxx 内部候选：上游失败按失败规则推进候选链时循环重分发，
-			// 直到新候选不再是 user/xxx（交给下方普通 channel 选择）或请求已终结喵。
-			for shouldSelectChannel && isUserUpstreamModelRequest(modelRequest.Model) {
-				if !handleUserUpstreamModelRequest(c, modelRequest) {
-					// 已注入自定义上游临时渠道时继续走 relay，否则终止喵。
-					if !IsUpstreamModelRelayRequest(c) {
-						return
-					}
-					break
+			// 虚拟模型 user/xxx 内部候选：首候选指向 user/xxx 时走透传链执行（含上游失败按规则推进出的后续 user/ 候选），
+			// 返回 false 表示已被透传收尾（请求终结），返回 true 表示已落到普通内部候选，继续走下方普通 channel 选择喵。
+			if shouldSelectChannel && isUserUpstreamModelRequest(modelRequest.Model) {
+				if !driveActivatedUserUpstreamCandidates(c, modelRequest) {
+					return
 				}
 			}
 		}
@@ -606,8 +602,8 @@ func AdvanceVirtualModelAfterNativeFailure(c *gin.Context, nativeError *types.Ne
 	}
 	// next 与不可继续 retry/freeze 都交由候选链尝试后续候选喵。
 	if activateNextVirtualModelCandidate(c, executionState) {
-		decision.NextCandidateActivated = true
-		return decision
+		// 刚激活的若是指向 user/xxx 的内部候选，就地走透传链执行；否则维持原生 relay 切换语义喵。
+		return resolveActivatedCandidateDecision(c, executionState)
 	}
 	// 喵~防御：只有显式启用循环、尚未超出轮数且响应未提交时才允许回到链首，避免默认无限重试喵。
 	if executionState.loopEnabled && executionState.loopRoundsCompleted+1 < executionState.maximumLoopRounds && (executionState.requestDeadline.IsZero() || time.Now().Before(executionState.requestDeadline)) {
@@ -615,8 +611,8 @@ func AdvanceVirtualModelAfterNativeFailure(c *gin.Context, nativeError *types.Ne
 		executionState.currentCandidateIndex = -1
 		executionState.skippedCandidateIDs = make(map[int]bool)
 		if activateNextVirtualModelCandidate(c, executionState) {
-			decision.NextCandidateActivated = true
-			return decision
+			// 回链首重跑后同样可能激活 user/xxx 内部候选：就地走透传链执行喵。
+			return resolveActivatedCandidateDecision(c, executionState)
 		}
 	}
 	if c.Writer != nil && c.Writer.Written() {
@@ -792,6 +788,50 @@ func activateNextVirtualModelCandidate(c *gin.Context, executionState *virtualMo
 	// 候选链耗尽时清空当前尝试标识，避免外层误判仍存在活动候选喵。
 	executionState.currentCandidateAttemptID = ""
 	return false
+}
+
+// driveActivatedUserUpstreamCandidates 在"刚激活的候选其真实模型为 user/xxx"时，用用户上游透传链执行该候选喵。
+// 它复刻 Distribute 首候选处理循环的语义，使 user/ 内部候选在链上任意位置都能执行（修 bug3"仅排首位才能跑"）喵。
+// 返回值：
+//
+//	true  —— 透传链已把当前激活候选推进到一个普通内部候选(非 user/)，调用方应按原生 relay 执行它；
+//	false —— 本次请求已被透传完全处理（成功放流 / passthrough 错误 / 候选链耗尽并写出错误 / 或 deadline 耗尽未写）喵。
+func driveActivatedUserUpstreamCandidates(c *gin.Context, modelRequest *ModelRequest) bool {
+	// 喵~防御：缺上下文或请求对象时无法安全透传，按"已终结"交上层兜底喵。
+	if c == nil || modelRequest == nil {
+		return false
+	}
+	// handleUserUpstreamModelRequest 在虚拟上下文返回 true=失败规则已推进到新候选，false=本次请求已被完全处理喵。
+	// 虚拟上下文下它恒走透传分支、绝不注入 relay 临时渠道，故无需再判 IsUpstreamModelRelayRequest 喵。
+	for isUserUpstreamModelRequest(modelRequest.Model) {
+		if !handleUserUpstreamModelRequest(c, modelRequest) {
+			return false
+		}
+	}
+	// 循环退出代表当前激活的是普通内部候选，交回原生 relay 执行喵。
+	return true
+}
+
+// resolveActivatedCandidateDecision 在候选激活成功后，决定原生失败编排动作喵。
+// 普通内部候选维持原语义（交 relay 走原生分发）；user/ 内部候选改走透传链就地执行，使其在任意链位置都能跑喵。
+func resolveActivatedCandidateDecision(c *gin.Context, executionState *virtualModelExecutionState) VirtualModelNativeFailureDecision {
+	decision := VirtualModelNativeFailureDecision{}
+	// 普通内部候选：维持原语义，交调用方切换独立 RelayInfo 后走原生 relay 喵。
+	if executionState == nil || executionState.modelRequest == nil || !isUserUpstreamModelRequest(executionState.modelRequest.Model) {
+		decision.NextCandidateActivated = true
+		return decision
+	}
+	// user/ 内部候选：用透传链执行（允许连跳多个 user/ 候选）；落到普通候选时交原生 relay 喵。
+	if driveActivatedUserUpstreamCandidates(c, executionState.modelRequest) {
+		decision.NextCandidateActivated = true
+		return decision
+	}
+	// 透传已把响应写给客户端：只允许调用方做结算+退款，绝不再追加第二段错误正文喵。
+	if c.Writer != nil && c.Writer.Written() {
+		decision.CustomCandidateCommitted = true
+	}
+	// 否则(总 deadline 在退避中耗尽、未写任何响应)：三标志全 false，由调用方写出原生失败错误兜底喵。
+	return decision
 }
 
 // restoreVirtualModelOriginalRequest 在每次内部候选激活前恢复客户端原始 JSON，再由候选替换顶层 model 喵。
@@ -1273,14 +1313,16 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 			return false
 		}
 		referencedUpstreamModel = loadedModel
-		// 请求前硬检查：引用上游模型同样受余额与可用额度约束喵。
-		if referencedUpstreamModel.BalanceCents <= 0 {
-			abortUpstreamModelQuotaExhausted(c)
-			return false
-		}
-		if referencedUpstreamModel.AvailableCents <= 0 {
-			abortUpstreamModelQuotaExhausted(c)
-			return false
+		// 请求前硬检查：有价引用上游模型受余额与可用额度约束；免费模型(单价规范化为0)费用恒 0，豁免三账户>0喵。
+		if !model.IsUserUpstreamModelFree(referencedUpstreamModel) {
+			if referencedUpstreamModel.BalanceCents <= 0 {
+				abortUpstreamModelQuotaExhausted(c)
+				return false
+			}
+			if referencedUpstreamModel.AvailableCents <= 0 {
+				abortUpstreamModelQuotaExhausted(c)
+				return false
+			}
 		}
 		decryptedBaseURL, decryptBaseURLError := virtualmodelservice.DecryptCredential(referencedUpstreamModel.EncryptedBaseURL, referencedUpstreamModel.CredentialVersion)
 		decryptedAPIKey, decryptAPIKeyError := virtualmodelservice.DecryptCredential(referencedUpstreamModel.EncryptedAPIKey, referencedUpstreamModel.CredentialVersion)

@@ -127,6 +127,16 @@ func TestHandleUserUpstreamModelRequestQuota(t *testing.T) {
 	handled = handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "user/quota-ok"})
 	require.False(t, handled)
 	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+
+	// 免费模型（单价规范化为 0）即使三账户为 0 也绕过额度硬检查，走到凭据解密返回 503 而非 409（bug4 修复点）喵。
+	require.NoError(t, testDB.Create(&model.UserUpstreamModel{OwnerUserID: 7, NormalizedName: "free-empty", Enabled: true, ModelRatio: "0", BalanceCents: 0, AvailableCents: 0, EncryptedBaseURL: "bad-enc", EncryptedAPIKey: "bad-enc", CredentialVersion: 1, RealModelName: "gpt-4o"}).Error)
+	recorder = httptest.NewRecorder()
+	ctx, _ = gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/free-empty"}`))
+	ctx.Set("id", 7)
+	handled = handleUserUpstreamModelRequest(ctx, &ModelRequest{Model: "user/free-empty"})
+	require.False(t, handled)
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
 }
 
 // TestHandleUserUpstreamModelRequestShared 验证共享调用的授权回退、额度耗尽停止与属主自用不受影响喵。

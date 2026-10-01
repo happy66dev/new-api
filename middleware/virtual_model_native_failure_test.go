@@ -124,3 +124,37 @@ func TestAdvanceVirtualModelAfterNativeFailureSafeGuards(t *testing.T) {
 	require.False(t, passthroughDecision.RetryCurrentCandidate)
 	require.False(t, passthroughDecision.NextCandidateActivated)
 }
+
+// TestResolveActivatedCandidateDecisionKeepsNormalCandidateNative 验证普通内部候选(非 user/)维持原生 relay 切换语义喵。
+func TestResolveActivatedCandidateDecisionKeepsNormalCandidateNative(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	// 激活后 modelRequest.Model 为普通内部模型名：应交原生 relay 走候选切换，不触碰透传链喵。
+	executionState := &virtualModelExecutionState{modelRequest: &ModelRequest{Model: "gpt-test", Group: "default"}}
+	decision := resolveActivatedCandidateDecision(ctx, executionState)
+	require.True(t, decision.NextCandidateActivated)
+	require.False(t, decision.CustomCandidateCommitted)
+}
+
+// TestResolveActivatedCandidateDecisionRoutesUserUpstreamToPassthrough 验证 bug3 修复：
+// 任意链位置激活的 user/xxx 内部候选都会被路由进透传链执行，而非原生候选切换喵。
+func TestResolveActivatedCandidateDecisionRoutesUserUpstreamToPassthrough(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	// 关闭用户上游总开关：handleUserUpstreamModelRequest 在入口即 abort 404 并写出响应，透传链据此确定性收尾喵。
+	oldMaster := common.OptionMap[model.UserUpstreamEnabledKey]
+	common.OptionMap[model.UserUpstreamEnabledKey] = "false"
+	t.Cleanup(func() { common.OptionMap[model.UserUpstreamEnabledKey] = oldMaster })
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"user/shared-x"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Set("id", 7)
+	// 候选激活后 modelRequest.Model 指向 user/xxx：现 bug 代码会误置 NextCandidateActivated 让 relay 选渠道失败；
+	// 修复后应被透传链执行、并因已写出响应而置 CustomCandidateCommitted 喵。
+	executionState := &virtualModelExecutionState{modelRequest: &ModelRequest{Model: "user/shared-x", Group: "user-shared"}}
+	decision := resolveActivatedCandidateDecision(ctx, executionState)
+	require.False(t, decision.NextCandidateActivated)
+	require.True(t, decision.CustomCandidateCommitted)
+	require.Equal(t, http.StatusNotFound, recorder.Code)
+}

@@ -149,7 +149,10 @@ func judgeVirtualModelCandidateAnomaly(
 	modelsInGroup, cached := enabledModelsByGroup[groupName]
 	if !cached {
 		modelsInGroup = make(map[string]bool)
-		for _, enabledModelName := range model.GetGroupEnabledModels(groupName) {
+		// 复用 service.GetGroupsEnabledModels：它对 user-shared 分组特判，直接查共享的用户上游模型名单(user/xxx)，
+		// 而非去 abilities 表找——否则 group=user-shared 的 user/xxx 内部候选会被误判为"分组下已没有此模型"喵。
+		// ownerUserID 作为 viewer，用于共享白/黑名单过滤，只统计该用户可见的共享模型喵。
+		for _, enabledModelName := range service.GetGroupsEnabledModels([]string{groupName}, ownerUserID) {
 			modelsInGroup[enabledModelName] = true
 		}
 		enabledModelsByGroup[groupName] = modelsInGroup

@@ -186,19 +186,22 @@ func TestSharedUserUpstreamModels(t *testing.T) {
 	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "shared-available-empty", Enabled: true, ShareEnabled: true, BalanceCents: 100, AvailableCents: 0, ShareLimitCents: 1000}).Error)
 	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "shared-exhausted", Enabled: true, ShareEnabled: true, BalanceCents: 100, AvailableCents: 100, ShareLimitCents: 0}).Error)
 	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "not-shared", Enabled: true, ShareEnabled: false, BalanceCents: 100, AvailableCents: 100, ShareLimitCents: 1000}).Error)
+	// 免费模型（单价规范化为 0）：即使三账户都为 0 也应可见、可被调用（bug4 修复点）喵。
+	require.NoError(t, DB.Create(&UserUpstreamModel{OwnerUserID: 7, NormalizedName: "shared-free-empty", Enabled: true, ShareEnabled: true, ModelRatio: "0", BalanceCents: 0, AvailableCents: 0, ShareLimitCents: 0}).Error)
 
-	// 共享中的模型名只包含三账户都未耗尽的共享模型喵。
+	// 共享中的模型名只包含三账户都未耗尽的共享模型，外加三账户为 0 的免费模型喵。
 	names := GetSharedUserUpstreamModelNames(0)
 	assert.Contains(t, names, "user/shared-ok")
+	assert.Contains(t, names, "user/shared-free-empty") // 免费模型三账户为 0 仍可见喵。
 	assert.NotContains(t, names, "user/shared-balance-empty")
 	assert.NotContains(t, names, "user/shared-available-empty")
 	assert.NotContains(t, names, "user/shared-exhausted")
 	assert.NotContains(t, names, "user/not-shared")
 
-	// 共享视图只包含共享中的模型喵。
+	// 共享视图包含 shared-ok 与免费的 shared-free-empty 两条喵。
 	views, err := GetSharedUserUpstreamModels(0)
 	require.NoError(t, err)
-	assert.Len(t, views, 1)
+	assert.Len(t, views, 2)
 
 	// 任一账户耗尽的模型按名称查询返回记录不存在（自动停止共享）喵。
 	_, err = GetEnabledSharedUserUpstreamModelByName("shared-exhausted", 0)
@@ -214,11 +217,43 @@ func TestSharedUserUpstreamModels(t *testing.T) {
 	assert.Equal(t, 7, shared.OwnerUserID)
 	assert.Equal(t, int64(1000), shared.ShareLimitCents)
 
+	// 免费模型三账户为 0 仍可被调用授权（bug4 修复点）喵。
+	freeShared, err := GetEnabledSharedUserUpstreamModelByName("shared-free-empty", 0)
+	require.NoError(t, err)
+	assert.Equal(t, "shared-free-empty", freeShared.NormalizedName)
+
 	// 空名称与未开启共享的名称都查不到喵。
 	_, err = GetEnabledSharedUserUpstreamModelByName("", 0)
 	require.Error(t, err)
 	_, err = GetEnabledSharedUserUpstreamModelByName("not-shared", 0)
 	require.Error(t, err)
+}
+
+// TestUpstreamModelRatioIsFree 验证免费判定与计费侧 parseModelRatio().IsZero() 口径一致喵。
+func TestUpstreamModelRatioIsFree(t *testing.T) {
+	// 表驱动：覆盖空串、合法 0、有价、非法、负数等输入喵。
+	cases := []struct {
+		ratio string // 输入单价字符串喵
+		free  bool   // 期望是否判为免费喵
+	}{
+		{"", false},     // 空串在计费侧回退 1 元，非免费喵。
+		{"0", true},     // 显式 0 即免费喵。
+		{"0.0", true},   // 等价零写法免费喵。
+		{"0.00", true},  // 等价零写法免费喵。
+		{" 0 ", true},   // 带空白的 0 也免费喵。
+		{"1", false},    // 有价非免费喵。
+		{"0.5", false},  // 有价非免费喵。
+		{"abc", true},   // 非法值计费侧按 0 费用，判为免费喵。
+		{"-5", true},    // 负数计费侧按 0 费用，判为免费喵。
+	}
+	for _, item := range cases {
+		assert.Equalf(t, item.free, upstreamModelRatioIsFree(item.ratio), "ratio=%q", item.ratio)
+	}
+	// 空对象保守按非免费处理喵。
+	assert.False(t, IsUserUpstreamModelFree(nil))
+	// 非空对象走单价判定喵。
+	assert.True(t, IsUserUpstreamModelFree(&UserUpstreamModel{ModelRatio: "0"}))
+	assert.False(t, IsUserUpstreamModelFree(&UserUpstreamModel{ModelRatio: "2"}))
 }
 
 // TestSharedUserWhitelistBlacklist 验证白名单/黑名单同时过滤可见性与调用授权（含显式模式与属主豁免）喵。

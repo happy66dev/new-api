@@ -59,6 +59,10 @@ func setupVirtualModelStatusTestDB(t *testing.T) {
 	require.NoError(t, model.DB.Exec("DELETE FROM entity_probe_states").Error)
 	require.NoError(t, model.DB.Exec("DELETE FROM perf_metrics").Error)
 	require.NoError(t, model.DB.Exec("DELETE FROM user_upstream_models").Error)
+	// 喵~防御：共享内存库连接池常驻，DELETE 不会重置 SQLite 自增序列；
+	// 若不清空 sqlite_sequence，候选等自增主键会跨用例累加，导致本文件硬编码候选 1 的用例在后置执行时查不到候选而误报 404 喵。
+	// sqlite_sequence 仅在存在 AUTOINCREMENT 列时才建表，这里忽略其可能不存在的错误，重置失败也不影响全新库语义喵。
+	_ = model.DB.Exec("DELETE FROM sqlite_sequence").Error
 }
 
 // createStatusTestVirtualModel 创建一个含单个 internal 候选的测试虚拟模型喵。

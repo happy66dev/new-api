@@ -27,15 +27,48 @@ func TestSumUsedQuotaSharedScope(t *testing.T) {
 	// 非共享模型被调日志（不在共享名集合内）：即使 type=8/user-shared 也不应计入喵。
 	require.NoError(t, LOG_DB.Create(&Log{Username: "other2", Type: LogTypeCustomUpstream, ModelName: "user/not-shared", Group: constant.GroupUserShared, PromptTokens: 1, CompletionTokens: 1, Quota: 500, CreatedAt: now}).Error)
 
-	// 「全部」范围：自己的消费 + 共享被调，quota 300、rpm 2、tpm 100 喵。
+	// 「全部」范围：quota 仍含共享被调(300)；但 rpm/tpm 新口径只计自己的内部模型(gpt-4o)喵。
 	statAll, err := SumUsedQuota(LogTypeConsume, 0, 0, "", "me", "", 0, "", "user/shared-a")
 	require.NoError(t, err)
-	assert.Equal(t, 300, statAll.Quota)
-	assert.Equal(t, 2, statAll.Rpm)
-	assert.Equal(t, 100, statAll.Tpm)
+	assert.Equal(t, 300, statAll.Quota) // quota 口径不变：自己的消费 + 共享被调喵。
+	assert.Equal(t, 1, statAll.Rpm)     // 共享被调(user/shared-a) 从 rpm 剔除，仅剩自己的 gpt-4o 一条喵。
+	assert.Equal(t, 30, statAll.Tpm)    // tpm 仅自己 gpt-4o 的 10+20=30，不含共享被调的 70 喵。
 
 	// 「仅自己」范围（不传共享名）：只统计自己的消费，quota 100 喵。
 	statSelf, err := SumUsedQuota(LogTypeConsume, 0, 0, "", "me", "", 0, "")
 	require.NoError(t, err)
 	assert.Equal(t, 100, statSelf.Quota)
+}
+
+// TestSumUsedQuotaRpmTpmInternalModelScope 验证 rpm/tpm 新口径：计入虚拟模型内部候选(type=9 无前缀)，
+// 排除用户自定义上游(user/)与虚拟模型自定义候选(virtual/)，且 quota 口径不受影响喵。
+func TestSumUsedQuotaRpmTpmInternalModelScope(t *testing.T) {
+	truncateTables(t)
+	require.NoError(t, LOG_DB.Exec("DELETE FROM logs").Error)
+
+	// 当前时间，落在 rpm/tpm 的最近 60 秒窗口内喵。
+	now := time.Now().Unix()
+	// 60 秒窗口外的时间点，用于验证 rpm/tpm 窗口边界喵。
+	outsideWindow := time.Now().Add(-120 * time.Second).Unix()
+
+	// 内部真实模型普通消费(type=2)：窗口内，应计入 rpm/tpm 与 quota 喵。
+	require.NoError(t, LOG_DB.Create(&Log{Username: "me", Type: LogTypeConsume, ModelName: "gpt-4o", PromptTokens: 10, CompletionTokens: 20, Quota: 100, CreatedAt: now}).Error)
+	// 虚拟模型内部候选(type=9，真实模型名无前缀)：窗口内，rpm/tpm 应计入（修 bug a）；quota 不计入（非 type=2）喵。
+	require.NoError(t, LOG_DB.Create(&Log{Username: "me", Type: LogTypeVirtualModel, ModelName: "gpt-4o-mini", PromptTokens: 5, CompletionTokens: 10, Quota: 50, CreatedAt: now}).Error)
+	// 虚拟模型自定义候选(virtual/ 前缀)：按前缀排除出 rpm/tpm（判据 b）喵。
+	require.NoError(t, LOG_DB.Create(&Log{Username: "me", Type: LogTypeVirtualModel, ModelName: "virtual/my-vm", PromptTokens: 100, CompletionTokens: 100, Quota: 50, CreatedAt: now}).Error)
+	// 用户自定义上游(user/ 前缀)：按前缀排除出 rpm/tpm（判据 b）喵。
+	require.NoError(t, LOG_DB.Create(&Log{Username: "me", Type: LogTypeVirtualModel, ModelName: "user/my-upstream", PromptTokens: 100, CompletionTokens: 100, Quota: 50, CreatedAt: now}).Error)
+	// 内部真实模型消费(type=2)但在 60 秒窗口外：rpm/tpm 排除，quota 仍计入喵。
+	require.NoError(t, LOG_DB.Create(&Log{Username: "me", Type: LogTypeConsume, ModelName: "gpt-4o", PromptTokens: 7, CompletionTokens: 8, Quota: 999, CreatedAt: outsideWindow}).Error)
+
+	// 「仅自己」范围：rpm/tpm 恒取 type IN(2,9) 且无 user//virtual/ 前缀的窗口内行喵。
+	stat, err := SumUsedQuota(LogTypeConsume, 0, 0, "", "me", "", 0, "")
+	require.NoError(t, err)
+	// quota：type=2 的两条(100+999)，type=9 不进 quota 喵。
+	assert.Equal(t, 1099, stat.Quota)
+	// rpm：窗口内的 gpt-4o + gpt-4o-mini 两条喵。
+	assert.Equal(t, 2, stat.Rpm)
+	// tpm：gpt-4o(30) + gpt-4o-mini(15) = 45，不含被前缀排除的 user//virtual/ 行喵。
+	assert.Equal(t, 45, stat.Tpm)
 }
