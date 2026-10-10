@@ -114,72 +114,76 @@ func ReliefOutstandingQuota() (int64, error) {
 	return activeTotal + restUsed, nil
 }
 
-// reliefSubscriptionHasRemaining 判断单个订阅"是否还花得下一笔"（各已配额度窗口都没用完）喵~
+// reliefSubscriptionHasRemaining 判断单个订阅"是否还有足够可用额度"（各已配额度窗口剩余都不低于门槛）喵~
 //
-// 这是一个只读的近似判定（不真正写库做 reset）：对于已到重置点的窗口，视为已归零；
-// 覆盖主人要求的"总额度 / 五小时 / 周 / 月"几类额度，任一已配且用满就算该订阅不可用喵~
-func reliefSubscriptionHasRemaining(sub *UserSubscription, now int64) bool {
+// 这是一个只读的近似判定（不真正写库做 reset）：对于已到重置点的窗口，视为已归零（剩余=满额）；
+// 覆盖主人要求的"总额度 / 五小时 / 周 / 月"几类额度，任一已配窗口的剩余额度低于门槛就算该订阅不可用喵~
+//
+// 口径（主人拍板）：订阅可用额度（五小时/周/总额度等）低于门槛（约 10 美元，与钱包余额门槛一致）
+// 就不再算"可用"——因为就算有一点点残额也发挥不了作用，用户仍应能领救济金喵~
+//
+// 输入：订阅、当前时间戳 now、单窗口可用额度门槛 minRemainingQuota（内部 quota 单位）
+// 输出：true 表示仍有足够可用额度，false 表示不可用
+func reliefSubscriptionHasRemaining(sub *UserSubscription, now int64, minRemainingQuota int64) bool {
 	// 喵~防御：空指针按"不可用"处理，避免下面取字段崩溃
 	if sub == nil {
 		return false
 	}
 
-	// 总额度：amount_total>0 才是有限额度（0=不限量、<0=纯权益不含额度，前者恒有余额、后者在调用处已排除）
-	if sub.AmountTotal > 0 {
+	// windowAvailable 判断单个额度窗口是否"够用"：剩余额度为正且不低于门槛
+	// 输入：窗口上限 limit、已用 used、该窗口下次重置时间 nextReset
+	// 已过重置点则本周期已用视为归零（剩余=满额）
+	windowAvailable := func(limit, used, nextReset int64) bool {
 		// 已过重置点的话，本周期已用视为归零
-		used := sub.AmountUsed
-		if sub.NextResetTime > 0 && sub.NextResetTime <= now {
+		if nextReset > 0 && nextReset <= now {
 			used = 0
 		}
-		// 已用 >= 总额 说明总额度用完了，整个订阅不可用
-		if used >= sub.AmountTotal {
+		// 剩余额度 = 上限 - 已用
+		remaining := limit - used
+		// 必须剩余为正、且不低于门槛额度，才算该窗口可用
+		return remaining > 0 && remaining >= minRemainingQuota
+	}
+
+	// 总额度：amount_total>0 才是有限额度（0=不限量、<0=纯权益不含额度，前者恒有余额、后者在调用处已排除）
+	if sub.AmountTotal > 0 {
+		if !windowAvailable(sub.AmountTotal, sub.AmountUsed, sub.NextResetTime) {
 			return false
 		}
 	}
 
 	// 五小时额度：配置了（limit>0）才检查
 	if sub.FiveHourLimit > 0 {
-		used := sub.FiveHourUsed
-		// 已过五小时重置点则本窗口归零
-		if sub.FiveHourNextResetTime > 0 && sub.FiveHourNextResetTime <= now {
-			used = 0
-		}
-		if used >= sub.FiveHourLimit {
+		if !windowAvailable(sub.FiveHourLimit, sub.FiveHourUsed, sub.FiveHourNextResetTime) {
 			return false
 		}
 	}
 
 	// 周额度：同上
 	if sub.WeeklyLimit > 0 {
-		used := sub.WeeklyUsed
-		if sub.WeeklyNextResetTime > 0 && sub.WeeklyNextResetTime <= now {
-			used = 0
-		}
-		if used >= sub.WeeklyLimit {
+		if !windowAvailable(sub.WeeklyLimit, sub.WeeklyUsed, sub.WeeklyNextResetTime) {
 			return false
 		}
 	}
 
 	// 月额度：同上
 	if sub.MonthlyLimit > 0 {
-		used := sub.MonthlyUsed
-		if sub.MonthlyNextResetTime > 0 && sub.MonthlyNextResetTime <= now {
-			used = 0
-		}
-		if used >= sub.MonthlyLimit {
+		if !windowAvailable(sub.MonthlyLimit, sub.MonthlyUsed, sub.MonthlyNextResetTime) {
 			return false
 		}
 	}
 
-	// 所有已配额度都还有余量 → 这个订阅是"可用的"
+	// 所有已配额度窗口剩余都不低于门槛 → 这个订阅是"可用的"
 	return true
 }
 
-// UserHasConsumableSubscription 判断用户当前是否还存在"可用"的订阅（任意一个订阅的各项额度都没用完）喵~
+// UserHasConsumableSubscription 判断用户当前是否还存在"可用"的订阅（任意一个订阅各项额度剩余都不低于门槛）喵~
 //
-// 口径（主人拍板）：只看是否存在一个订阅额度（五小时/周/总额度等）尚未用完即可。
-// 返回 true 表示"订阅可用"（不符合领救济金条件）；false 表示"订阅不可用"。
-func UserHasConsumableSubscription(userId int) (bool, error) {
+// 口径（主人拍板）：看是否存在一个订阅，其各项额度（五小时/周/总额度等）剩余都不低于门槛 minRemainingQuota；
+// 低于门槛（约 10 美元）的残额不算"可用"。返回 true 表示"订阅可用"（不符合领救济金条件）；false 表示"订阅不可用"。
+//
+// 输入：用户 id、单窗口可用额度门槛 minRemainingQuota（内部 quota 单位）
+// 输出：是否存在可用订阅，以及错误
+func UserHasConsumableSubscription(userId int, minRemainingQuota int64) (bool, error) {
 	// 喵~防御：非法 userId 直接报错
 	if userId <= 0 {
 		return false, errors.New("invalid userId")
@@ -218,8 +222,8 @@ func UserHasConsumableSubscription(userId int) (bool, error) {
 		if plan.IsWalletOnlyForGroup(group) {
 			continue
 		}
-		// 各项已配额度都还有余量，说明存在可用订阅
-		if reliefSubscriptionHasRemaining(sub, now) {
+		// 各项已配额度剩余都不低于门槛，说明存在可用订阅
+		if reliefSubscriptionHasRemaining(sub, now, minRemainingQuota) {
 			return true, nil
 		}
 	}

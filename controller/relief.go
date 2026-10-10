@@ -62,10 +62,14 @@ func evaluateRelief(userId int, setting *operation_setting.ReliefSetting, now in
 	if err != nil {
 		return result, err
 	}
-	balanceLow := float64(userQuota) < setting.BalanceThresholdUsd*common.QuotaPerUnit
+	// 门槛额度（内部 quota）：美元门槛 * 换算系数，钱包与订阅可用额度共用这同一个门槛
+	thresholdQuota := setting.BalanceThresholdUsd * common.QuotaPerUnit
+	balanceLow := float64(userQuota) < thresholdQuota
 
-	// 条件二：用户当前没有"可用"的订阅（任意订阅额度都用完才算不可用）
-	hasConsumable, err := model.UserHasConsumableSubscription(userId)
+	// 条件二：用户当前没有"可用"的订阅。
+	// 口径（主人拍板）：订阅各项额度（五小时/周/总额度等）剩余低于门槛（同为约 10 美元）就不算可用，
+	// 所以这里把同一个门槛额度传下去判断。
+	hasConsumable, err := model.UserHasConsumableSubscription(userId, int64(thresholdQuota))
 	if err != nil {
 		return result, err
 	}
