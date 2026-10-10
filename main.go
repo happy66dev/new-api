@@ -133,6 +133,13 @@ func main() {
 	// Subscription quota reset task (daily/weekly/monthly/custom)
 	service.StartSubscriptionQuotaResetTask()
 
+	// 启动 AutoCheckin 池额度后台刷新任务：每个实例各自刷新自己的只读快照，
+	// 让 /status 永远读内存快照、绝不同步打开 sqlite（刷新任务内部按开关自行跳过）
+	service.StartAutoCheckinPoolRefreshTask()
+
+	// 确保救济金隐藏套餐存在并回写 relief_setting.plan_id（函数内部已做主节点判断）
+	service.EnsureReliefPlan()
+
 	// Report this process as a system instance so the System Info page can show
 	// all currently alive nodes in multi-instance deployments.
 	service.StartSystemInstanceReporter()

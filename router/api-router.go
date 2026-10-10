@@ -150,6 +150,11 @@ func SetApiRouter(router *gin.Engine) {
 				selfRoute.GET("/checkin", controller.GetCheckinStatus)
 				selfRoute.POST("/checkin", middleware.CaptchaCheckCheckin(), controller.DoCheckin)
 
+				// 救济金路由：GET 查状态/资格，POST 领取；与签到一样挂在登录态下
+				selfRoute.GET("/relief", controller.GetReliefStatus)
+				// 领取是发额度的关键操作，按用户维度限流，防止单用户刷接口
+				selfRoute.POST("/relief/claim", middleware.UserCriticalRateLimit("relief-claim"), controller.DoReliefClaim)
+
 				// Custom OAuth bindings
 				selfRoute.GET("/oauth/bindings", controller.GetUserOAuthBindings)
 				selfRoute.DELETE("/oauth/bindings/:provider_id", controller.UnbindCustomOAuth)

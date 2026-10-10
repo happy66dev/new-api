@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/oauth"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/console_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -155,6 +156,10 @@ func GetStatus(c *gin.Context) {
 		"checkin_min_user_quota":      operation_setting.GetCheckinSetting().MinUserQuota,
 		"checkin_deductible_groups":   operation_setting.GetCheckinSetting().DeductibleGroups,
 		"quota_transfer_enabled":      operation_setting.GetQuotaSetting().EnableUserTransfer,
+		// 救济金功能总开关：前端据此决定钱包页是否渲染救济金卡片
+		"relief_enabled": operation_setting.GetReliefSetting().Enabled,
+		// AutoCheckin 池额度展示总开关：前端据此决定 /status 是否渲染池额度区块
+		"pool_quota_enabled": operation_setting.GetAutoCheckinSetting().Enabled,
 	}
 
 	// 根据启用状态注入可选内容
@@ -166,6 +171,24 @@ func GetStatus(c *gin.Context) {
 	}
 	if cs.FAQEnabled {
 		data["faq"] = console_setting.GetFAQ()
+	}
+
+	// AutoCheckin 池额度：启用后把各站点池余额快照注入 /status（只读后台快照，不同步开 sqlite）
+	if operation_setting.GetAutoCheckinSetting().Enabled {
+		// 取后台定时刷新好的快照：站点->美元余额、上次刷新时间、上次错误原因
+		poolBySite, poolUpdatedAt, poolLastError := service.AutoCheckinPoolSnapshot()
+		// AgentRouter 池余额（美元）；无数据时为 0
+		data["agentrouter_pool_quota"] = poolBySite["agentrouter"]
+		// justwoker 池余额（美元）；无数据时为 0
+		data["justwoker_pool_quota"] = poolBySite["justwoker"]
+		// 完整站点余额映射，前端可据此展示更多站点（当前至少含上面两个）
+		data["pool_quota_sites"] = poolBySite
+		// 快照上次成功刷新的时间戳（秒），前端可展示"数据更新于"
+		data["pool_quota_updated_at"] = poolUpdatedAt
+		// 数据时效天数，用于前端文案"数据为前 N 天内时效期"
+		data["pool_quota_freshness_days"] = operation_setting.GetAutoCheckinSetting().FreshnessDays
+		// 上次刷新错误原因（正常为空串），便于管理员排查数据为何偏旧
+		data["pool_quota_last_error"] = poolLastError
 	}
 
 	// Add enabled custom OAuth providers
