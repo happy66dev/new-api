@@ -362,3 +362,50 @@ export async function completeOrder(
   const res = await api.post('/api/user/topup/complete', request)
   return res.data
 }
+
+// ============================================================================
+// 救济金 Relief API
+// ============================================================================
+
+/**
+ * 救济金状态数据：GET /api/user/relief 返回的 data 部分。
+ * enabled=false 时后端只回这一个字段，其余均为可选。
+ */
+export interface ReliefStatusData {
+  enabled: boolean // 功能是否启用
+  eligible?: boolean // 当前是否可领取
+  reason_code?: string // 不可领取的机器码（前端翻译成本地化文案）
+  remaining_usd?: number // 救济金剩余（美元，已夹 0）
+  grant_amount_usd?: number // 单次发放额度（美元）
+  balance_threshold_usd?: number // 领取门槛（美元）
+  cooldown_hours?: number // 冷却时长（小时）
+  cooldown_remaining_seconds?: number // 冷却剩余（秒）
+}
+
+/**
+ * 领取成功返回的数据：本次发放的总额度与订阅到期时间戳。
+ */
+export interface ReliefClaimData {
+  amount_total: number // 本次发放的总额度（内部 quota）
+  end_time: number // 订阅到期时间戳（秒）
+}
+
+/**
+ * 获取当前用户的救济金状态与领取资格。
+ */
+export async function getReliefStatus(): Promise<
+  ApiResponse<ReliefStatusData>
+> {
+  const res = await api.get('/api/user/relief')
+  return res.data
+}
+
+/**
+ * 领取一笔救济金。失败时后端返回 success=false 与中性中文消息，交调用方展示。
+ */
+export async function claimRelief(): Promise<ApiResponse<ReliefClaimData>> {
+  const res = await api.post('/api/user/relief/claim', undefined, {
+    skipBusinessError: true,
+  } as Record<string, unknown>)
+  return res.data
+}

@@ -456,6 +456,14 @@ export type BillingSettings = {
   'checkin_setting.max_quota': number
   'checkin_setting.min_user_quota': number
   'checkin_setting.deductible_groups': string
+  'relief_setting.enabled': boolean
+  'relief_setting.reserve_amount': number
+  'relief_setting.balance_threshold_usd': number
+  'relief_setting.cooldown_hours': number
+  'relief_setting.grant_amount_usd': number
+  'autocheckin_setting.enabled': boolean
+  'autocheckin_setting.data_db_path': string
+  'autocheckin_setting.freshness_days': number
   PaymentAnnouncement: string
 }
 

@@ -7,7 +7,7 @@ the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
 */
 import { useQuery } from '@tanstack/react-query'
-import { HeartPulse, RefreshCw } from 'lucide-react'
+import { Coins, HeartPulse, RefreshCw } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -78,6 +78,7 @@ export function StatusCheck() {
                 {announcement}
               </Markdown>
             )}
+            <PoolQuotaSection status={status} />
             <div className='text-muted-foreground flex items-center gap-2 text-sm'>
               <HeartPulse className='size-4' />
               <span>
@@ -215,5 +216,60 @@ function Metric(props: { label: string; value: string }) {
         {props.value}
       </div>
     </div>
+  )
+}
+
+// 池额度相关的 /status 字段形态（由后端 GetStatus 注入，均为可选）
+interface StatusWithPool {
+  pool_quota_enabled?: boolean // 池额度展示开关
+  agentrouter_pool_quota?: number // AgentRouter 池余额（美元）
+  justwoker_pool_quota?: number // justwoker 池余额（美元）
+  pool_quota_freshness_days?: number // 数据时效天数
+}
+
+// PoolQuotaSection 在 /status 展示 AgentRouter 与 justwoker 的池额度估计值
+function PoolQuotaSection(props: { status: unknown }) {
+  const { t } = useTranslation()
+  // 把宽松类型的 status 收窄到池额度字段
+  const pool = (props.status ?? {}) as StatusWithPool
+  // 开关未开则不渲染
+  if (!pool.pool_quota_enabled) {
+    return null
+  }
+  // 美元数值格式化成 "$1,234.56"（千分位 + 两位小数）
+  const formatUsd = (value: number | undefined) =>
+    `$${(value ?? 0).toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`
+  // 时效天数兜底为 2 天
+  const days = pool.pool_quota_freshness_days ?? 2
+  return (
+    <Card>
+      <CardHeader className='border-b pb-3'>
+        <div className='flex items-center gap-2'>
+          <Coins className='size-4' />
+          <CardTitle className='text-base'>{t('Pool Quota')}</CardTitle>
+        </div>
+      </CardHeader>
+      <CardContent className='space-y-3 pt-3'>
+        <div className='grid grid-cols-2 gap-3'>
+          <Metric
+            label={t('AgentRouter pool')}
+            value={formatUsd(pool.agentrouter_pool_quota)}
+          />
+          <Metric
+            label={t('justwoker pool')}
+            value={formatUsd(pool.justwoker_pool_quota)}
+          />
+        </div>
+        <p className='text-muted-foreground text-xs'>
+          {t(
+            'This is a rough estimate. Data reflects check-ins within the last {{days}} days.',
+            { days }
+          )}
+        </p>
+      </CardContent>
+    </Card>
   )
 }

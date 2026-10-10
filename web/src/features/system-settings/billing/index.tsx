@@ -138,6 +138,14 @@ const defaultBillingSettings: BillingSettings = {
   'checkin_setting.max_quota': 10000,
   'checkin_setting.min_user_quota': 0,
   'checkin_setting.deductible_groups': '',
+  'relief_setting.enabled': false,
+  'relief_setting.reserve_amount': 1200,
+  'relief_setting.balance_threshold_usd': 10,
+  'relief_setting.cooldown_hours': 2,
+  'relief_setting.grant_amount_usd': 200,
+  'autocheckin_setting.enabled': false,
+  'autocheckin_setting.data_db_path': 'C:\\AutoCheck\\webui\\data.db',
+  'autocheckin_setting.freshness_days': 2,
 }
 
 export function BillingSettings() {

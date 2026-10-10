@@ -42,6 +42,7 @@ import { TransferDialog } from './components/dialogs/transfer-dialog'
 import { TransferToUserDialog } from './components/dialogs/transfer-to-user-dialog'
 import { RechargeFormCard } from './components/recharge-form-card'
 import { RedemptionPurchaseCard } from './components/redemption-purchase-card'
+import { ReliefFundCard } from './components/relief-fund-card'
 import { SubscriptionPlansCard } from './components/subscription-plans-card'
 import { WalletStatsCard } from './components/wallet-stats-card'
 import { DEFAULT_DISCOUNT_RATE, PAYMENT_TYPES } from './constants'
@@ -115,6 +116,10 @@ export function Wallet(props: WalletProps) {
   const userTransferEnabled = Boolean(
     (status as { quota_transfer_enabled?: boolean } | null | undefined)
       ?.quota_transfer_enabled
+  )
+  // 救济金开关：管理员在设置里开启后，钱包“添加资金”区才显示救济金卡片喵
+  const reliefEnabled = Boolean(
+    (status as { relief_enabled?: boolean } | null | undefined)?.relief_enabled
   )
   const { topupInfo, presetAmounts, loading: topupLoading } = useTopupInfo()
   const {
@@ -481,6 +486,8 @@ export function Wallet(props: WalletProps) {
         <SectionPageLayout.Content>
           <div className='mx-auto flex w-full max-w-7xl flex-col gap-4 sm:gap-5'>
             <WalletStatsCard user={user} loading={userLoading} />
+
+            {reliefEnabled && <ReliefFundCard onClaimed={fetchUser} />}
 
             <div
               className={

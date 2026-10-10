@@ -18,10 +18,12 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { parseCurrencyDisplayType } from '@/lib/currency'
 
+import { AutoCheckinSettingsSection } from '../general/autocheckin-settings-section'
 import { CheckinSettingsSection } from '../general/checkin-settings-section'
 import { GroupAccessRulesSection } from '../general/group-access-rules-section'
 import { PricingSection } from '../general/pricing-section'
 import { QuotaSettingsSection } from '../general/quota-settings-section'
+import { ReliefSettingsSection } from '../general/relief-settings-section'
 import { PaymentSettingsSection } from '../integrations/payment-settings-section'
 import { RatioSettingsCard } from '../models/ratio-settings-card'
 import type { BillingSettings } from '../types'
@@ -271,6 +273,34 @@ const BILLING_SECTIONS = [
           maxQuota: settings['checkin_setting.max_quota'],
           minUserQuota: settings['checkin_setting.min_user_quota'],
           deductibleGroups: settings['checkin_setting.deductible_groups'],
+        }}
+      />
+    ),
+  },
+  {
+    id: 'relief',
+    titleKey: 'Relief Fund',
+    build: (settings: BillingSettings) => (
+      <ReliefSettingsSection
+        defaultValues={{
+          enabled: settings['relief_setting.enabled'],
+          reserveAmount: settings['relief_setting.reserve_amount'],
+          balanceThresholdUsd: settings['relief_setting.balance_threshold_usd'],
+          cooldownHours: settings['relief_setting.cooldown_hours'],
+          grantAmountUsd: settings['relief_setting.grant_amount_usd'],
+        }}
+      />
+    ),
+  },
+  {
+    id: 'pool-quota',
+    titleKey: 'Pool Quota',
+    build: (settings: BillingSettings) => (
+      <AutoCheckinSettingsSection
+        defaultValues={{
+          enabled: settings['autocheckin_setting.enabled'],
+          dataDbPath: settings['autocheckin_setting.data_db_path'],
+          freshnessDays: settings['autocheckin_setting.freshness_days'],
         }}
       />
     ),
