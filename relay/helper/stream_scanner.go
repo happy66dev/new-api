@@ -374,10 +374,11 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 					}
 					// 流转伪流：全量缓存所有 data 行，不做内容门槛放流喵。
 					if fakeStreamEnabled {
-						// Anthropic 原生流无 [DONE]，正常结束只发 message_stop；此行已在上面随 bufferProbeData 入缓存，
-						// 这里识别到它即视为"流已完整"，一次性回放全部缓存（含 message_stop 本身）后正常收尾（bug A）喵。
-						// 不追加合成 [DONE]：Anthropic 客户端不期待 [DONE]，终止符由上层 HandleStreamFinalResponse 负责发喵。
-						if isAnthropicStreamEndPayload(data) {
+						// 部分上游原生流没有 [DONE]：Anthropic 正常结束只发 message_stop，OpenAI Responses 只发
+						// response.completed/response.done；此行已在上面随 bufferProbeData 入缓存，这里识别到它即视为
+						// "流已完整"，一次性回放全部缓存（含结束事件本身）后正常收尾（bug A）喵。
+						// 不追加合成 [DONE]：这些客户端不期待 [DONE]，结束事件本身就在缓存里，终止符由上层收尾负责发喵。
+						if isNonDoneStreamEndPayload(data) {
 							probePassed.Store(true)
 							ticker.Reset(streamingTimeout)
 							for _, bufferedData := range probeState.drainBuffer() {
@@ -392,7 +393,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 								}
 							}
 							info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
-							logger.LogDebug(c, "received anthropic message_stop, replaying buffered fake stream")
+							logger.LogDebug(c, "received native stream end event, replaying buffered fake stream")
 							return
 						}
 						// 非结束事件：仅缓存，继续读下一行喵。
@@ -444,15 +445,11 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 								return
 							}
 						}
-						// 回放 [DONE] 结束标记，客户端据此关闭流喵。
-						info.ReceivedResponseCount++
-						select {
-						case dataChan <- "[DONE]":
-						case <-ctx.Done():
-							return
-						case <-stopChan:
-							return
-						}
+						// 只回放缓存的真实数据帧，绝不把字面量 "[DONE]" 推进 dataChan 喵。
+						// 喵~防御：旧逻辑在此推送合成 "[DONE]"，会被逐帧 JSON 解析器（processTokenData 等）当内容解析，
+						// 对 "[DONE]" 报 invalid character 'D' looking for beginning of value，并污染 lastStreamData
+						// 导致末帧 responseId/usage 丢失、甚至向客户端重复发两次 data: [DONE] 喵。
+						// 终止符 data: [DONE] 由各 handler 收尾（HandleFinalResponse → helper.Done）统一补发，与普通流式一致喵。
 						info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
 						logger.LogDebug(c, "received [DONE], replaying buffered fake stream")
 						return

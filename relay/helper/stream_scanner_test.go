@@ -819,6 +819,58 @@ func TestStreamScannerHandler_FakeStreamAnthropicMessageStopIsNormalEnd(t *testi
 	assert.Contains(t, joined, "message_stop")
 }
 
+// TestStreamScannerHandler_FakeStreamResponsesCompletedIsNormalEnd 验证伪流下 OpenAI Responses 的
+// response.completed 被识别为流正常结束（原生流无 [DONE]），缓存被完整回放且不判断流（问题 2 修复）喵。
+func TestStreamScannerHandler_FakeStreamResponsesCompletedIsNormalEnd(t *testing.T) {
+	params := virtualmodelservice.ProbeParameters{StallTimeoutSeconds: 60, MinContentChars: 10, ProbeTotalTimeoutSeconds: 60}
+	// Responses 原生流：文本增量 + response.completed，全程不含 [DONE] 喵。
+	body := io.NopCloser(strings.NewReader(
+		"event: response.output_text.delta\n" +
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello world\"}\n" +
+			"event: response.completed\n" +
+			"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n"))
+	c, resp, info, _ := setupProbeStreamTest(t, body, params)
+	common.SetContextKey(c, constant.ContextKeyVirtualModelFakeStream, true)
+	var received []string
+	probeErr := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+		received = append(received, data)
+	})
+	require.Nil(t, probeErr, "response.completed 正常结束不得判断流")
+	require.NotNil(t, info.StreamStatus)
+	assert.Equal(t, relaycommon.StreamEndReasonDone, info.StreamStatus.EndReason)
+	joined := strings.Join(received, "")
+	// 缓存被完整回放：文本增量与 response.completed 都应送达客户端喵。
+	assert.Contains(t, joined, "Hello world")
+	assert.Contains(t, joined, "response.completed")
+	// 不得把字面量 [DONE] 推进 dataHandler（Responses 客户端不期待 [DONE]）喵。
+	for _, data := range received {
+		assert.NotEqual(t, "[DONE]", data)
+	}
+}
+
+// TestStreamScannerHandler_FakeStreamDoneNotForwardedToHandler 验证伪流下 [DONE] 不再作为数据帧推进
+// dataHandler，杜绝逐帧 JSON 解析器把 "[DONE]" 当内容解析而报 invalid character 'D'（问题 1 修复）喵。
+func TestStreamScannerHandler_FakeStreamDoneNotForwardedToHandler(t *testing.T) {
+	params := virtualmodelservice.ProbeParameters{StallTimeoutSeconds: 60, MinContentChars: 1, ProbeTotalTimeoutSeconds: 60}
+	// OpenAI 聊天伪流：一条内容增量后以 [DONE] 收尾喵。
+	body := io.NopCloser(strings.NewReader(
+		"data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n" +
+			"data: [DONE]\n"))
+	c, resp, info, _ := setupProbeStreamTest(t, body, params)
+	common.SetContextKey(c, constant.ContextKeyVirtualModelFakeStream, true)
+	var received []string
+	probeErr := StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+		received = append(received, data)
+	})
+	require.Nil(t, probeErr)
+	require.NotNil(t, info.StreamStatus)
+	assert.Equal(t, relaycommon.StreamEndReasonDone, info.StreamStatus.EndReason)
+	// 真实内容必须回放，但 [DONE] 哨兵绝不能作为数据帧交给 dataHandler 喵。
+	require.Len(t, received, 1)
+	assert.Contains(t, received[0], "Hello")
+	assert.NotContains(t, received[0], "[DONE]")
+}
+
 // TestStreamScannerHandler_FakeStreamCutStillDetected 验证伪流下上游未发结束事件直接 EOF 仍判断流（回归保护）喵。
 func TestStreamScannerHandler_FakeStreamCutStillDetected(t *testing.T) {
 	params := virtualmodelservice.ProbeParameters{StallTimeoutSeconds: 60, MinContentChars: 10, ProbeTotalTimeoutSeconds: 60}

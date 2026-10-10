@@ -45,12 +45,17 @@ func TestCustomProbeContentCharsOpenAI(t *testing.T) {
 	assert.Positive(t, customProbeContentChars(`{"foo":"bar"}`))
 }
 
-// TestIsCustomStreamEndEvent 验证流结束判定兼容 [DONE] 与 Anthropic message_stop 喵。
+// TestIsCustomStreamEndEvent 验证流结束判定兼容 [DONE]、Anthropic message_stop 与 OpenAI Responses 结束事件喵。
 func TestIsCustomStreamEndEvent(t *testing.T) {
 	// OpenAI 结束哨兵喵。
 	assert.True(t, isCustomStreamEndEvent([]byte("data: [DONE]\n\n")))
 	// Anthropic 结束事件喵。
 	assert.True(t, isCustomStreamEndEvent([]byte(`data: {"type":"message_stop"}`)))
+	// OpenAI Responses 成功结束事件：原生流无 [DONE]，靠 response.completed/response.done 收尾喵。
+	assert.True(t, isCustomStreamEndEvent([]byte(`data: {"type":"response.completed","response":{"status":"completed"}}`)))
+	assert.True(t, isCustomStreamEndEvent([]byte(`data: {"type":"response.done","response":{"status":"completed"}}`)))
+	// Responses 文本增量不算结束，哪怕正文里含 "response.completed" 字样也不得误判喵。
+	assert.False(t, isCustomStreamEndEvent([]byte(`data: {"type":"response.output_text.delta","delta":"what is response.completed"}`)))
 	// 普通内容增量不算结束喵。
 	assert.False(t, isCustomStreamEndEvent([]byte(`data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}`)))
 	// 非 data 行不算结束喵。

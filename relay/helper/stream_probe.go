@@ -199,15 +199,18 @@ func isProbeHeartbeat(data string) bool {
 	return strings.EqualFold(data, "ping") || strings.EqualFold(data, "pong")
 }
 
-// isAnthropicStreamEndPayload 判断已剥离 "data:" 前缀的 SSE 负载是否为 Anthropic 原生结束事件 message_stop 喵。
-// 用途：Anthropic 流式无 [DONE]，正常结束只发 message_stop；伪流缓存阶段据此识别"流已完整"，
-// 否则上游关闭连接走 EOF 会被误判断流（bug A）喵。复用 service/virtualmodel 的判定，relay/helper 已依赖该包、无循环依赖喵。
-func isAnthropicStreamEndPayload(dataPayload string) bool {
-	// 主人注意：message_stop 识别需要 JSON 解析，伪流会对每条缓存行调用本函数；
-	// 这里先用廉价子串预筛，正常内容增量不含 "message_stop" 字面量即短路，避免对长流逐行 gjson 解析拖慢喵。
-	if !strings.Contains(dataPayload, "message_stop") {
+// isNonDoneStreamEndPayload 判断已剥离 "data:" 前缀的 SSE 负载是否为「非 [DONE] 的原生结束事件」喵。
+// 用途：部分上游流式没有 [DONE] 终止符——Anthropic 正常结束只发 message_stop，OpenAI Responses 只发
+// response.completed/response.done；伪流缓存阶段据此识别"流已完整"，否则上游关闭连接走 EOF 会被误判断流（bug A）喵。
+// 复用 service/virtualmodel 的判定，relay/helper 已依赖该包、无循环依赖喵。
+func isNonDoneStreamEndPayload(dataPayload string) bool {
+	// 主人注意：结束事件识别需要 JSON 解析，伪流会对每条缓存行调用本函数；
+	// 这里先用廉价子串预筛，正常内容增量不含这些结束字面量即短路，避免对长流逐行 gjson 解析拖慢喵。
+	if !strings.Contains(dataPayload, "message_stop") &&
+		!strings.Contains(dataPayload, "response.completed") &&
+		!strings.Contains(dataPayload, "response.done") {
 		return false
 	}
-	// 子串命中后再做精确判定：仅顶层 type==message_stop 才算结束事件，正文里出现该字面量不会误判喵。
+	// 子串命中后再做精确判定：仅顶层 type 命中结束事件才算，正文里出现同名字面量不会误判喵。
 	return virtualmodelservice.IsCustomStreamEndPayload(dataPayload)
 }

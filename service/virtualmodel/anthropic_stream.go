@@ -56,18 +56,28 @@ func customProbeContentChars(dataPayload string) int {
 }
 
 // IsCustomStreamEndPayload 判断已剥离 "data:" 前缀的 SSE 负载是否代表流正常结束喵。
-// 兼容 OpenAI 的 [DONE] 哨兵与 Anthropic 的 message_stop 事件；供自定义透传链与 relay 层伪流缓存共用同一口径喵。
+// 兼容三类上游的结束口径：OpenAI 聊天的 [DONE] 哨兵、Anthropic 的 message_stop 事件、
+// OpenAI Responses 的 response.completed/response.done 事件（原生流不发 [DONE]，靠这两个事件收尾）喵。
+// 供自定义透传链与 relay 层伪流缓存共用同一口径喵。
 func IsCustomStreamEndPayload(dataPayload string) bool {
 	// 去除首尾空白，拿到真正的事件负载喵。
 	trimmedPayload := strings.TrimSpace(dataPayload)
-	// OpenAI 结束哨兵 [DONE] 喵。
+	// OpenAI 聊天结束哨兵 [DONE] 喵。
 	if strings.EqualFold(trimmedPayload, "[DONE]") {
 		return true
 	}
 	// 喵~防御：非法 JSON 不是结束事件，gjson.Valid 失败直接返回 false，避免误判空/脏负载喵。
-	if gjson.Valid(trimmedPayload) {
-		// Anthropic 流式结束事件：顶层 type == message_stop 喵。
-		return gjson.Get(trimmedPayload, "type").String() == "message_stop"
+	if !gjson.Valid(trimmedPayload) {
+		return false
+	}
+	// 按顶层 type 精确匹配各家的"流正常结束"事件；正文里出现同名字面量不会误判喵。
+	switch gjson.Get(trimmedPayload, "type").String() {
+	case "message_stop":
+		// Anthropic 流式结束事件喵。
+		return true
+	case "response.completed", "response.done":
+		// OpenAI Responses 成功结束事件喵。
+		return true
 	}
 	return false
 }
