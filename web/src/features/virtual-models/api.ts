@@ -36,6 +36,8 @@ export type VirtualModelCandidateInput = {
   max_retries: number
   timeout_seconds: number
   // hedge_threshold 连续失败自动避险阈值，达到该次数才冻结退避；零表示关闭自动避险喵。
+  // 喵~防御：写入时可省略，省略表示保持候选既有避险配置；显式传零才是关闭，
+  // 候选链编辑器不管理避险配置，因此保存调用链时必须省略这两个字段喵。
   hedge_threshold?: number
   // hedge_freeze_seconds 达到连续失败阈值后的退避冻结秒数；阈值非零时必填且必须为正数喵。
   hedge_freeze_seconds?: number
@@ -288,6 +290,8 @@ export async function deleteVirtualModel(
 
 // getVirtualModelStatus 读取运行状态；失败时由页面内联展示而非全局 toast，
 // 避免模型删除后 in-flight 状态请求返回 404 触发"虚拟模型不存在"弹窗喵。
+// 喵~防御：真正压掉弹窗的是调用方 useQuery 的 meta.errorToast=false（全局 QueryCache 只看 meta），
+// 这里的 skipErrorHandler 只跳过 401 会话跳转逻辑，不能阻止 404 弹窗喵。
 // disableDuplicate 关闭 GET 在途去重，让概览「刷新」按钮与轮询都能真正命中后端拿最新值喵。
 export async function getVirtualModelStatus(
   id: number
@@ -300,7 +304,7 @@ export async function getVirtualModelStatus(
 }
 
 // getVirtualModelCandidateStatus 读取单个候选节点的状态摘要；
-// 候选被删除后 in-flight 请求会返回 404，因此同样跳过全局错误弹窗喵。
+// 候选被删除后 in-flight 请求会返回 404，因此同样由调用方 meta.errorToast=false 跳过全局错误弹窗喵。
 // disableDuplicate 保证打开候选性能抽屉时总能拉到最新样本喵。
 export async function getVirtualModelCandidateStatus(
   modelID: number,

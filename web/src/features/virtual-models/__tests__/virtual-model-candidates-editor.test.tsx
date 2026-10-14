@@ -109,6 +109,52 @@ afterEach(() => {
   apiClient.get = originalGet
 })
 
+// makeModelWithIdentity 构造带自定义编号的虚拟模型夹具，供切换模型用例断言请求路径喵。
+function makeModelWithIdentity(modelID: number, candidateIDs: number[]): VirtualModel {
+  const baseModel = makeModel(
+    candidateIDs.map((candidateID, index) => ({
+      id: candidateID,
+      stable_order: index,
+      source_type: 'internal' as const,
+      enabled: true,
+      max_retries: 0,
+      timeout_seconds: 60,
+      group_name: 'default',
+      real_model_name: `gpt-4o-mini-${candidateID}`,
+    }))
+  )
+  return { ...baseModel, id: modelID }
+}
+
+// renderSwitchedEditor 先把模型 A 渲染完成，再用模型 B 重渲染同一个组件实例，
+// 还原用户在左侧列表切换虚拟模型时的真实渲染过程喵。
+async function renderSwitchedEditor(modelA: VirtualModel, modelB: VirtualModel) {
+  // requestedUrls 记录组件实际发出的全部 GET 路径，用于断言没有错配的候选状态请求喵。
+  const requestedUrls: string[] = []
+  apiClient.get = vi.fn((...args: unknown[]) => {
+    const url = typeof args[0] === 'string' ? args[0] : ''
+    requestedUrls.push(url)
+    return Promise.resolve({ data: { success: true, data: [] } })
+  })
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  const renderResult = render(
+    <QueryClientProvider client={queryClient}>
+      <VirtualModelCandidatesEditor model={modelA} onSaved={() => undefined} />
+    </QueryClientProvider>
+  )
+  await screen.findByText('default/gpt-4o-mini-101')
+  requestedUrls.length = 0
+  renderResult.rerender(
+    <QueryClientProvider client={queryClient}>
+      <VirtualModelCandidatesEditor model={modelB} onSaved={() => undefined} />
+    </QueryClientProvider>
+  )
+  await screen.findByText('default/gpt-4o-mini-202')
+  return requestedUrls
+}
+
 describe('VirtualModelCandidatesEditor call chain rows', () => {
   test('shows the upstream URL summary on url+key candidate rows', async () => {
     mockApiGet()
@@ -194,5 +240,20 @@ describe('VirtualModelCandidatesEditor call chain rows', () => {
     expect(
       await screen.findByText('https://draft.example.com')
     ).toBeInTheDocument()
+  })
+
+  test('switching the selected virtual model never queries a candidate under the wrong model', async () => {
+    // 模型 A 的候选编号 101，模型 B 的候选编号 202，两个模型的候选状态接口路径必须各自匹配喵。
+    const requestedUrls = await renderSwitchedEditor(
+      makeModelWithIdentity(21, [101]),
+      makeModelWithIdentity(22, [202])
+    )
+    // 喵~防御：切换后若沿用旧草稿渲染，会向新模型编号 + 旧候选编号发起请求并收到 404 弹窗喵。
+    expect(requestedUrls).not.toContain(
+      '/api/virtual-models/22/candidates/101/status'
+    )
+    expect(requestedUrls).toContain(
+      '/api/virtual-models/22/candidates/202/status'
+    )
   })
 })

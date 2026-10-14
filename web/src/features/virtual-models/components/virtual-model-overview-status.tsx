@@ -70,6 +70,8 @@ export function VirtualModelOverviewStatus(
     enabled: Boolean(props.modelID && openCandidate),
     staleTime: 30 * 1000,
     retry: false,
+    // 喵~防御：性能抽屉自带错误态展示，失败时不得再弹全局错误弹窗喵。
+    meta: { errorToast: false },
   })
   const series = props.status?.series ?? []
 

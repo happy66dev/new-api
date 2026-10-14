@@ -156,6 +156,61 @@ func TestReplaceVirtualModelCandidatesKeepsStateOnReordering(t *testing.T) {
 	require.Equal(t, int64(1), resetTestCount(t, &model.EntityProbeState{}, "scope = ? AND entity_id = ?", model.EntityProbeScopeVirtualCandidate, candidate.ID))
 }
 
+// saveResetTestCandidateChain 以候选链保存接口的载荷提交一次候选链，返回响应记录仪喵。
+// candidates 由调用方给出，用于精确模拟前端实际提交的字段集合喵。
+func saveResetTestCandidateChain(t *testing.T, virtualModel *model.VirtualModel, version int64, candidates []map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	replaceBody, marshalError := common.Marshal(map[string]any{"version": version, "candidates": candidates})
+	require.NoError(t, marshalError)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/virtual-models/%d/candidates", virtualModel.ID), bytes.NewReader(replaceBody))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", virtualModel.ID)}}
+	ctx.Set("id", 7)
+	ReplaceVirtualModelCandidates(ctx)
+	return recorder
+}
+
+// TestReplaceVirtualModelCandidatesKeepsAutoHedgeConfig 验证调用链保存不会误清候选的自动避险配置喵。
+// 自动避险只在失败规则抽屉里配置，调用链编辑器提交的候选载荷不含避险字段，
+// 因此省略字段必须保持既有值，只有显式给出数值时才允许覆盖喵。
+func TestReplaceVirtualModelCandidatesKeepsAutoHedgeConfig(t *testing.T) {
+	setupVirtualModelCandidateResetTestDB(t)
+	virtualModel, candidate := createResetTestInternalCandidate(t, 7, "vm-hedge-keep", "model-a")
+	// 预置失败规则抽屉里配置好的自动避险：连续 3 次失败冻结 60 秒喵。
+	require.NoError(t, model.DB.Model(&model.VirtualModelCandidate{}).Where("id = ?", candidate.ID).Updates(map[string]any{"hedge_threshold": 3, "hedge_freeze_seconds": 60}).Error)
+
+	// 调用链编辑器不会提交避险字段，这里按真实载荷保存一次候选链喵。
+	recorder := saveResetTestCandidateChain(t, virtualModel, 1, []map[string]any{{
+		"id": candidate.ID, "source_type": string(model.VirtualModelSourceInternal),
+		"enabled": true, "group_name": "default", "real_model_name": "model-a", "timeout_seconds": 60,
+	}})
+	require.Equal(t, http.StatusOK, recorder.Code)
+
+	// 喵~防御：省略避险字段时必须保持 3/60，否则界面上刚配好的自动避险会被静默清零喵。
+	var keptCandidate model.VirtualModelCandidate
+	require.NoError(t, model.DB.First(&keptCandidate, candidate.ID).Error)
+	require.Equal(t, 3, keptCandidate.HedgeThreshold)
+	require.Equal(t, 60, keptCandidate.HedgeFreezeSeconds)
+
+	// 显式提交避险字段时仍按请求覆盖，保证调用方能够调整或关闭自动避险喵。
+	explicitThreshold := 0
+	explicitFreezeSeconds := 0
+	explicitRecorder := saveResetTestCandidateChain(t, virtualModel, 2, []map[string]any{{
+		"id": candidate.ID, "source_type": string(model.VirtualModelSourceInternal),
+		"enabled": true, "group_name": "default", "real_model_name": "model-a", "timeout_seconds": 60,
+		"hedge_threshold": explicitThreshold, "hedge_freeze_seconds": explicitFreezeSeconds,
+	}})
+	require.Equal(t, http.StatusOK, explicitRecorder.Code)
+
+	var clearedCandidate model.VirtualModelCandidate
+	require.NoError(t, model.DB.First(&clearedCandidate, candidate.ID).Error)
+	require.Equal(t, 0, clearedCandidate.HedgeThreshold)
+	require.Equal(t, 0, clearedCandidate.HedgeFreezeSeconds)
+}
+
 // resetTestCount 统计测试库中满足条件的目标行数喵。
 func resetTestCount(t *testing.T, modelValue any, query string, args ...any) int64 {
 	t.Helper()

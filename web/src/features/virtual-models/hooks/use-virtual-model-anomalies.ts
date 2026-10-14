@@ -51,6 +51,8 @@ export function useVirtualModelAnomalies() {
     refetchInterval: 5000,
     refetchIntervalInBackground: false,
     retry: false,
+    // 喵~防御：轮询失败由侧边栏红点与页面内联提示承担，不得每 5 秒弹一次全局错误弹窗喵。
+    meta: { errorToast: false },
     enabled: Boolean(userId),
   })
   // 用 useMemo 稳定异常数组引用：data 未加载时返回同一空数组，避免依赖变化引发重渲染喵。

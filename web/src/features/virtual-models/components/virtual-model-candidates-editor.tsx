@@ -281,6 +281,9 @@ function CandidateStatusDot({ modelID, candidateID }: { modelID: number; candida
     queryFn: () => getVirtualModelCandidateStatus(modelID, candidateID),
     staleTime: 30 * 1000,
     retry: false,
+    // 喵~防御：候选圆点自带错误态展示，失败时不得再弹全局错误弹窗，
+    // 否则候选被删除后的在途请求会把「虚拟模型不存在」弹到界面右上角喵。
+    meta: { errorToast: false },
   })
   const status = statusQuery.data?.data
   // 候选载荷字段较少，规整为摘要的公共形状喵。
@@ -323,6 +326,20 @@ function CandidateStatusDot({ modelID, candidateID }: { modelID: number; candida
 // VirtualModelCandidatesEditor 管理候选链顺序；列表默认只显示模型名，点击候选行展开完整参数编辑喵。
 // 内部候选显示 分组/真实模型，自定义候选显示真实模型并带 Custom 标记喵。
 export function VirtualModelCandidatesEditor({
+  model,
+  onSaved,
+}: {
+  model: VirtualModel
+  onSaved: () => void
+}) {
+  // 喵~防御：按模型编号重挂载内部编辑器，让草稿、展开态与规则抽屉随切换同帧重建。
+  // 否则切换那一帧仍用旧模型的候选 id 渲染，会向「新模型编号 + 旧候选编号」的状态接口发请求，
+  // 后端按资源不存在返回 404「虚拟模型不存在」，用户看到报错却又能正常切换喵。
+  return <VirtualModelCandidatesEditorBody key={model.id} model={model} onSaved={onSaved} />
+}
+
+// VirtualModelCandidatesEditorBody 承载候选链编辑器的主体逻辑，只在模型编号不变时保持内部状态喵。
+function VirtualModelCandidatesEditorBody({
   model,
   onSaved,
 }: {

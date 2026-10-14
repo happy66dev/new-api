@@ -40,10 +40,11 @@ type virtualModelCandidateInput struct {
 	Enabled        bool                         `json:"enabled"`
 	MaxRetries     int                          `json:"max_retries"`
 	TimeoutSeconds int                          `json:"timeout_seconds"`
-	// HedgeThreshold 连续失败自动避险阈值，达到该次数才冻结退避；零表示关闭自动避险喵。
-	HedgeThreshold int `json:"hedge_threshold"`
-	// HedgeFreezeSeconds 达到连续失败阈值后的退避冻结秒数；阈值非零时必填且必须为正数喵。
-	HedgeFreezeSeconds int                         `json:"hedge_freeze_seconds"`
+	// HedgeThreshold 连续失败自动避险阈值，达到该次数才冻结退避；
+	// 喵~防御：用指针区分「没传」和「传了 0」——省略表示保持候选既有配置，传 0 才是关闭自动避险喵。
+	HedgeThreshold *int `json:"hedge_threshold,omitempty"`
+	// HedgeFreezeSeconds 达到连续失败阈值后的退避冻结秒数；阈值非零时必填且必须为正数，省略表示保持既有配置喵。
+	HedgeFreezeSeconds *int                        `json:"hedge_freeze_seconds,omitempty"`
 	GroupName          string                      `json:"group_name"`
 	RealModelName      string                      `json:"real_model_name"`
 	BaseURL            string                      `json:"base_url"`
@@ -168,10 +169,13 @@ func buildVirtualModelResponse(virtualModel *model.VirtualModel) (*virtualModelR
 	// 模型列表接口会对每个模型重复此操作，模型数较多时可能放大为 N×候选数 次查询，建议后续改为
 	// 按 candidate_id IN ? 批量查询后用 map 回填，把复杂度降到常量级喵。
 	for _, candidate := range candidates {
+		// 避险配置用指针字段承载「未提交」语义，响应侧必须回填非空指针才会被序列化给控制面喵。
+		candidateHedgeThreshold := candidate.HedgeThreshold
+		candidateHedgeFreezeSeconds := candidate.HedgeFreezeSeconds
 		candidateResponse := virtualModelCandidateInput{
 			ID: candidate.ID, StableOrder: candidate.StableOrder, SourceType: candidate.SourceType,
 			Enabled: candidate.Enabled, MaxRetries: candidate.MaxRetries, TimeoutSeconds: candidate.TimeoutSeconds,
-			HedgeThreshold: candidate.HedgeThreshold, HedgeFreezeSeconds: candidate.HedgeFreezeSeconds,
+			HedgeThreshold: &candidateHedgeThreshold, HedgeFreezeSeconds: &candidateHedgeFreezeSeconds,
 		}
 		if candidate.SourceType == model.VirtualModelSourceInternal {
 			var internalCandidate model.VirtualModelInternalCandidate
@@ -565,13 +569,34 @@ func ReplaceVirtualModelCandidates(c *gin.Context) {
 	common.ApiSuccess(c, response)
 }
 
+// applyVirtualModelCandidateHedgeInput 用请求里的自动避险配置覆盖候选，省略的字段保持候选原值喵。
+// 输入：候选实体（就地修改）与候选请求；输出：无。
+// 边界条件：两个字段都是可选指针——nil 表示调用方没提交该字段（候选链编辑器就不提交），
+// 此时必须保留候选已存的自动避险配置；显式传 0 才表示关闭自动避险喵。
+func applyVirtualModelCandidateHedgeInput(candidate *model.VirtualModelCandidate, candidateInput virtualModelCandidateInput) {
+	// 喵~防御：候选为空时直接返回，避免空指针写入喵。
+	if candidate == nil {
+		return
+	}
+	// 喵~防御：仅当请求显式提供阈值时才覆盖，否则保留既有阈值（新建候选即保持零值关闭）喵。
+	if candidateInput.HedgeThreshold != nil {
+		candidate.HedgeThreshold = *candidateInput.HedgeThreshold
+	}
+	// 喵~防御：仅当请求显式提供退避秒数时才覆盖，避免把已配好的退避时间清零喵。
+	if candidateInput.HedgeFreezeSeconds != nil {
+		candidate.HedgeFreezeSeconds = *candidateInput.HedgeFreezeSeconds
+	}
+}
+
 // createVirtualModelCandidateWithConfig 创建新候选及其来源专属配置，确保整个操作受调用方事务保护喵。
 func createVirtualModelCandidateWithConfig(tx *gorm.DB, virtualModelID int, stableOrder int, candidateInput virtualModelCandidateInput) error {
 	// 喵~防御：事务连接、模型编号和顺序无效时拒绝写入，避免脱离原子更新边界喵。
 	if tx == nil || virtualModelID <= 0 || stableOrder < 0 {
 		return errors.New("虚拟模型候选无效")
 	}
-	candidate := &model.VirtualModelCandidate{VirtualModelID: virtualModelID, StableOrder: stableOrder, SourceType: candidateInput.SourceType, Enabled: candidateInput.Enabled, MaxRetries: candidateInput.MaxRetries, TimeoutSeconds: candidateInput.TimeoutSeconds, HedgeThreshold: candidateInput.HedgeThreshold, HedgeFreezeSeconds: candidateInput.HedgeFreezeSeconds, Version: 1, CreatedTime: common.GetTimestamp(), UpdatedTime: common.GetTimestamp()}
+	candidate := &model.VirtualModelCandidate{VirtualModelID: virtualModelID, StableOrder: stableOrder, SourceType: candidateInput.SourceType, Enabled: candidateInput.Enabled, MaxRetries: candidateInput.MaxRetries, TimeoutSeconds: candidateInput.TimeoutSeconds, Version: 1, CreatedTime: common.GetTimestamp(), UpdatedTime: common.GetTimestamp()}
+	// 新建候选没有既有避险配置，只有请求显式提供时才写入，省略即保持默认关闭喵。
+	applyVirtualModelCandidateHedgeInput(candidate, candidateInput)
 	// 喵~防御：在创建主候选行前校验来源专属字段，避免校验失败时留下孤立候选喵。
 	if err := validateVirtualModelCandidateSourceInput(candidate.SourceType, candidateInput, true); err != nil {
 		return err
@@ -599,8 +624,9 @@ func updateVirtualModelCandidateWithConfig(tx *gorm.DB, candidate *model.Virtual
 	candidate.Enabled = candidateInput.Enabled
 	candidate.MaxRetries = candidateInput.MaxRetries
 	candidate.TimeoutSeconds = candidateInput.TimeoutSeconds
-	candidate.HedgeThreshold = candidateInput.HedgeThreshold
-	candidate.HedgeFreezeSeconds = candidateInput.HedgeFreezeSeconds
+	// 喵~防御：候选链保存不管理自动避险，请求省略避险字段时必须保持既有配置，
+	// 否则调用链编辑器每次保存都会把失败规则抽屉里配好的避险阈值静默清零喵。
+	applyVirtualModelCandidateHedgeInput(candidate, candidateInput)
 	candidate.Version++
 	candidate.UpdatedTime = common.GetTimestamp()
 	if err := model.ValidateVirtualModelCandidate(candidate); err != nil {

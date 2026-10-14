@@ -54,6 +54,9 @@ export function VirtualModels() {
     queryKey: ['virtual-models', selectedModel?.id, 'status'],
     queryFn: () => getVirtualModelStatus(selectedModel!.id),
     enabled: Boolean(selectedModel),
+    // 喵~防御：状态卡片自带内联错误展示，失败时不得再走全局错误弹窗，
+    // 否则切换/删除模型时在途的状态请求会把「虚拟模型不存在」弹到界面右上角喵。
+    meta: { errorToast: false },
     // 实时概览：Overview / Runtime Status 选项卡打开时每 3 秒轮询当前请求数与调用链喵。
     refetchInterval:
       selectedModel && (activeTab === 'overview' || activeTab === 'status')
@@ -160,7 +163,9 @@ export function VirtualModels() {
                   </div>
                   {/* 基本信息下方的核心指标卡（overview 变体：指标 + 最近调用）喵。 */}
                   <div className='mt-4'>
+                    {/* 喵~防御：按模型编号重挂载，切换模型后残留的候选抽屉不会用旧候选编号去查新模型喵。 */}
                     <VirtualModelOverviewStatus
+                      key={`overview-${selectedModel.id}`}
                       modelID={selectedModel.id}
                       status={virtualModelStatus}
                       loading={virtualModelStatusQuery.isLoading}
@@ -171,6 +176,7 @@ export function VirtualModels() {
                   </div>
                 </TabsContent>
                 <TabsContent className='mt-4' value='candidates'>
+                  {/* 候选链编辑器自带按模型编号重挂载的保护，这里不必再传 key 喵。 */}
                   <VirtualModelCandidatesEditor model={selectedModel} onSaved={refreshSelectedModel} />
                 </TabsContent>
                 <TabsContent className='mt-4' value='failure-rules'>
@@ -182,7 +188,9 @@ export function VirtualModels() {
                 <TabsContent className='mt-4' value='status'>
                   {/* 深度图表与候选健康摘要（runtime 变体）；旧的内联「是否启用/候选数」卡片已删除，刷新由组件自带按钮承担喵。 */}
                   <div className='mt-4'>
+                    {/* 喵~防御：同样按模型编号重挂载，避免切换模型后残留候选抽屉的错配查询喵。 */}
                     <VirtualModelOverviewStatus
+                      key={`runtime-${selectedModel.id}`}
                       modelID={selectedModel.id}
                       status={virtualModelStatus}
                       loading={virtualModelStatusQuery.isLoading}
