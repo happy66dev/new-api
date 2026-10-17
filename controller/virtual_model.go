@@ -126,6 +126,33 @@ func virtualModelNotFound(c *gin.Context) {
 	c.JSON(http.StatusNotFound, gin.H{"success": false, "code": "virtual_model_not_found", "message": "虚拟模型不存在"})
 }
 
+// writeVirtualModelNameConflict 返回受控的重名冲突错误，替代数据库原始唯一索引报错喵。
+// 虚拟模型名只在属主内部唯一，重名属于可预期的用户输入问题，必须给出可读提示而不是驱动错误文本喵。
+// 注意：这里按虚拟模型名唯一索引 idx_virtual_model_owner_name（属主 + 规范化名称）判定，跨用户重名不受影响喵。
+func writeVirtualModelNameConflict(c *gin.Context) {
+	c.JSON(http.StatusConflict, gin.H{"success": false, "code": "virtual_model_name_conflict", "message": "该虚拟模型名称已被使用，请更换名称"})
+}
+
+// isVirtualModelNameConflictError 判断写库错误是否为虚拟模型名唯一索引冲突喵。
+// 输入：数据库写入返回的错误；输出：true 表示命中重名冲突。
+// 边界条件：三类数据库的报错文案不同（SQLite「UNIQUE constraint failed」、
+// MySQL 1062「Duplicate entry」、PostgreSQL 23505「duplicate key value」），
+// 因此同时匹配关键字与列名，避免把其他约束冲突误判成重名喵。
+func isVirtualModelNameConflictError(writeError error) bool {
+	// 喵~防御：空错误直接判否，避免调用方在 nil 上做字符串匹配喵。
+	if writeError == nil {
+		return false
+	}
+	loweredMessage := strings.ToLower(writeError.Error())
+	// 喵~防御：先要求命中唯一性关键字，防止把外键、非空等约束错误误报成重名喵。
+	hasUniqueKeyword := strings.Contains(loweredMessage, "unique") || strings.Contains(loweredMessage, "duplicate") || strings.Contains(loweredMessage, "1062") || strings.Contains(loweredMessage, "23505")
+	if !hasUniqueKeyword {
+		return false
+	}
+	// 喵~防御：再要求命中虚拟模型相关表或索引名，避免同一用户的其它唯一索引冲突被套用此文案喵。
+	return strings.Contains(loweredMessage, "virtual_model") || strings.Contains(loweredMessage, "normalized_name") || strings.Contains(loweredMessage, "idx_virtual_model_owner_name")
+}
+
 // parseVirtualModelID 解析并限制路径中的模型编号喵。
 func parseVirtualModelID(c *gin.Context) (int, bool) {
 	modelID, err := strconv.Atoi(c.Param("id"))
@@ -324,7 +351,25 @@ func CreateVirtualModel(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	ownerUserID := c.GetInt("id")
+	// 重名先做一次显式预检：唯一索引报错文案随数据库不同（SQLite/MySQL/PostgreSQL 各一套），
+	// 直接透出会让用户看到驱动级错误文本，这里提前换成可读的「名称已被使用」提示喵。
+	existingModel, existingError := model.GetVirtualModelByOwnerName(ownerUserID, virtualModel.NormalizedName)
+	// 喵~防御：只有查到同属主的同名模型才算重名；查询报错时不下结论喵。
+	if existingError == nil && existingModel != nil {
+		writeVirtualModelNameConflict(c)
+		return
+	}
+	// 喵~防御：查询失败且不是「未找到」时只记日志不拦截，避免把数据库故障误报成重名喵。
+	if existingError != nil && !errors.Is(existingError, gorm.ErrRecordNotFound) {
+		common.SysError("query virtual model by owner name before create failed: " + existingError.Error())
+	}
 	if err := model.DB.Create(virtualModel).Error; err != nil {
+		// 喵~防御：并发创建可能刚好绕过上面的预检，这里按唯一索引报错兜底成同一个受控提示喵。
+		if isVirtualModelNameConflictError(err) {
+			writeVirtualModelNameConflict(c)
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
@@ -372,6 +417,11 @@ func UpdateVirtualModel(c *gin.Context) {
 	}
 	updateResult := model.DB.Model(virtualModel).Where("id = ? AND owner_user_id = ? AND version = ?", modelID, c.GetInt("id"), existingVersion).Select("normalized_name", "display_name", "enabled", "loop_enabled", "total_timeout_seconds", "max_loop_rounds", "fake_stream_enabled", "stream_cut_action", "stream_cut_retries", "version", "updated_time").Updates(virtualModel)
 	if updateResult.Error != nil {
+		// 改名撞上同属主的既有名称时，同样换成可读的重名提示而不是驱动原始报错喵。
+		if isVirtualModelNameConflictError(updateResult.Error) {
+			writeVirtualModelNameConflict(c)
+			return
+		}
 		common.ApiError(c, updateResult.Error)
 		return
 	}
@@ -439,7 +489,6 @@ func ReplaceVirtualModelCandidates(c *gin.Context) {
 	}
 	// 候选路由目标变更时，收集需要清理 perf 内存热桶的候选探测键，待事务成功提交后统一清除喵。
 	ownerUserID := c.GetInt("id")
-	virtualModelName := virtualModel.VirtualModelName()
 	resetProbeModelNames := make([]string, 0)
 	var input virtualModelCandidatesReplaceInput
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -520,10 +569,10 @@ func ReplaceVirtualModelCandidates(c *gin.Context) {
 			// 路由目标变化（如内部候选把真实模型从 A 改成 B）时，清除旧目标累积到该候选 id 上的
 			// 冻结与探测状态，避免旧模型 A 的失败记录继续作用到新模型 B 上喵。
 			if identityChanged {
-				if resetError := model.DeleteVirtualModelCandidateRuntimeState(tx, ownerUserID, virtualModelName, currentCandidate.ID); resetError != nil {
+				if resetError := model.DeleteVirtualModelCandidateRuntimeState(tx, ownerUserID, virtualModel.ID, currentCandidate.ID); resetError != nil {
 					return resetError
 				}
-				resetProbeModelNames = append(resetProbeModelNames, fmt.Sprintf("%s/candidate/%d", virtualModelName, currentCandidate.ID))
+				resetProbeModelNames = append(resetProbeModelNames, model.VirtualModelCandidateProbeKey(virtualModel.ID, currentCandidate.ID))
 			}
 		}
 		removedCandidateIDs := make([]int, 0)
@@ -537,10 +586,10 @@ func ReplaceVirtualModelCandidates(c *gin.Context) {
 		}
 		// 候选移除后补清其内部自动冻结与候选探测状态，避免孤儿行在 perf/探测表长期残留喵。
 		for _, removedCandidateID := range removedCandidateIDs {
-			if resetError := model.DeleteVirtualModelCandidateRuntimeState(tx, ownerUserID, virtualModelName, removedCandidateID); resetError != nil {
+			if resetError := model.DeleteVirtualModelCandidateRuntimeState(tx, ownerUserID, virtualModel.ID, removedCandidateID); resetError != nil {
 				return resetError
 			}
-			resetProbeModelNames = append(resetProbeModelNames, fmt.Sprintf("%s/candidate/%d", virtualModelName, removedCandidateID))
+			resetProbeModelNames = append(resetProbeModelNames, model.VirtualModelCandidateProbeKey(virtualModel.ID, removedCandidateID))
 		}
 		// 喵~防御：默认 action 与摘要只含资源编号，审计中禁止写入 URL、API Key 或规则正文喵。
 		if err := tx.Create(&model.VirtualModelAuditLog{VirtualModelID: modelID, OwnerUserID: c.GetInt("id"), OperatorID: c.GetInt("id"), Action: "candidate_chain_replace", SummaryDigest: fmt.Sprintf("candidate_count:%d", len(input.Candidates)), CreatedTime: common.GetTimestamp()}).Error; err != nil {
@@ -1407,8 +1456,10 @@ func buildVirtualModelStatusPayload(virtualModel *model.VirtualModel, snapshot *
 	}
 	// 实时活跃请求：从内存注册表读取当前处理请求数与当前调用链详情喵。
 	payload.CurrentRequests, payload.ActiveRequests = middleware.GetVirtualModelActiveRequests(int64(virtualModel.ID))
-	status, queryError := perfmetrics.QueryEntityProbeStatus(virtualModel.VirtualModelName(), perfmetrics.EntityProbeGroupSelf, entityProbeWindowHours)
-	// 喵~防御：聚合查询失败按空数据返回，不阻塞状态展示喵。
+	// 统计键按模型编号构造：虚拟模型名只在单个用户内部唯一，按名字读会把别人的同名模型统计串进来喵。
+	probeModelKey := model.VirtualModelProbeKey(virtualModel.ID)
+	status, queryError := perfmetrics.QueryEntityProbeStatus(probeModelKey, perfmetrics.EntityProbeGroupSelf, entityProbeWindowHours)
+	// 喵~防御：聚合查询失败（或编号非法导致统计键为空）时按空数据返回，不阻塞状态展示喵。
 	if queryError != nil {
 		common.SysError("query virtual model entity probe status failed: " + queryError.Error())
 	}
@@ -1417,8 +1468,8 @@ func buildVirtualModelStatusPayload(virtualModel *model.VirtualModel, snapshot *
 	payload.RequestCount = status.RequestCount
 	payload.Availability24 = status.Availability24
 	// 富系列：TTFT、缓存命中率与 token 消耗逐桶明细，供 Overview 图表喵。
-	detailed, detailedError := perfmetrics.QueryEntityProbeStatusDetailed(virtualModel.VirtualModelName(), perfmetrics.EntityProbeGroupSelf, entityProbeWindowHours)
-	// 喵~防御：富系列查询失败按空数据返回，不阻塞状态展示喵。
+	detailed, detailedError := perfmetrics.QueryEntityProbeStatusDetailed(probeModelKey, perfmetrics.EntityProbeGroupSelf, entityProbeWindowHours)
+	// 喵~防御：富系列查询失败（或统计键为空）时按空数据返回，不阻塞状态展示喵。
 	if detailedError != nil {
 		common.SysError("query virtual model entity probe detailed failed: " + detailedError.Error())
 	} else {
@@ -1457,9 +1508,10 @@ func buildVirtualModelCandidateStatusPayload(virtualModel *model.VirtualModel, c
 	if virtualModel == nil {
 		return candidatePayload
 	}
-	probeModelName := fmt.Sprintf("%s/candidate/%d", virtualModel.VirtualModelName(), candidateID)
+	// 候选统计键由「模型编号 + 候选编号」构造，与写入端同源，避免同名虚拟模型之间互相串数据喵。
+	probeModelName := model.VirtualModelCandidateProbeKey(virtualModel.ID, candidateID)
 	status, queryError := perfmetrics.QueryEntityProbeStatus(probeModelName, perfmetrics.EntityProbeGroupSelf, entityProbeWindowHours)
-	// 喵~防御：聚合查询失败按空数据返回，不阻塞状态展示喵。
+	// 喵~防御：聚合查询失败（或编号非法导致统计键为空）时按空数据返回，不阻塞状态展示喵。
 	if queryError != nil {
 		common.SysError("query virtual model candidate entity probe status failed: " + queryError.Error())
 	}
@@ -1468,7 +1520,7 @@ func buildVirtualModelCandidateStatusPayload(virtualModel *model.VirtualModel, c
 	candidatePayload.RequestCount = status.RequestCount
 	// 富系列：候选节点的 TTFT、缓存命中率与 token 消耗逐桶明细，供性能抽屉图表喵。
 	detailed, detailedError := perfmetrics.QueryEntityProbeStatusDetailed(probeModelName, perfmetrics.EntityProbeGroupSelf, entityProbeWindowHours)
-	// 喵~防御：富系列查询失败按空数据返回，不阻塞状态展示喵。
+	// 喵~防御：富系列查询失败（或统计键为空）时按空数据返回，不阻塞状态展示喵。
 	if detailedError != nil {
 		common.SysError("query virtual model candidate entity probe detailed failed: " + detailedError.Error())
 	} else {

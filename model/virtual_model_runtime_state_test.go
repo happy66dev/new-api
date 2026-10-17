@@ -26,11 +26,12 @@ func TestDeleteVirtualModelCandidateRuntimeState(t *testing.T) {
 	// 迁移候选运行态清理涉及的整表集合喵。
 	require.NoError(t, database.AutoMigrate(&VirtualModelInternalFreezeState{}, &VirtualModelManualFreeze{}, &EntityProbeState{}, &PerfMetric{}, &VirtualModelCustomFreezeState{}, &VirtualModelFailureRule{}))
 
-	// 构造被清理候选（编号 13、属主 7、模型名 virtual/alpha）的全部运行态与对照样本喵。
+	// 构造被清理候选（编号 13、属主 7、所属模型编号 9）的全部运行态与对照样本喵。
 	require.NoError(t, database.Create(&VirtualModelInternalFreezeState{OwnerUserID: 7, CandidateID: 13, FrozenUntil: 999, ConsecutiveFails: 3, LastFailureClass: "upstream_server_error", UpdatedTime: 900}).Error)
 	require.NoError(t, database.Create(&VirtualModelManualFreeze{CandidateID: 13, OperatorID: 7, StartedAt: 800, ExpiresAt: 999}).Error)
 	require.NoError(t, database.Create(&EntityProbeState{Scope: EntityProbeScopeVirtualCandidate, EntityID: 13, VirtualID: 9, OwnerUserID: 7, LastAt: 900, LastSuccess: false, RequestCount: 5, SuccessCount: 2}).Error)
-	require.NoError(t, database.Create(&PerfMetric{ModelName: "virtual/alpha/candidate/13", Group: EntityProbeSelfGroupName, BucketTs: 700, RequestCount: 5, SuccessCount: 2, TotalLatencyMs: 5000}).Error)
+	// 统计键按模型编号构造：virtual/<模型编号>/candidate/<候选编号>，与运行时代码同源喵。
+	require.NoError(t, database.Create(&PerfMetric{ModelName: VirtualModelCandidateProbeKey(9, 13), Group: EntityProbeSelfGroupName, BucketTs: 700, RequestCount: 5, SuccessCount: 2, TotalLatencyMs: 5000}).Error)
 
 	// 对照样本：不应被误删的同库数据喵。
 	require.NoError(t, database.Create(&VirtualModelInternalFreezeState{OwnerUserID: 7, CandidateID: 14, FrozenUntil: 999, UpdatedTime: 900}).Error)
@@ -39,21 +40,21 @@ func TestDeleteVirtualModelCandidateRuntimeState(t *testing.T) {
 	require.NoError(t, database.Create(&EntityProbeState{Scope: EntityProbeScopeVirtualCandidate, EntityID: 14, VirtualID: 9, OwnerUserID: 7, LastAt: 900, LastSuccess: true, RequestCount: 1, SuccessCount: 1}).Error)
 	require.NoError(t, database.Create(&EntityProbeState{Scope: EntityProbeScopeVirtual, EntityID: 9, VirtualID: 0, OwnerUserID: 7, LastAt: 900, LastSuccess: false, RequestCount: 6, SuccessCount: 2}).Error)
 	require.NoError(t, database.Create(&EntityProbeState{Scope: EntityProbeScopeUpstream, EntityID: 13, VirtualID: 0, OwnerUserID: 7, LastAt: 900, LastSuccess: true, RequestCount: 1, SuccessCount: 1}).Error)
-	require.NoError(t, database.Create(&PerfMetric{ModelName: "virtual/alpha/candidate/14", Group: EntityProbeSelfGroupName, BucketTs: 700, RequestCount: 1, SuccessCount: 1, TotalLatencyMs: 100}).Error)
-	require.NoError(t, database.Create(&PerfMetric{ModelName: "virtual/alpha", Group: EntityProbeSelfGroupName, BucketTs: 700, RequestCount: 6, SuccessCount: 2, TotalLatencyMs: 6000}).Error)
-	require.NoError(t, database.Create(&PerfMetric{ModelName: "virtual/alpha/candidate/13", Group: EntityProbeSharedGroupName, BucketTs: 700, RequestCount: 1, SuccessCount: 1, TotalLatencyMs: 100}).Error)
+	require.NoError(t, database.Create(&PerfMetric{ModelName: VirtualModelCandidateProbeKey(9, 14), Group: EntityProbeSelfGroupName, BucketTs: 700, RequestCount: 1, SuccessCount: 1, TotalLatencyMs: 100}).Error)
+	require.NoError(t, database.Create(&PerfMetric{ModelName: VirtualModelProbeKey(9), Group: EntityProbeSelfGroupName, BucketTs: 700, RequestCount: 6, SuccessCount: 2, TotalLatencyMs: 6000}).Error)
+	require.NoError(t, database.Create(&PerfMetric{ModelName: VirtualModelCandidateProbeKey(9, 13), Group: EntityProbeSharedGroupName, BucketTs: 700, RequestCount: 1, SuccessCount: 1, TotalLatencyMs: 100}).Error)
 	require.NoError(t, database.Create(&VirtualModelCustomFreezeState{OwnerUserID: 7, IdentityDigest: "shared-identity", FrozenUntil: 999, ConsecutiveFails: 2, UpdatedTime: 900}).Error)
 	require.NoError(t, database.Create(&VirtualModelFailureRule{CandidateID: 13, RuleOrder: 0, HTTPStatus: 429, Action: VirtualModelActionNext}).Error)
 
-	// 执行目标变更重置：清空候选 13 在属主 7 与模型 virtual/alpha 下的运行态喵。
-	require.NoError(t, DeleteVirtualModelCandidateRuntimeState(database, 7, "virtual/alpha", 13))
+	// 执行目标变更重置：清空候选 13 在属主 7 与模型编号 9 下的运行态喵。
+	require.NoError(t, DeleteVirtualModelCandidateRuntimeState(database, 7, 9, 13))
 
 	// 目标行的内部自动冻结与手动冻结必须被删除喵。
 	assertCandidateRuntimeRowDeleted(t, database, &VirtualModelInternalFreezeState{}, "owner_user_id = ? AND candidate_id = ?", 7, 13)
 	assertCandidateRuntimeRowDeleted(t, database, &VirtualModelManualFreeze{}, "candidate_id = ?", 13)
 	// 候选探测状态行与被清理候选的 perf 候选桶必须被删除喵。
 	assertCandidateRuntimeRowDeleted(t, database, &EntityProbeState{}, "scope = ? AND entity_id = ?", EntityProbeScopeVirtualCandidate, 13)
-	assertCandidateRuntimeRowDeleted(t, database, &PerfMetric{}, "model_name = ? AND "+commonGroupCol+" = ?", "virtual/alpha/candidate/13", EntityProbeSelfGroupName)
+	assertCandidateRuntimeRowDeleted(t, database, &PerfMetric{}, "model_name = ? AND "+commonGroupCol+" = ?", VirtualModelCandidateProbeKey(9, 13), EntityProbeSelfGroupName)
 
 	// 对照样本必须完整保留：别的候选、别的属主、整体/上游作用域、共享分组与用户配置都不该被动喵。
 	require.Equal(t, int64(1), countModelRows(database, &VirtualModelInternalFreezeState{}, "candidate_id = ? AND owner_user_id = ?", 14, 7))
@@ -62,26 +63,26 @@ func TestDeleteVirtualModelCandidateRuntimeState(t *testing.T) {
 	require.Equal(t, int64(1), countModelRows(database, &EntityProbeState{}, "scope = ? AND entity_id = ?", EntityProbeScopeVirtualCandidate, 14))
 	require.Equal(t, int64(1), countModelRows(database, &EntityProbeState{}, "scope = ? AND entity_id = ?", EntityProbeScopeVirtual, 9))
 	require.Equal(t, int64(1), countModelRows(database, &EntityProbeState{}, "scope = ? AND entity_id = ?", EntityProbeScopeUpstream, 13))
-	require.Equal(t, int64(1), countModelRows(database, &PerfMetric{}, "model_name = ? AND "+commonGroupCol+" = ?", "virtual/alpha/candidate/14", EntityProbeSelfGroupName))
-	require.Equal(t, int64(1), countModelRows(database, &PerfMetric{}, "model_name = ? AND "+commonGroupCol+" = ?", "virtual/alpha", EntityProbeSelfGroupName))
-	require.Equal(t, int64(1), countModelRows(database, &PerfMetric{}, "model_name = ? AND "+commonGroupCol+" = ?", "virtual/alpha/candidate/13", EntityProbeSharedGroupName))
+	require.Equal(t, int64(1), countModelRows(database, &PerfMetric{}, "model_name = ? AND "+commonGroupCol+" = ?", VirtualModelCandidateProbeKey(9, 14), EntityProbeSelfGroupName))
+	require.Equal(t, int64(1), countModelRows(database, &PerfMetric{}, "model_name = ? AND "+commonGroupCol+" = ?", VirtualModelProbeKey(9), EntityProbeSelfGroupName))
+	require.Equal(t, int64(1), countModelRows(database, &PerfMetric{}, "model_name = ? AND "+commonGroupCol+" = ?", VirtualModelCandidateProbeKey(9, 13), EntityProbeSharedGroupName))
 	require.Equal(t, int64(1), countModelRows(database, &VirtualModelCustomFreezeState{}, "owner_user_id = ? AND identity_digest = ?", 7, "shared-identity"))
 	require.Equal(t, int64(1), countModelRows(database, &VirtualModelFailureRule{}, "candidate_id = ?", 13))
 
 	// 幂等性：对已清空的候选再次调用仍成功且无副作用喵。
-	require.NoError(t, DeleteVirtualModelCandidateRuntimeState(database, 7, "virtual/alpha", 13))
+	require.NoError(t, DeleteVirtualModelCandidateRuntimeState(database, 7, 9, 13))
 	require.Equal(t, int64(0), countModelRows(database, &VirtualModelInternalFreezeState{}, "candidate_id = ? AND owner_user_id = ?", 13, 7))
 }
 
 // TestDeleteVirtualModelCandidateRuntimeStateGuards 验证清理 helper 的防御分支喵。
 func TestDeleteVirtualModelCandidateRuntimeStateGuards(t *testing.T) {
 	// 空数据库连接必须返回错误，避免调用方把空操作误当成功喵。
-	err := DeleteVirtualModelCandidateRuntimeState(nil, 7, "virtual/alpha", 13)
+	err := DeleteVirtualModelCandidateRuntimeState(nil, 7, 9, 13)
 	require.Error(t, err)
-	// 非法属主或候选编号按无操作处理，返回 nil 且不抛错喵。
-	require.NoError(t, DeleteVirtualModelCandidateRuntimeState(&gorm.DB{}, 0, "virtual/alpha", 13))
-	require.NoError(t, DeleteVirtualModelCandidateRuntimeState(&gorm.DB{}, 7, "", 13))
-	require.NoError(t, DeleteVirtualModelCandidateRuntimeState(&gorm.DB{}, 7, "virtual/alpha", 0))
+	// 非法属主、模型编号或候选编号按无操作处理，返回 nil 且不抛错喵。
+	require.NoError(t, DeleteVirtualModelCandidateRuntimeState(&gorm.DB{}, 0, 9, 13))
+	require.NoError(t, DeleteVirtualModelCandidateRuntimeState(&gorm.DB{}, 7, 0, 13))
+	require.NoError(t, DeleteVirtualModelCandidateRuntimeState(&gorm.DB{}, 7, 9, 0))
 }
 
 // assertCandidateRuntimeRowDeleted 断言指定条件的目标行在库中已不存在喵。

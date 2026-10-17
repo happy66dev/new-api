@@ -1083,8 +1083,13 @@ func recordVirtualModelCandidateProbe(c *gin.Context, executionState *virtualMod
 	if c == nil || executionState == nil || executionState.virtualModelName == "" {
 		return
 	}
-	// 候选节点的聚合键为 virtual/<name>/candidate/<id>，全部归入自用固定分组喵。
-	probeModelName := fmt.Sprintf("%s/candidate/%d", executionState.virtualModelName, candidateID)
+	// 候选节点的聚合键为 virtual/<模型id>/candidate/<候选id>，全部归入自用固定分组；
+	// 用模型编号而不是模型名，避免不同用户的同名虚拟模型共用同一份统计喵。
+	probeModelName := model.VirtualModelCandidateProbeKey(executionState.virtualModelID, candidateID)
+	// 喵~防御：键构造失败时跳过统计写入，避免把样本写到空键或错误键上喵。
+	if probeModelName == "" {
+		return
+	}
 	// 成功样本携带最近一次成功调用的 token/TTFT，失败样本留空喵。
 	extras := perfmetrics.EntityProbeExtras{}
 	if success {
@@ -1195,6 +1200,12 @@ func RecordVirtualModelOverallProbe(c *gin.Context, success bool, errorClass str
 	if executionState.virtualModelName == "" {
 		return
 	}
+	// 整体统计键按模型编号构造（virtual/<模型id>），避免不同用户的同名模型共用一份统计喵。
+	overallProbeKey := model.VirtualModelProbeKey(executionState.virtualModelID)
+	// 喵~防御：键构造失败时跳过统计写入，避免把样本写到空键上喵。
+	if overallProbeKey == "" {
+		return
+	}
 	executionState.overallProbeRecorded = true
 	latencyMs := time.Since(executionState.startTime).Milliseconds()
 	// 成功样本携带最近一次成功调用的 token/TTFT，失败样本留空喵。
@@ -1202,7 +1213,7 @@ func RecordVirtualModelOverallProbe(c *gin.Context, success bool, errorClass str
 	if success {
 		extras = executionState.successExtras
 	}
-	perfmetrics.RecordEntityProbe(executionState.virtualModelName, latencyMs, success, extras)
+	perfmetrics.RecordEntityProbe(overallProbeKey, latencyMs, success, extras)
 	now := time.Now().Unix()
 	_ = model.RecordEntityProbeCounted(model.EntityProbeScopeVirtual, int64(executionState.virtualModelID), 0, executionState.ownerUserID, now, success, latencyMs, errorClass)
 }

@@ -216,7 +216,7 @@ func TestRecordVirtualModelProbeSuccessAccumulatesOutputTokens(t *testing.T) {
 	recordVirtualModelProbeSuccess(ctx, executionState, 72, usage, 88)
 
 	// 候选层富系列聚合应累计输出 token，输入按新口径扣除缓存读取（100 含缓存 → 70 新输入）喵。
-	detailed, err := perfmetrics.QueryEntityProbeStatusDetailed("vm-probe/candidate/72", perfmetrics.EntityProbeGroupSelf, 1)
+	detailed, err := perfmetrics.QueryEntityProbeStatusDetailed(model.VirtualModelCandidateProbeKey(9, 72), perfmetrics.EntityProbeGroupSelf, 1)
 	require.NoError(t, err)
 	require.Len(t, detailed.Series, 1)
 	require.Equal(t, int64(20), detailed.Series[0].OutputTokens)

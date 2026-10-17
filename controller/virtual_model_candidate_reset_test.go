@@ -82,7 +82,7 @@ func TestReplaceVirtualModelCandidatesResetsStateOnTargetChange(t *testing.T) {
 	require.NoError(t, model.DB.Create(&model.VirtualModelInternalFreezeState{OwnerUserID: 7, CandidateID: candidate.ID, FrozenUntil: 9999999999, ConsecutiveFails: 3, LastFailureClass: "upstream_server_error", UpdatedTime: 1000}).Error)
 	require.NoError(t, model.DB.Create(&model.VirtualModelManualFreeze{CandidateID: candidate.ID, OperatorID: 7, StartedAt: 900, ExpiresAt: 9999999999}).Error)
 	require.NoError(t, model.DB.Create(&model.EntityProbeState{Scope: model.EntityProbeScopeVirtualCandidate, EntityID: int64(candidate.ID), VirtualID: int64(virtualModel.ID), OwnerUserID: 7, LastAt: 1000, LastSuccess: false, LastError: "upstream_server_error", RequestCount: 4, SuccessCount: 1}).Error)
-	require.NoError(t, model.DB.Create(&model.PerfMetric{ModelName: fmt.Sprintf("virtual/vm-target-change/candidate/%d", candidate.ID), Group: model.EntityProbeSelfGroupName, BucketTs: 900, RequestCount: 4, SuccessCount: 1, TotalLatencyMs: 4000}).Error)
+	require.NoError(t, model.DB.Create(&model.PerfMetric{ModelName: model.VirtualModelCandidateProbeKey(virtualModel.ID, candidate.ID), Group: model.EntityProbeSelfGroupName, BucketTs: 900, RequestCount: 4, SuccessCount: 1, TotalLatencyMs: 4000}).Error)
 	// 预置一条失败规则，验证用户配置在目标变更后仍然保留喵。
 	require.NoError(t, model.DB.Create(&model.VirtualModelFailureRule{CandidateID: candidate.ID, RuleOrder: 0, HTTPStatus: 429, Action: model.VirtualModelActionNext}).Error)
 
@@ -114,7 +114,7 @@ func TestReplaceVirtualModelCandidatesResetsStateOnTargetChange(t *testing.T) {
 	require.Equal(t, int64(0), resetTestCount(t, &model.VirtualModelInternalFreezeState{}, "owner_user_id = ? AND candidate_id = ?", 7, candidate.ID))
 	require.Equal(t, int64(0), resetTestCount(t, &model.VirtualModelManualFreeze{}, "candidate_id = ?", candidate.ID))
 	require.Equal(t, int64(0), resetTestCount(t, &model.EntityProbeState{}, "scope = ? AND entity_id = ?", model.EntityProbeScopeVirtualCandidate, candidate.ID))
-	require.Equal(t, int64(0), resetTestCount(t, &model.PerfMetric{}, "model_name = ?", fmt.Sprintf("virtual/vm-target-change/candidate/%d", candidate.ID)))
+	require.Equal(t, int64(0), resetTestCount(t, &model.PerfMetric{}, "model_name = ?", model.VirtualModelCandidateProbeKey(virtualModel.ID, candidate.ID)))
 
 	// 用户配置的失败规则必须保留，模型版本已推进喵。
 	require.Equal(t, int64(1), resetTestCount(t, &model.VirtualModelFailureRule{}, "candidate_id = ?", candidate.ID))

@@ -734,6 +734,11 @@ func ImportVirtualModelShareCode(c *gin.Context) {
 		return nil
 	})
 	if transactionError != nil {
+		// 喵~防御：预检之后仍可能与并发导入撞名，按唯一索引报错兜底成可读的重名提示喵。
+		if isVirtualModelNameConflictError(transactionError) {
+			writeVirtualModelNameConflict(c)
+			return
+		}
 		virtualModelShareUnavailable(c, transactionError)
 		return
 	}

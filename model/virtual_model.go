@@ -323,6 +323,29 @@ func (virtualModel *VirtualModel) VirtualModelName() string {
 	return "virtual/" + virtualModel.NormalizedName
 }
 
+// VirtualModelProbeKey 返回虚拟模型在性能统计表里的统计键，形如 virtual/<模型编号>喵。
+// 键必须按模型编号而不是按名字构造：虚拟模型名只在单个用户内部唯一，
+// 不同用户允许存在同名模型，若用「virtual/<名字>」当键，
+// 两个用户的同名模型会共用同一份可用性/延迟/TTFT/Token 统计而互相污染喵。
+func VirtualModelProbeKey(virtualModelID int) string {
+	// 喵~防御：非法编号返回空串，调用方据此跳过统计读写而不是写入无意义的键喵。
+	if virtualModelID <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("virtual/%d", virtualModelID)
+}
+
+// VirtualModelCandidateProbeKey 返回候选节点在性能统计表里的统计键，
+// 形如 virtual/<模型编号>/candidate/<候选编号>，与整体统计键同源，保证读写口径一致喵。
+func VirtualModelCandidateProbeKey(virtualModelID int, candidateID int) string {
+	modelProbeKey := VirtualModelProbeKey(virtualModelID)
+	// 喵~防御：模型编号或候选编号非法时返回空串，避免生成指向不存在资源的统计键喵。
+	if modelProbeKey == "" || candidateID <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s/candidate/%d", modelProbeKey, candidateID)
+}
+
 // VirtualModelFunctionEnabled 读取独立功能开关，默认开启以支持虚拟模型调用喵。
 // model/option.go 初始化时无条件写入 VirtualModelEnabled=true，因此自用部署开箱即用喵。
 func VirtualModelFunctionEnabled() bool {
@@ -961,21 +984,25 @@ func DeleteVirtualModelByOwnerWithVersion(virtualModelID int, ownerUserID int, o
 // 候选编辑（如内部候选把真实模型从 A 改成 B）不改变候选 id，旧目标累积的冻结与探测状态若不清除，
 // 会继续按候选 id 命中新目标，导致请求误跳过健康候选、面板误显示旧模型历史喵。
 // 清理范围：内部自动冻结(owner,candidate)、手动冻结(candidate)、候选探测行(virtual_candidate,entity=candidate)、
-// 以及 perf 候选桶(model=virtual/<vm>/candidate/<id>, group=自用探测分组)喵。
+// 以及 perf 候选桶(model=virtual/<模型id>/candidate/<候选id>, group=自用探测分组)喵。
 // 失败规则与 hedge 参数属于用户配置，刻意保留，不在本函数清理范围内喵。
 // 自定义候选的 identity 摘要冻结（VirtualModelCustomFreezeState）也刻意不清：改目标后摘要已变自动失效，
 // 且该摘要可能与同 owner 其它候选共享同一上游身份，误删会伤及健康候选喵。
-func DeleteVirtualModelCandidateRuntimeState(database *gorm.DB, ownerUserID int, virtualModelName string, candidateID int) error {
+func DeleteVirtualModelCandidateRuntimeState(database *gorm.DB, ownerUserID int, virtualModelID int, candidateID int) error {
 	// 喵~防御：数据库连接为空时拒绝执行，避免运行时空指针或绕过调用方事务边界喵。
 	if database == nil {
 		return errors.New("virtual model database is unavailable")
 	}
-	// 喵~防御：所有者、候选编号或虚拟模型名为空时按无操作处理，避免空条件生成全表删除喵。
-	if ownerUserID <= 0 || candidateID <= 0 || strings.TrimSpace(virtualModelName) == "" {
+	// 喵~防御：所有者、模型编号或候选编号无效时按无操作处理，避免空条件生成全表删除喵。
+	if ownerUserID <= 0 || virtualModelID <= 0 || candidateID <= 0 {
 		return nil
 	}
-	// 候选节点在 perf_metrics 的探测键与 distributor.go 记录口径一致：virtual/<名>/candidate/<候选id>喵。
-	probeModelName := fmt.Sprintf("%s/candidate/%d", strings.TrimSpace(virtualModelName), candidateID)
+	// 候选节点在 perf_metrics 的探测键与 distributor.go 记录口径一致：virtual/<模型id>/candidate/<候选id>喵。
+	probeModelName := VirtualModelCandidateProbeKey(virtualModelID, candidateID)
+	// 喵~防御：键构造失败时只清状态行、不生成无键删除，避免误删全表统计喵。
+	if probeModelName == "" {
+		return nil
+	}
 	// 清除按 (owner,candidate_id) 键存的内部候选自动冻结（旧目标 5xx/网络失败攒出的退避）喵。
 	if err := database.Where("owner_user_id = ? AND candidate_id = ?", ownerUserID, candidateID).Delete(&VirtualModelInternalFreezeState{}).Error; err != nil {
 		return err

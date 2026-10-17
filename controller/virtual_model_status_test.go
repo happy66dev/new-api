@@ -81,9 +81,9 @@ func TestGetVirtualModelStatusOwnerView(t *testing.T) {
 	setupVirtualModelStatusTestDB(t)
 	virtualModel := createStatusTestVirtualModel(t, 7, "vm-alpha")
 
-	// 整体维度：一次成功一次失败喵。
-	perfmetrics.RecordEntityProbe("virtual/vm-alpha", 200, true, perfmetrics.EntityProbeExtras{})
-	perfmetrics.RecordEntityProbe("virtual/vm-alpha", 400, false, perfmetrics.EntityProbeExtras{})
+	// 整体维度：一次成功一次失败；统计键按模型编号构造，与运行时代码同一构造器喵。
+	perfmetrics.RecordEntityProbe(model.VirtualModelProbeKey(virtualModel.ID), 200, true, perfmetrics.EntityProbeExtras{})
+	perfmetrics.RecordEntityProbe(model.VirtualModelProbeKey(virtualModel.ID), 400, false, perfmetrics.EntityProbeExtras{})
 	require.NoError(t, model.RecordEntityProbeCounted(model.EntityProbeScopeVirtual, int64(virtualModel.ID), 0, 7, 1000, true, 200, ""))
 	require.NoError(t, model.RecordEntityProbeCounted(model.EntityProbeScopeVirtual, int64(virtualModel.ID), 0, 7, 2000, false, 400, "rate_limited"))
 	// 活跃请求：登记一个请求并推进到候选 1，供实时概览字段断言喵。
@@ -144,8 +144,8 @@ func TestGetVirtualModelCandidateStatus(t *testing.T) {
 	setupVirtualModelStatusTestDB(t)
 	virtualModel := createStatusTestVirtualModel(t, 7, "vm-beta")
 
-	// 记录候选失败喵。
-	perfmetrics.RecordEntityProbe("virtual/vm-beta/candidate/1", 350, false, perfmetrics.EntityProbeExtras{})
+	// 记录候选失败：候选统计键按「模型编号 + 候选编号」构造，与运行时代码同源喵。
+	perfmetrics.RecordEntityProbe(model.VirtualModelCandidateProbeKey(virtualModel.ID, 1), 350, false, perfmetrics.EntityProbeExtras{})
 	require.NoError(t, model.RecordEntityProbeCounted(model.EntityProbeScopeVirtualCandidate, 1, int64(virtualModel.ID), 7, 1000, false, 350, "timeout"))
 
 	recorder := httptest.NewRecorder()
@@ -230,6 +230,67 @@ func TestGetVirtualModelStatusResolvesReferencedUpstreamLabel(t *testing.T) {
 	// 候选标签应回退为引用上游的用户级名称，而非空字符串喵。
 	require.Len(t, resp.Data.Candidates, 1)
 	require.Equal(t, "user/ref-upstream", resp.Data.Candidates[0].Label)
+}
+
+// TestGetVirtualModelStatusIsolatesSameNamedOwners 验证不同用户的同名虚拟模型互不共享性能统计喵。
+// 回归 ①：虚拟模型名只按属主唯一（索引 idx_virtual_model_owner_name 只约束 owner+名字），
+// 若统计键用「virtual/<名字>」，两个用户的同名模型会共用同一份可用性/延迟数据而互相污染喵。
+func TestGetVirtualModelStatusIsolatesSameNamedOwners(t *testing.T) {
+	setupVirtualModelStatusTestDB(t)
+	// 用户 7 与用户 8 各建一个同名 vm-shared 模型，跨用户重名是允许的喵。
+	ownerVirtualModel := createStatusTestVirtualModel(t, 7, "vm-shared")
+	foreignVirtualModel := createStatusTestVirtualModel(t, 8, "vm-shared")
+	// 喵~防御：两个模型必须真的是不同实体，否则本用例证明不了隔离性喵。
+	require.NotEqual(t, ownerVirtualModel.ID, foreignVirtualModel.ID)
+
+	ownerProbeKey := model.VirtualModelProbeKey(ownerVirtualModel.ID)
+	foreignProbeKey := model.VirtualModelProbeKey(foreignVirtualModel.ID)
+	// 喵~防御：perf 内存热桶是包级共享的，跨用例会残留且自增主键会在 setup 里被重置导致键复用，
+	// 先清掉这两个键的热桶，保证本用例只统计自己刚写入的样本而不受其他用例影响喵。
+	perfmetrics.ClearEntityProbeHotBucket(ownerProbeKey, perfmetrics.EntityProbeGroupSelf)
+	perfmetrics.ClearEntityProbeHotBucket(foreignProbeKey, perfmetrics.EntityProbeGroupSelf)
+	// 属主 7 的模型只记 1 次成功，用户 8 的模型记 3 次失败，样本数刻意不同便于识别串号喵。
+	perfmetrics.RecordEntityProbe(ownerProbeKey, 100, true, perfmetrics.EntityProbeExtras{})
+	for probeIndex := 0; probeIndex < 3; probeIndex++ {
+		perfmetrics.RecordEntityProbe(foreignProbeKey, 900, false, perfmetrics.EntityProbeExtras{})
+	}
+	// 再往旧的「按名字」键 virtual/<模型名> 上写一条诱饵样本：
+	// 老实现（键用名字）下两个用户都会读到这条诱饵，统计就串在一起了；
+	// 现在应当无人读取该键，下面的精确计数断言会因此失败，从而锁死本次修复喵。
+	legacyNameBasedKey := "virtual/" + ownerVirtualModel.VirtualModelName()
+	perfmetrics.ClearEntityProbeHotBucket(legacyNameBasedKey, perfmetrics.EntityProbeGroupSelf)
+	perfmetrics.RecordEntityProbe(legacyNameBasedKey, 5000, false, perfmetrics.EntityProbeExtras{})
+
+	// 属主 7 只能看到自己那 1 次成功，不能看到用户 8 的失败样本喵。
+	ownerStatus := queryStatusTestVirtualModelPayload(t, ownerVirtualModel.ID, 7)
+	require.Equal(t, int64(1), ownerStatus.RequestCount)
+	require.InDelta(t, 100.0, ownerStatus.Availability, 0.001)
+
+	// 用户 8 只能看到自己那 3 次失败，拿不到属主 7 的成功样本喵。
+	foreignStatus := queryStatusTestVirtualModelPayload(t, foreignVirtualModel.ID, 8)
+	require.Equal(t, int64(3), foreignStatus.RequestCount)
+	require.InDelta(t, 0.0, foreignStatus.Availability, 0.001)
+}
+
+// queryStatusTestVirtualModelPayload 以指定用户身份请求虚拟模型状态接口并返回状态载荷喵。
+// 输入：虚拟模型编号与请求者用户编号；输出：状态载荷。
+// 边界条件：接口非 200 或 success=false 时用例直接失败，避免读到零值载荷后误判喵。
+func queryStatusTestVirtualModelPayload(t *testing.T, virtualModelID int, requesterUserID int) virtualModelStatusPayload {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/virtual-models/"+fmt.Sprintf("%d", virtualModelID)+"/status", nil)
+	ctx.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", virtualModelID)}}
+	ctx.Set("id", requesterUserID)
+	GetVirtualModelStatus(ctx)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var statusResponse struct {
+		Success bool                      `json:"success"`
+		Data    virtualModelStatusPayload `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &statusResponse))
+	require.True(t, statusResponse.Success)
+	return statusResponse.Data
 }
 
 // TestGetPerfMetricsSharedBlacklistDenied 验证黑名单用户查询 user/<name> perf-metrics 被 404 拒绝喵。
