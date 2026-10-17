@@ -12,6 +12,7 @@ import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
+import { HelpHint } from '@/components/help-hint'
 import { Button } from '@/components/ui/button'
 
 import type { VirtualModel } from '../api'
@@ -117,7 +118,13 @@ export function VirtualModelGlobalFailureRulesEditor({
     <div className='space-y-4'>
       <div className='flex flex-wrap items-center justify-between gap-3'>
         <div>
-          <h3 className='font-medium'>{t('Global fallback failure rules')}</h3>
+          {/* 全局兜底标题带帮助图标，点击可查看与候选级规则的优先级说明喵。 */}
+          <span className='flex items-center gap-1'>
+            <h3 className='font-medium'>{t('Global fallback failure rules')}</h3>
+            <HelpHint hint={t('Fallback rules used when a candidate has no failure rules of its own.')}>
+              <p>{t('Rules are checked from top to bottom and the first match decides the action. If no rule matches, the gateway uses the next candidate. Candidate-level rules always take precedence over these global rules.')}</p>
+            </HelpHint>
+          </span>
           <p className='text-muted-foreground text-sm'>{t('Used when a candidate has no failure rules of its own. Rules are evaluated from top to bottom.')}</p>
         </div>
         <Button type='button' size='sm' variant='outline' onClick={addRule} disabled={isSaving}>
@@ -128,7 +135,13 @@ export function VirtualModelGlobalFailureRulesEditor({
 
       {/* 常驻展示全局兜底默认动作：任何规则都未命中时按此动作处理候选失败喵 */}
       <div className='flex items-center gap-2 rounded-md border border-border bg-muted/50 px-3 py-2 text-sm'>
-        <span className='text-muted-foreground'>{t('Default action when no rule matches')}:</span>
+        {/* 默认动作标签旁补充帮助，说明未命中规则时的固定行为喵。 */}
+        <span className='text-muted-foreground flex items-center gap-1'>
+          {t('Default action when no rule matches')}:
+          <HelpHint hint={t('The action used when no failure rule matches.')}>
+            <p>{t('This value is fixed to Use next candidate. To retry, freeze, or return the upstream error, add a failure rule with the corresponding action.')}</p>
+          </HelpHint>
+        </span>
         <span className='font-medium'>{t('Use next candidate')}</span>
       </div>
 

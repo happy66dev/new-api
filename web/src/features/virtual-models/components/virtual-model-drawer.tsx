@@ -20,6 +20,7 @@ import {
   sideDrawerFormClassName,
   sideDrawerHeaderClassName,
 } from '@/components/drawer-layout'
+import { HelpHint } from '@/components/help-hint'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -156,7 +157,13 @@ export function VirtualModelDrawer({
                   iconTone='info'
                 />
                 <label className='grid gap-1 text-sm font-medium'>
-                  {t('Virtual model name')}
+                  {/* 名称标签与帮助图标同排，悬停看短提示、点击看完整教程喵。 */}
+                  <span className='flex items-center gap-1'>
+                    {t('Virtual model name')}
+                    <HelpHint hint={t('The model identifier after virtual/. It cannot be changed after creation.')}>
+                      <p>{t('Only ASCII letters, digits, hyphens, and underscores are allowed, up to 96 characters. API calls use the full name virtual/<name>. Choose a stable name because it cannot be modified after creation.')}</p>
+                    </HelpHint>
+                  </span>
                   <Input
                     value={normalizedName}
                     onChange={(event) => setNormalizedName(event.target.value)}
@@ -165,11 +172,23 @@ export function VirtualModelDrawer({
                   />
                 </label>
                 <label className='grid gap-1 text-sm font-medium'>
-                  {t('Display name')}
+                  {/* 显示名帮助说明只影响管理界面、不进入 API 调用喵。 */}
+                  <span className='flex items-center gap-1'>
+                    {t('Display name')}
+                    <HelpHint hint={t('The human-readable name shown in the management console.')}>
+                      <p>{t('The display name is only used in the management UI and can be changed at any time. It does not affect API calls. Maximum 128 characters.')}</p>
+                    </HelpHint>
+                  </span>
                   <Input value={displayName} onChange={(event) => setDisplayName(event.target.value)} disabled={isSavingBasics} />
                 </label>
                 <label className='flex items-center justify-between gap-3 text-sm'>
-                  <span>{t('Enabled')}</span>
+                  {/* 启用开关帮助说明关闭后的调用与数据保留行为喵。 */}
+                  <span className='flex items-center gap-1'>
+                    {t('Enabled')}
+                    <HelpHint hint={t('Controls whether this virtual model accepts API requests.')}>
+                      <p>{t('When disabled, requests to virtual/<name> are rejected and the model cannot be selected for new calls. Existing candidates, rules, and statistics are kept, so you can enable it again at any time.')}</p>
+                    </HelpHint>
+                  </span>
                   <Switch checked={enabled} onCheckedChange={setEnabled} disabled={isSavingBasics} />
                 </label>
               </SideDrawerSection>
@@ -184,23 +203,45 @@ export function VirtualModelDrawer({
                   iconTone='info'
                 />
                 <label className='flex items-center justify-between gap-3 text-sm'>
-                  <span>{t('Enable candidate loop')}</span>
+                  {/* 循环开关帮助说明用尽候选链后的重试行为喵。 */}
+                  <span className='flex items-center gap-1'>
+                    {t('Enable candidate loop')}
+                    <HelpHint hint={t('Starts again from the first candidate after the chain is exhausted.')}>
+                      <p>{t('When enabled, the gateway loops through the candidate chain up to the maximum loop rounds instead of returning a failure after the last candidate. Each round still respects the total timeout.')}</p>
+                    </HelpHint>
+                  </span>
                   <Switch checked={loopEnabled} onCheckedChange={setLoopEnabled} disabled={isSavingBasics} />
                 </label>
                 <div className='grid grid-cols-2 gap-3'>
                   <label className='grid gap-1 text-sm font-medium'>
-                    {t('Total timeout seconds')}
+                    {/* 总超时帮助说明计时覆盖候选、重试、循环与上游响应喵。 */}
+                    <span className='flex items-center gap-1'>
+                      {t('Total timeout seconds')}
+                      <HelpHint hint={t('Overall time budget for one request, including all candidates and loops.')}>
+                        <p>{t('Range: 1 to 3600 seconds. The timer starts when the request enters the virtual model and covers candidate selection, retries, loops, and the upstream response. When it expires, the request fails with a timeout.')}</p>
+                      </HelpHint>
+                    </span>
                     <Input inputMode='numeric' value={totalTimeoutSeconds} onChange={(event) => setTotalTimeoutSeconds(event.target.value)} disabled={isSavingBasics} />
                   </label>
                   <label className='grid gap-1 text-sm font-medium'>
-                    {t('Maximum loop rounds')}
+                    {/* 循环轮数帮助说明一轮等于完整遍历一次候选链喵。 */}
+                    <span className='flex items-center gap-1'>
+                      {t('Maximum loop rounds')}
+                      <HelpHint hint={t('How many times the candidate chain may loop (1 to 100).')}>
+                        <p>{t('Only used when Enable candidate loop is on. One round means one full pass through the enabled candidates in order. The total timeout takes precedence, so a loop may end earlier.')}</p>
+                      </HelpHint>
+                    </span>
                     <Input inputMode='numeric' value={maxLoopRounds} onChange={(event) => setMaxLoopRounds(event.target.value)} disabled={isSavingBasics} />
                   </label>
                 </div>
                 <div className='border-border/60 bg-muted/25 space-y-3 rounded-lg border p-3'>
                   <label className='flex items-center justify-between gap-3 text-sm'>
+                    {/* 流转伪流帮助说明缓存回放带来的延迟与内存权衡喵。 */}
                     <span className='flex items-center gap-1.5'>
                       {t('Fake stream (cache then replay)')}
+                      <HelpHint hint={t('Buffers the upstream stream and replays it after [DONE].')}>
+                        <p>{t('When enabled, chunks are not forwarded as they arrive. The gateway keeps the complete upstream stream in memory until [DONE], then sends it to the client at once. This resists intermittent upstream disconnects, but increases first-token latency and memory use for long responses. Logs still record the request as streaming, and stream-cut failures are handled by the global fallback failure rules.')}</p>
+                      </HelpHint>
                     </span>
                     <Switch checked={fakeStreamEnabled} onCheckedChange={setFakeStreamEnabled} disabled={isSavingBasics} />
                   </label>

@@ -12,6 +12,7 @@ import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
+import { HelpHint } from '@/components/help-hint'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 
@@ -166,15 +167,33 @@ export function VirtualModelCandidateFailureRulesEditor({
 
       {/* 候选级自动避险配置区：独立于失效规则，连续失败达阈值即冻结退避喵。 */}
       <div className='rounded-md border border-dashed p-3'>
-        <h4 className='font-medium'>{t('Auto hedge')}</h4>
+        {/* 自动避险标题带帮助，说明它独立于失败规则且在每次请求后评估喵。 */}
+        <span className='flex items-center gap-1'>
+          <h4 className='font-medium'>{t('Auto hedge')}</h4>
+          <HelpHint hint={t('Freezes this candidate after consecutive failures, independent of failure rules.')}>
+            <p>{t('Auto hedge is evaluated after each request. When the candidate reaches the configured number of consecutive failures, it is frozen for the backoff duration, and successful requests reset the counter. HTTP 4xx client errors are exempt because they usually come from the request rather than the upstream.')}</p>
+          </HelpHint>
+        </span>
         <p className='text-muted-foreground text-sm'>{t('Independent of failure rules. Freezes this candidate after this many consecutive failures (4xx client errors are exempt).')}</p>
         <div className='mt-3 grid gap-3 sm:grid-cols-2'>
           <label className='grid gap-1 text-sm font-medium'>
-            {t('Consecutive failure threshold')}
+            {/* 连续失败阈值带帮助，说明 0 表示关闭且 4xx 不计数喵。 */}
+            <span className='flex items-center gap-1'>
+              {t('Consecutive failure threshold')}
+              <HelpHint hint={t('Number of consecutive failures before freezing. 0 disables auto hedge.')}>
+                <p>{t('Range: 0 to 1000; 0 disables auto hedge. Upstream 5xx errors, timeouts, and stalled streams count as failures. HTTP 4xx client errors do not increase the counter.')}</p>
+              </HelpHint>
+            </span>
             <Input inputMode='numeric' value={hedgeThresholdText} disabled={isSaving} placeholder={t('0 = disabled, up to 1000')} onChange={(event) => setHedgeThresholdText(event.target.value)} />
           </label>
           <label className='grid gap-1 text-sm font-medium'>
-            {t('Backoff seconds')}
+            {/* 退避秒数带帮助，说明阈值大于 0 时必填及冻结有效期喵。 */}
+            <span className='flex items-center gap-1'>
+              {t('Backoff seconds')}
+              <HelpHint hint={t('How long the candidate stays frozen after the threshold is reached.')}>
+                <p>{t('Range: 1 to 86400 seconds. Required when the threshold is greater than 0. During this period the candidate is skipped; after it expires, the next request may try the candidate again.')}</p>
+              </HelpHint>
+            </span>
             <Input inputMode='numeric' value={hedgeFreezeSecondsText} disabled={isSaving} placeholder={t('Required when threshold is set, up to 86400')} onChange={(event) => setHedgeFreezeSecondsText(event.target.value)} />
           </label>
         </div>
@@ -182,7 +201,13 @@ export function VirtualModelCandidateFailureRulesEditor({
 
       <div className='flex flex-wrap items-center justify-between gap-3'>
         <div>
-          <h3 className='font-medium'>{t('Failure Rules')}</h3>
+          {/* 候选级规则标题带帮助，说明它先于全局兜底规则执行喵。 */}
+          <span className='flex items-center gap-1'>
+            <h3 className='font-medium'>{t('Failure Rules')}</h3>
+            <HelpHint hint={t('Rules that apply only to this candidate.')}>
+              <p>{t('Candidate-level rules run before the global fallback rules. They are checked from top to bottom and the first match decides the action. If no rule matches, the global fallback rules are used.')}</p>
+            </HelpHint>
+          </span>
           <p className='text-muted-foreground text-sm'>{t('Rules are evaluated from top to bottom. The first matching rule decides the candidate action.')}</p>
         </div>
         <Button type='button' size='sm' variant='outline' onClick={addRule} disabled={isSaving}>

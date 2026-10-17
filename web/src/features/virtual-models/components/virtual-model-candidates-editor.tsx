@@ -21,6 +21,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
+import { HelpHint } from '@/components/help-hint'
 import { ModelGroupSelector } from '@/components/model-group-selector'
 import {
   sideDrawerContentClassName,
@@ -750,7 +751,13 @@ function VirtualModelCandidatesEditorBody({
 
               <div className='grid gap-3 sm:grid-cols-3'>
                 <label className='grid gap-1 text-sm font-medium'>
-                  {t('Timeout seconds')}
+                  {/* 候选单次超时带帮助，说明它只覆盖该候选的一次上游尝试喵。 */}
+                  <span className='flex items-center gap-1'>
+                    {t('Timeout seconds')}
+                    <HelpHint hint={t('Maximum wait time for one attempt on this candidate (1 to 600 seconds).')}>
+                      <p>{t('The timer covers one upstream attempt for this candidate, including connection and response. When exceeded, the attempt is treated as a failure and the chain continues according to the failure rules.')}</p>
+                    </HelpHint>
+                  </span>
                   <Input inputMode='numeric' value={candidate.timeoutSeconds} disabled={isSaving} onChange={(event) => updateCandidate(index, { timeoutSeconds: event.target.value })} />
                 </label>
                 <label className='grid gap-1 text-sm font-medium'>

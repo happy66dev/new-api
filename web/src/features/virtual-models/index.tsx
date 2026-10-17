@@ -10,6 +10,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { CopyButton } from '@/components/copy-button'
 import { SectionPageLayout } from '@/components/layout'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -150,7 +151,19 @@ export function VirtualModels() {
                     <div className='flex flex-wrap items-center justify-between gap-3'>
                       <div>
                         <h2 className='text-lg font-semibold'>{selectedModel.display_name}</h2>
-                        <p className='text-sm text-muted-foreground'>{`virtual/${selectedModel.normalized_name}`}</p>
+                        {/* 模型 ID 前增加「模型ID」标签，并提供一键复制完整虚拟模型名喵。 */}
+                        <div className='flex items-center gap-1'>
+                          <p className='text-sm text-muted-foreground'>
+                            {t('Model ID: {{name}}', { name: `virtual/${selectedModel.normalized_name}` })}
+                          </p>
+                          <CopyButton
+                            aria-label={t('Copy model ID')}
+                            className='size-6'
+                            iconClassName='size-3.5'
+                            tooltip={t('Copy model ID')}
+                            value={`virtual/${selectedModel.normalized_name}`}
+                          />
+                        </div>
                       </div>
                       <div className='flex gap-2'>
                         {/* 分享针对当前选中模型，因此只在这里出现喵。 */}

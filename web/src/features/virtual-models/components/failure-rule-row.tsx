@@ -10,6 +10,7 @@ import { ArrowDown01Icon, ArrowUp01Icon, Cancel01Icon } from '@hugeicons/core-fr
 import { HugeiconsIcon } from '@hugeicons/react'
 import { useTranslation } from 'react-i18next'
 
+import { HelpHint } from '@/components/help-hint'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -66,7 +67,13 @@ export function FailureRuleEditorRow({
 
       <div className='grid gap-3 sm:grid-cols-2 lg:grid-cols-3'>
         <label className='grid gap-1 text-sm font-medium'>
-          {t('Failure condition')}
+          {/* 失败条件标签带帮助，说明四种条件分别匹配什么失败喵。 */}
+          <span className='flex items-center gap-1'>
+            {t('Failure condition')}
+            <HelpHint hint={t('Choose which kind of failure this rule matches.')}>
+              <p>{t('HTTP status code matches the upstream HTTP status. Timeout matches a request that exceeded its timeout. Stalled stream matches a stream that stopped sending content after it started. Stream cut matches a fake-stream request whose upstream stream ended before [DONE], and only works when Fake stream is enabled in Target Mode.')}</p>
+            </HelpHint>
+          </span>
           {/* 失败条件二选一：HTTP 状态码或超时，互斥选择喵。大部分失败用状态码即可，超时无状态码需独立覆盖喵。 */}
           <select className='border-input bg-background h-9 rounded-md border px-3 text-sm' value={rule.conditionType} disabled={isSaving} onChange={(event) => onChange({ conditionType: event.target.value as ConditionType })}>
             <option value='http'>{t('HTTP status code')}</option>
@@ -80,7 +87,13 @@ export function FailureRuleEditorRow({
         {/* HTTP 条件：展示状态码输入与常用预设喵。 */}
         {rule.conditionType === 'http' && (
           <label className='grid gap-1 text-sm font-medium'>
-            {t('HTTP status')}
+            {/* 状态码标签带帮助，说明单值、范围与 0 的写法喵。 */}
+            <span className='flex items-center gap-1'>
+              {t('HTTP status')}
+              <HelpHint hint={t('Status code or range to match. 0 matches any status.')}>
+                <p>{t('Use a single code such as 429, an inclusive range such as 500~524, or 0 to match any HTTP status. Values must stay between 0 and 599.')}</p>
+              </HelpHint>
+            </span>
             <Input value={rule.httpStatus} disabled={isSaving} placeholder={t('0 = any, e.g. 429 or 500~524')} onChange={(event) => onChange({ httpStatus: event.target.value })} />
             {/* 常用状态码预设：点击填入，再次点击清除喵。 */}
             <span className='flex flex-wrap gap-1'>
@@ -132,7 +145,13 @@ export function FailureRuleEditorRow({
               </div>
             </label>
             <label className='grid gap-1 text-sm font-medium'>
-              {t('Timeout seconds')}
+              {/* 超时阈值标签带帮助，说明 0 表示沿用候选超时喵。 */}
+              <span className='flex items-center gap-1'>
+                {t('Timeout seconds')}
+                <HelpHint hint={t('How long a candidate may run before this timeout rule matches.')}>
+                  <p>{t("Range: 0 to 600 seconds. Leave 0 to use the candidate's own timeout. This threshold only applies to the Timeout condition and does not change the candidate timeout.")}</p>
+                </HelpHint>
+              </span>
               <Input inputMode='numeric' value={rule.timeoutSeconds} disabled={isSaving} placeholder={t('Seconds before a candidate is judged timed out (default: candidate timeout)')} onChange={(event) => onChange({ timeoutSeconds: event.target.value })} />
             </label>
           </>
@@ -147,21 +166,45 @@ export function FailureRuleEditorRow({
               </div>
             </label>
             <label className='grid gap-1 text-sm font-medium'>
-              {t('Stall timeout seconds')}
+              {/* 卡流静默秒数带帮助，说明探测会在收到新内容时重置喵。 */}
+              <span className='flex items-center gap-1'>
+                {t('Stall timeout seconds')}
+                <HelpHint hint={t('Silence duration that marks a stream as stalled (default 60).')}>
+                  <p>{t('Range: 0 to 600 seconds; 0 uses the backend default of 60 seconds. The probe restarts whenever upstream sends new content. If no content arrives within this window, the stream is treated as stalled and this rule can match.')}</p>
+                </HelpHint>
+              </span>
               <Input inputMode='numeric' value={rule.stallTimeoutSeconds} disabled={isSaving} placeholder={t('Seconds of silence before judging stalled (default 60)')} onChange={(event) => onChange({ stallTimeoutSeconds: event.target.value })} />
             </label>
             <label className='grid gap-1 text-sm font-medium'>
-              {t('Min content chars')}
+              {/* 内容字符门槛带帮助，说明提高门槛会延后首个可见字符喵。 */}
+              <span className='flex items-center gap-1'>
+                {t('Min content chars')}
+                <HelpHint hint={t('Characters to buffer before relaying a stream (default 10).')}>
+                  <p>{t('Range: 0 to 1024 characters; 0 uses the backend default of 10. A higher threshold avoids releasing an almost empty stream before an upstream failure is detected, at the cost of a slightly later first visible character.')}</p>
+                </HelpHint>
+              </span>
               <Input inputMode='numeric' value={rule.minContentChars} disabled={isSaving} placeholder={t('Content characters to buffer before relaying (default 10)')} onChange={(event) => onChange({ minContentChars: event.target.value })} />
             </label>
             <label className='grid gap-1 text-sm font-medium'>
-              {t('Probe total timeout seconds')}
+              {/* 探测总预算带帮助，说明预算耗尽即使未静默也会判定卡流喵。 */}
+              <span className='flex items-center gap-1'>
+                {t('Probe total timeout seconds')}
+                <HelpHint hint={t('Total time budget for the stream probe phase (default 300).')}>
+                  <p>{t('Range: 0 to 3600 seconds; 0 uses the backend default of 300. This budget limits the whole probe phase. When it is exhausted, the stream is treated as stalled even if the silence threshold has not been reached.')}</p>
+                </HelpHint>
+              </span>
               <Input inputMode='numeric' value={rule.probeTotalTimeoutSeconds} disabled={isSaving} placeholder={t('Total budget for the probe phase (default 300)')} onChange={(event) => onChange({ probeTotalTimeoutSeconds: event.target.value })} />
             </label>
           </>
         )}
         <label className='grid gap-1 text-sm font-medium'>
-          {t('Action')}
+          {/* 动作标签带帮助，说明四种动作对候选链的影响喵。 */}
+          <span className='flex items-center gap-1'>
+            {t('Action')}
+            <HelpHint hint={t('What the gateway does when this rule matches.')}>
+              <p>{t('Retry current candidate retries the same candidate. Use next candidate moves to the next node in the chain. Freeze candidate marks it unavailable for a period. Return upstream error stops routing and returns the upstream error to the client.')}</p>
+            </HelpHint>
+          </span>
           <select className='border-input bg-background h-9 rounded-md border px-3 text-sm' value={rule.action} disabled={isSaving} onChange={(event) => onChange({ action: event.target.value as FailureRuleDraft['action'] })}>
             <option value='retry'>{t('Retry current candidate')}</option>
             <option value='next'>{t('Use next candidate')}</option>
@@ -176,7 +219,13 @@ export function FailureRuleEditorRow({
         {/* 重试动作的最大重试次数输入：零表示未配置时沿用候选 MaxRetries 喵。 */}
         {rule.action === 'retry' && (
           <label className='grid gap-1 text-sm font-medium'>
-            {t('Max retries')}
+            {/* 规则级重试次数带帮助，说明 0 会沿用候选默认值喵。 */}
+            <span className='flex items-center gap-1'>
+              {t('Max retries')}
+              <HelpHint hint={t('Retries for this rule. 0 inherits the candidate default.')}>
+                <p>{t("Only used by Retry current candidate. Range: 0 to 20. 0 means the candidate's Maximum retries value is used. The effective limit is the smaller of this rule value and the candidate value.")}</p>
+              </HelpHint>
+            </span>
             <Input inputMode='numeric' value={rule.retryCount} disabled={isSaving} placeholder={t('0 = candidate default, up to 20')} onChange={(event) => onChange({ retryCount: event.target.value })} />
           </label>
         )}
@@ -184,24 +233,48 @@ export function FailureRuleEditorRow({
         {rule.action === 'freeze' && (
           <>
             <label className='grid gap-1 text-sm font-medium'>
-              {t('Freeze seconds')}
+              {/* 固定冻结时长带帮助，说明 0 会改为从响应体解析喵。 */}
+              <span className='flex items-center gap-1'>
+                {t('Freeze seconds')}
+                <HelpHint hint={t('Fixed freeze duration. 0 parses the duration from the response body.')}>
+                  <p>{t('Range: 0 to 86400 seconds. A fixed value is applied immediately after this rule matches. 0 means the gateway reads the duration from the response body using the advanced settings below.')}</p>
+                </HelpHint>
+              </span>
               <Input inputMode='numeric' value={rule.freezeSeconds} disabled={isSaving} placeholder={t('0 = auto from the response body field')} onChange={(event) => onChange({ freezeSeconds: event.target.value })} />
             </label>
             {/* 高级冻结：从响应体指定字段解析冻结时间，适配上游不返回 Retry-After 头的情况喵。 */}
             <div className='grid gap-3 rounded-md border border-dashed p-3 sm:col-span-3'>
-              <p className='text-sm font-medium'>{t('Advanced freeze from response body')}</p>
+              {/* 高级冻结标题带帮助，说明适用于上游不返回 Retry-After 的场景喵。 */}
+              <span className='flex items-center gap-1'>
+                <p className='text-sm font-medium'>{t('Advanced freeze from response body')}</p>
+                <HelpHint hint={t('Read the freeze duration from a field in the upstream response body.')}>
+                  <p>{t('Use this when the upstream does not return a Retry-After header. The gateway reads the configured field and converts its value with the selected Freeze unit. Auto mode scans the whole response body for natural-language durations such as "in 22 minutes" or "after 5 seconds".')}</p>
+                </HelpHint>
+              </span>
               <div className='grid gap-3 sm:grid-cols-2'>
                 {rule.freezeUnit === 'auto' ? (
                   // auto 模式自动扫描响应体中的自然语言时间，无需用户指定字段名喵。
                   <p className='text-sm text-muted-foreground'>{t('Auto-detects a duration like "in 22 minutes" or "after 5 seconds" anywhere in the response body')}</p>
                 ) : (
                   <label className='grid gap-1 text-sm font-medium'>
-                    {t('Response body field')}
+                    {/* 响应体字段名带帮助，说明只支持顶层字段喵。 */}
+                    <span className='flex items-center gap-1'>
+                      {t('Response body field')}
+                      <HelpHint hint={t('Response body field that contains the freeze duration.')}>
+                        <p>{t('Enter the exact field name, for example retry_after. The field must appear at the top level of the response JSON; nested values are not supported. Auto mode in Freeze unit does not use this field.')}</p>
+                      </HelpHint>
+                    </span>
                     <Input value={rule.freezeField} disabled={isSaving} placeholder={t('Field name holding the freeze time, e.g. retry_after')} onChange={(event) => onChange({ freezeField: event.target.value })} />
                   </label>
                 )}
                 <label className='grid gap-1 text-sm font-medium'>
-                  {t('Freeze unit')}
+                  {/* 冻结单位带帮助，说明四种单位的换算方式喵。 */}
+                  <span className='flex items-center gap-1'>
+                    {t('Freeze unit')}
+                    <HelpHint hint={t('How to interpret the value read from the response body.')}>
+                      <p>{t('Seconds treats the value as seconds. Minutes multiplies it by 60. Mixed accepts formats such as 1m30s. Auto ignores the field name and scans the response body for natural-language durations.')}</p>
+                    </HelpHint>
+                  </span>
                   <select className='border-input bg-background h-9 rounded-md border px-3 text-sm' value={rule.freezeUnit} disabled={isSaving} onChange={(event) => onChange({ freezeUnit: event.target.value as FreezeUnit })}>
                     {FREEZE_UNITS.map((unit) => (
                       <option key={unit.value} value={unit.value}>{t(unit.labelKey)}</option>
@@ -216,7 +289,13 @@ export function FailureRuleEditorRow({
         {/* 响应体正则区域：预设、简易文本与自定义正则三种模式喵。 */}
         <div className='grid gap-3 sm:col-span-2'>
           <label className='grid gap-1 text-sm font-medium'>
-            {t('Response body regex')}
+            {/* 响应体正则标签带帮助，说明四种匹配模式的区别喵。 */}
+            <span className='flex items-center gap-1'>
+              {t('Response body regex')}
+              <HelpHint hint={t('Optionally require the response body to match this rule.')}>
+                <p>{t('Do not match ignores the body. Use a preset picks a built-in upstream error pattern. Simple text match checks whether the body contains plain text. Custom regex matches a regular expression you write.')}</p>
+              </HelpHint>
+            </span>
             <select className='border-input bg-background h-9 rounded-md border px-3 text-sm' value={rule.bodyRegexMode} disabled={isSaving} onChange={(event) => onChange({ bodyRegexMode: event.target.value as BodyRegexMode })}>
               <option value='none'>{t('Do not match the response body')}</option>
               <option value='preset'>{t('Use a preset')}</option>
@@ -227,7 +306,13 @@ export function FailureRuleEditorRow({
           {rule.bodyRegexMode === 'preset' && (
             <div className='grid gap-1'>
               <label className='grid gap-1 text-sm font-medium'>
-                {t('Preset')}
+                {/* 预设标签带帮助，说明预设覆盖的常见上游错误喵。 */}
+                <span className='flex items-center gap-1'>
+                  {t('Preset')}
+                  <HelpHint hint={t('Built-in pattern for common upstream errors.')}>
+                    <p>{t('Presets cover rate limiting, overload or capacity, insufficient quota, context length exceeded, and temporarily unavailable. Selecting a preset shows the text pattern it matches.')}</p>
+                  </HelpHint>
+                </span>
                 <select className='border-input bg-background h-9 rounded-md border px-3 text-sm' value={rule.bodyRegexPreset} disabled={isSaving} onChange={(event) => onChange({ bodyRegexPreset: event.target.value })}>
                   <option value=''>{t('Select a preset')}</option>
                   {Object.entries(BODY_REGEX_PRESETS).map(([presetKey, preset]) => (
@@ -243,13 +328,25 @@ export function FailureRuleEditorRow({
           )}
           {rule.bodyRegexMode === 'simple' && (
             <label className='grid gap-1 text-sm font-medium'>
-              {t('Text to match')}
+              {/* 简易文本匹配带帮助，说明按字面量且区分大小写喵。 */}
+              <span className='flex items-center gap-1'>
+                {t('Text to match')}
+                <HelpHint hint={t('Plain text that must appear in the response body.')}>
+                  <p>{t('Matching is case-sensitive and treats the text literally; regular expression syntax is not interpreted. Use this instead of a custom regex when you only need a simple substring check.')}</p>
+                </HelpHint>
+              </span>
               <Input value={rule.bodyRegexSimple} disabled={isSaving} placeholder={t('Matches response bodies containing this text')} onChange={(event) => onChange({ bodyRegexSimple: event.target.value })} />
             </label>
           )}
           {rule.bodyRegexMode === 'custom' && (
             <label className='grid gap-1 text-sm font-medium'>
-              {t('Regular expression')}
+              {/* 自定义正则带帮助，说明非法表达式会在保存前被拒绝喵。 */}
+              <span className='flex items-center gap-1'>
+                {t('Regular expression')}
+                <HelpHint hint={t('Regular expression applied to the response body.')}>
+                  <p>{t('The expression is matched against the raw response body text. Invalid expressions are rejected before saving. Prefer a preset or simple text match when possible.')}</p>
+                </HelpHint>
+              </span>
               <Input value={rule.bodyRegex} disabled={isSaving} placeholder={t('Regular expression matched against the response body')} onChange={(event) => onChange({ bodyRegex: event.target.value })} />
             </label>
           )}
