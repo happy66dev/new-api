@@ -16,11 +16,19 @@ func TestValidateCustomBaseURL(t *testing.T) {
 		{name: "HTTP protocol", input: "http://api.example.com", expectError: false, summary: "http://api.example.com"},
 		{name: "nonstandard HTTPS port", input: "https://api.example.com:8443", expectError: false, summary: "https://api.example.com"},
 		{name: "HTTP nonstandard port", input: "http://api.example.com:8080", expectError: false, summary: "http://api.example.com"},
-		// 危险组成部分与字面 IP 仍拒绝，防认证混淆与内网探测喵。
+		// 危险组成部分（userinfo、fragment）仍拒绝，防认证混淆与目标语义偏差喵。
 		{name: "userinfo", input: "https://secret@api.example.com", expectError: true},
 		{name: "fragment", input: "https://api.example.com/#fragment", expectError: true},
+		// 公网字面 IP 已放宽（部分上游只提供 IP 入口），回环、私网、链路本地等非公网字面 IP 仍拒绝喵。
+		{name: "literal public IP", input: "http://8.8.8.8:80", expectError: false, summary: "http://8.8.8.8"},
+		{name: "literal public IP with port and path", input: "https://1.1.1.1:8443/v1", expectError: false, summary: "https://1.1.1.1"},
+		{name: "literal public IPv6", input: "https://[2606:4700:4700::1111]", expectError: false, summary: "https://2606:4700:4700::1111"},
 		{name: "literal loopback", input: "https://127.0.0.1", expectError: true},
-		{name: "literal public IP", input: "http://8.8.8.8:80", expectError: true},
+		{name: "literal private IPv4", input: "https://10.0.0.1", expectError: true},
+		{name: "literal CGNAT IPv4", input: "http://100.64.0.1", expectError: true},
+		{name: "literal link-local IPv4", input: "http://169.254.169.254", expectError: true},
+		{name: "literal unspecified IPv4", input: "http://0.0.0.0", expectError: true},
+		{name: "literal private IPv6", input: "https://[fd00::1]", expectError: true},
 		// 非 http/https scheme 与畸形端口拒绝喵。
 		{name: "ftp protocol", input: "ftp://api.example.com", expectError: true},
 		{name: "zero port", input: "http://api.example.com:0", expectError: true},

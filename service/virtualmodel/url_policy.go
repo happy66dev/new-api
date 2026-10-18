@@ -22,7 +22,7 @@ func allowInsecureCustomUpstream() bool {
 }
 
 // ValidateCustomBaseURL 严格校验用户自定义上游的公开地址喵。
-// 支持 http/https 与任意合法端口，公网可达性（防内网探测）由拨号阶段公网 IP 校验兜底喵。
+// 支持 http/https、任意合法端口与公网字面 IP，公网可达性（防内网探测）由这里和拨号阶段双重兜底喵。
 func ValidateCustomBaseURL(rawBaseURL string) (*url.URL, error) {
 	// 喵~防御：空地址、控制字符和过长输入会造成日志混淆或资源滥用，因此在解析前拒绝喵。
 	trimmedBaseURL := strings.TrimSpace(rawBaseURL)
@@ -50,10 +50,11 @@ func ValidateCustomBaseURL(rawBaseURL string) (*url.URL, error) {
 			return nil, errors.New("custom upstream URL port is invalid")
 		}
 	}
-	// 喵~防御：生产环境要求 hostname 是可验证的域名而非字面 IP，避免绕过域名语义；开发模式显式放宽供本地 mock 使用喵。
+	// 喵~防御：生产环境允许公网字面 IP（部分上游只提供 IP 入口），但回环、私网、链路本地等非公网地址仍拒绝喵。
+	// 开发模式显式放宽全部地址校验供本地 mock 使用，公网可达性同样由拨号阶段公网 IP 校验兜底喵。
 	if !allowInsecureCustomUpstream() {
-		if net.ParseIP(parsedURL.Hostname()) != nil {
-			return nil, errors.New("custom upstream URL must use a public hostname")
+		if literalIP := net.ParseIP(parsedURL.Hostname()); literalIP != nil && !isPublicCustomUpstreamIP(literalIP) {
+			return nil, errors.New("custom upstream URL must use a public hostname or public IP address")
 		}
 	}
 	return parsedURL, nil
