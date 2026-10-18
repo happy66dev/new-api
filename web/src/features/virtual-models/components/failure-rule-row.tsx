@@ -145,11 +145,11 @@ export function FailureRuleEditorRow({
               </div>
             </label>
             <label className='grid gap-1 text-sm font-medium'>
-              {/* 超时阈值标签带帮助，说明 0 表示沿用候选超时喵。 */}
+              {/* 超时字段带帮助，说明它是自定义候选的执行超时且候选规则优先喵。 */}
               <span className='flex items-center gap-1'>
                 {t('Timeout seconds')}
-                <HelpHint hint={t('How long a candidate may run before this timeout rule matches.')}>
-                  <p>{t("Range: 0 to 600 seconds. Leave 0 to use the candidate's own timeout. This threshold only applies to the Timeout condition and does not change the candidate timeout.")}</p>
+                <HelpHint hint={t('Per-attempt timeout for custom candidates; candidate rules override global rules.')}>
+                  <p>{t('Range: 0 to 600 seconds. For custom candidates, a value greater than 0 sets the wall-clock timeout for one upstream attempt. Candidate-level rules are checked before global rules; when all are 0, the referenced upstream model timeout or the candidate timeout is used. For internal candidates this field does not add a separate deadline; the virtual model total timeout is the outer limit.')}</p>
                 </HelpHint>
               </span>
               <Input inputMode='numeric' value={rule.timeoutSeconds} disabled={isSaving} placeholder={t('Seconds before a candidate is judged timed out (default: candidate timeout)')} onChange={(event) => onChange({ timeoutSeconds: event.target.value })} />
@@ -170,7 +170,7 @@ export function FailureRuleEditorRow({
               <span className='flex items-center gap-1'>
                 {t('Stall timeout seconds')}
                 <HelpHint hint={t('Silence duration that marks a stream as stalled (default 60).')}>
-                  <p>{t('Range: 0 to 600 seconds; 0 uses the backend default of 60 seconds. The probe restarts whenever upstream sends new content. If no content arrives within this window, the stream is treated as stalled and this rule can match.')}</p>
+                  <p>{t('Range: 0 to 600 seconds; 0 uses the backend default of 60 seconds. The value is resolved from candidate rules first, then global rules, then the default. The probe restarts whenever upstream sends new content. This budget only controls the stream probe and does not extend the per-attempt execution timeout.')}</p>
                 </HelpHint>
               </span>
               <Input inputMode='numeric' value={rule.stallTimeoutSeconds} disabled={isSaving} placeholder={t('Seconds of silence before judging stalled (default 60)')} onChange={(event) => onChange({ stallTimeoutSeconds: event.target.value })} />
@@ -180,7 +180,7 @@ export function FailureRuleEditorRow({
               <span className='flex items-center gap-1'>
                 {t('Min content chars')}
                 <HelpHint hint={t('Characters to buffer before relaying a stream (default 10).')}>
-                  <p>{t('Range: 0 to 1024 characters; 0 uses the backend default of 10. A higher threshold avoids releasing an almost empty stream before an upstream failure is detected, at the cost of a slightly later first visible character.')}</p>
+                  <p>{t('Range: 0 to 1024 characters; 0 uses the backend default of 10. The value is resolved from candidate rules first, then global rules, then the default. A higher threshold avoids releasing an almost empty stream before an upstream failure is detected, at the cost of a slightly later first visible character.')}</p>
                 </HelpHint>
               </span>
               <Input inputMode='numeric' value={rule.minContentChars} disabled={isSaving} placeholder={t('Content characters to buffer before relaying (default 10)')} onChange={(event) => onChange({ minContentChars: event.target.value })} />
@@ -190,7 +190,7 @@ export function FailureRuleEditorRow({
               <span className='flex items-center gap-1'>
                 {t('Probe total timeout seconds')}
                 <HelpHint hint={t('Total time budget for the stream probe phase (default 300).')}>
-                  <p>{t('Range: 0 to 3600 seconds; 0 uses the backend default of 300. This budget limits the whole probe phase. When it is exhausted, the stream is treated as stalled even if the silence threshold has not been reached.')}</p>
+                  <p>{t('Range: 0 to 3600 seconds; 0 uses the backend default of 300. The value is resolved from candidate rules first, then global rules, then the default. This budget limits the whole probe phase and is separate from the per-attempt execution timeout. When it is exhausted, the stream is treated as stalled even if the silence threshold has not been reached.')}</p>
                 </HelpHint>
               </span>
               <Input inputMode='numeric' value={rule.probeTotalTimeoutSeconds} disabled={isSaving} placeholder={t('Total budget for the probe phase (default 300)')} onChange={(event) => onChange({ probeTotalTimeoutSeconds: event.target.value })} />
@@ -222,8 +222,8 @@ export function FailureRuleEditorRow({
             {/* 规则级重试次数带帮助，说明 0 会沿用候选默认值喵。 */}
             <span className='flex items-center gap-1'>
               {t('Max retries')}
-              <HelpHint hint={t('Retries for this rule. 0 inherits the candidate default.')}>
-                <p>{t("Only used by Retry current candidate. Range: 0 to 20. 0 means the candidate's Maximum retries value is used. The effective limit is the smaller of this rule value and the candidate value.")}</p>
+              <HelpHint hint={t('Retries for this rule; 0 uses the candidate Maximum retries.')}>
+                <p>{t("Only used by Retry current candidate. Range: 0 to 20. When greater than 0, it replaces the candidate Maximum retries for this rule; when 0, the candidate value is used. The total request timeout and auto hedge freeze can still stop retries earlier.")}</p>
               </HelpHint>
             </span>
             <Input inputMode='numeric' value={rule.retryCount} disabled={isSaving} placeholder={t('0 = candidate default, up to 20')} onChange={(event) => onChange({ retryCount: event.target.value })} />

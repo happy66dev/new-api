@@ -122,7 +122,7 @@ export function VirtualModelGlobalFailureRulesEditor({
           <span className='flex items-center gap-1'>
             <h3 className='font-medium'>{t('Global fallback failure rules')}</h3>
             <HelpHint hint={t('Fallback rules used when a candidate has no failure rules of its own.')}>
-              <p>{t('Rules are checked from top to bottom and the first match decides the action. If no rule matches, the gateway uses the next candidate. Candidate-level rules always take precedence over these global rules.')}</p>
+              <p>{t('Used only when a candidate has no failure rules at all. If a candidate has its own rules but none match, the gateway moves to the next candidate instead of using these global rules. Within this global list, the first match from top to bottom decides the action.')}</p>
             </HelpHint>
           </span>
           <p className='text-muted-foreground text-sm'>{t('Used when a candidate has no failure rules of its own. Rules are evaluated from top to bottom.')}</p>

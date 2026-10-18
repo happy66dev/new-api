@@ -171,7 +171,7 @@ export function VirtualModelCandidateFailureRulesEditor({
         <span className='flex items-center gap-1'>
           <h4 className='font-medium'>{t('Auto hedge')}</h4>
           <HelpHint hint={t('Freezes this candidate after consecutive failures, independent of failure rules.')}>
-            <p>{t('Auto hedge is evaluated after each request. When the candidate reaches the configured number of consecutive failures, it is frozen for the backoff duration, and successful requests reset the counter. HTTP 4xx client errors are exempt because they usually come from the request rather than the upstream.')}</p>
+            <p>{t('Auto hedge is evaluated after each request. When the candidate reaches the configured number of consecutive failures, it is frozen for the backoff duration, pending retries for it stop, and successful requests reset the counter. HTTP 4xx client errors are exempt because they usually come from the request rather than the upstream.')}</p>
           </HelpHint>
         </span>
         <p className='text-muted-foreground text-sm'>{t('Independent of failure rules. Freezes this candidate after this many consecutive failures (4xx client errors are exempt).')}</p>
@@ -205,7 +205,7 @@ export function VirtualModelCandidateFailureRulesEditor({
           <span className='flex items-center gap-1'>
             <h3 className='font-medium'>{t('Failure Rules')}</h3>
             <HelpHint hint={t('Rules that apply only to this candidate.')}>
-              <p>{t('Candidate-level rules run before the global fallback rules. They are checked from top to bottom and the first match decides the action. If no rule matches, the global fallback rules are used.')}</p>
+              <p>{t('These rules are used whenever this candidate has at least one rule. They are checked from top to bottom and the first match decides the action. If none match, the gateway moves to the next candidate; global fallback rules are used only when this candidate has no rules at all.')}</p>
             </HelpHint>
           </span>
           <p className='text-muted-foreground text-sm'>{t('Rules are evaluated from top to bottom. The first matching rule decides the candidate action.')}</p>

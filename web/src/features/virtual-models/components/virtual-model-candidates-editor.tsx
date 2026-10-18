@@ -751,17 +751,23 @@ function VirtualModelCandidatesEditorBody({
 
               <div className='grid gap-3 sm:grid-cols-3'>
                 <label className='grid gap-1 text-sm font-medium'>
-                  {/* 候选单次超时带帮助，说明它只覆盖该候选的一次上游尝试喵。 */}
+                  {/* 候选单次超时带帮助，说明它只作为自定义候选的兜底并被规则与总超时约束喵。 */}
                   <span className='flex items-center gap-1'>
                     {t('Timeout seconds')}
-                    <HelpHint hint={t('Maximum wait time for one attempt on this candidate (1 to 600 seconds).')}>
-                      <p>{t('The timer covers one upstream attempt for this candidate, including connection and response. When exceeded, the attempt is treated as a failure and the chain continues according to the failure rules.')}</p>
+                    <HelpHint hint={t('Fallback timeout for direct custom candidates; failure rules can override it.')}>
+                      <p>{t('Range: 1 to 600 seconds. For direct custom candidates, this value applies when no failure rule sets Timeout seconds. Referenced user upstream models use their own timeout instead. Internal candidates are bounded by the virtual model total timeout. The final per-attempt timeout is capped at 600 seconds and by the remaining total timeout.')}</p>
                     </HelpHint>
                   </span>
                   <Input inputMode='numeric' value={candidate.timeoutSeconds} disabled={isSaving} onChange={(event) => updateCandidate(index, { timeoutSeconds: event.target.value })} />
                 </label>
                 <label className='grid gap-1 text-sm font-medium'>
-                  {t('Maximum retries')}
+                  {/* 候选默认重试次数带帮助，说明规则级重试次数会覆盖它喵。 */}
+                  <span className='flex items-center gap-1'>
+                    {t('Maximum retries')}
+                    <HelpHint hint={t('Default retries when the matching failure rule has no retry count.')}>
+                      <p>{t("Range: 0 to 20. Used when a failure rule matches with Retry current candidate and that rule's Max retries is 0. A rule Max retries greater than 0 replaces this value. Retries stop when the virtual model total timeout is exhausted or auto hedge freezes the candidate.")}</p>
+                    </HelpHint>
+                  </span>
                   <Input inputMode='numeric' value={candidate.maxRetries} disabled={isSaving} onChange={(event) => updateCandidate(index, { maxRetries: event.target.value })} />
                 </label>
                 <label className='flex items-end justify-between gap-3 pb-2 text-sm'>

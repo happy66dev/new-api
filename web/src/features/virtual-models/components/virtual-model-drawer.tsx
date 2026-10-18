@@ -214,11 +214,11 @@ export function VirtualModelDrawer({
                 </label>
                 <div className='grid grid-cols-2 gap-3'>
                   <label className='grid gap-1 text-sm font-medium'>
-                    {/* 总超时帮助说明计时覆盖候选、重试、循环与上游响应喵。 */}
+                    {/* 总超时帮助说明它是所有候选、重试与循环都无法突破的最外层硬上限喵。 */}
                     <span className='flex items-center gap-1'>
                       {t('Total timeout seconds')}
-                      <HelpHint hint={t('Overall time budget for one request, including all candidates and loops.')}>
-                        <p>{t('Range: 1 to 3600 seconds. The timer starts when the request enters the virtual model and covers candidate selection, retries, loops, and the upstream response. When it expires, the request fails with a timeout.')}</p>
+                      <HelpHint hint={t('Outermost hard limit for one request; no candidate, retry, or loop can exceed it.')}>
+                        <p>{t('Range: 1 to 3600 seconds. The deadline starts when the request enters the virtual model. Candidate timeouts, failure-rule timeouts, retry backoff, and loop rounds all draw from this budget and cannot extend it. When the budget is exhausted, the request fails immediately.')}</p>
                       </HelpHint>
                     </span>
                     <Input inputMode='numeric' value={totalTimeoutSeconds} onChange={(event) => setTotalTimeoutSeconds(event.target.value)} disabled={isSavingBasics} />
