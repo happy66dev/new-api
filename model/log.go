@@ -1007,7 +1007,9 @@ func GetUserTokenRPM(userID int, tokenIDs []int) (map[int]int, error) {
 func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string, sharedModelNames ...string) (stat Stat, err error) {
 	// quota 求和与 rpm/tpm 统计分开查询，因为 rpm/tpm 只统计最近 60 秒的调用量喵。
 	quotaQuery := LOG_DB.Table("logs").Select("COALESCE(sum(quota), 0) quota")
-	rpmTpmQuery := LOG_DB.Table("logs").Select("count(*) rpm, COALESCE(sum(prompt_tokens), 0) + COALESCE(sum(completion_tokens), 0) tpm")
+	// rpm/tpm 改为逐行取数：anthropic 语义的缓存读 token 不在 prompt_tokens 里，需要读 other 才能补进 TPM 喵。
+	// COALESCE 保证老库中 other 为 NULL 时也能安全扫进字符串喵。
+	rpmTpmQuery := LOG_DB.Table("logs").Select("prompt_tokens, completion_tokens, COALESCE(other, '') AS other")
 
 	// quota 求和维持原口径：普通用户「全部」范围 = 自己的消费日志 + 别人调用自己共享模型的消费日志（user-shared 分组、type=8）取并集喵。
 	if len(sharedModelNames) > 0 {
@@ -1081,16 +1083,42 @@ func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelNa
 		common.SysError("failed to query log stat: " + err.Error())
 		return stat, errors.New("查询统计数据失败")
 	}
-	var rateStat struct {
-		Rpm int
-		Tpm int
+	// 喵~防御：逐行扫描最近 60 秒的调用记录，扫描失败时返回明确错误而不是部分统计喵。
+	var rateRows []struct {
+		PromptTokens     int    // 该次请求的输入 token；anthropic 语义下不含缓存读喵。
+		CompletionTokens int    // 该次请求的输出 token 喵。
+		Other            string // 日志扩展 JSON，含 usage_semantic 与 cache_tokens 喵。
 	}
-	if err := rpmTpmQuery.Scan(&rateStat).Error; err != nil {
+	if err := rpmTpmQuery.Scan(&rateRows).Error; err != nil {
 		common.SysError("failed to query rpm/tpm stat: " + err.Error())
 		return stat, errors.New("查询统计数据失败")
 	}
-	stat.Rpm = rateStat.Rpm
-	stat.Tpm = rateStat.Tpm
+	// rpm 直接等于窗口内的调用条数喵。
+	stat.Rpm = len(rateRows)
+	// tpm 先累计每次请求的输入+输出，再按需补上 anthropic 缓存读喵。
+	totalTpm := 0
+	for _, row := range rateRows {
+		totalTpm += row.PromptTokens + row.CompletionTokens
+		var otherPayload struct {
+			UsageSemantic string `json:"usage_semantic"` // 用量语义；anthropic 表示缓存读未计入 prompt_tokens 喵。
+			CacheTokens   int    `json:"cache_tokens"`   // 缓存命中的输入 token 数，单位：个喵。
+		}
+		// 喵~防御：other 可能为空串或历史脏数据，解析失败时按无缓存处理，不能让整次统计失败喵。
+		if err := common.UnmarshalJsonStr(row.Other, &otherPayload); err != nil {
+			continue
+		}
+		// 只有 anthropic 语义才补缓存读：OpenAI 等语义的 prompt_tokens 已包含缓存命中，重复相加会虚高喵。
+		if otherPayload.UsageSemantic != "anthropic" {
+			continue
+		}
+		// 喵~防御：异常日志可能写入负值，仅在大于 0 时累加，避免 TPM 被扣成负数喵。
+		if otherPayload.CacheTokens > 0 {
+			totalTpm += otherPayload.CacheTokens
+		}
+	}
+	// 主人注意：这里会在最近 60 秒窗口内把 other 一并读回 Go 解析；窗口外数据已被 created_at 过滤，
+	// 正常流量下开销很小。若单窗口调用量达到每分钟上万条且 other 很长，可考虑落独立列或改用各库 JSON 函数喵。
+	stat.Tpm = totalTpm
 
 	return stat, nil
 }

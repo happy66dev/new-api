@@ -72,3 +72,28 @@ func TestSumUsedQuotaRpmTpmInternalModelScope(t *testing.T) {
 	// tpm：gpt-4o(30) + gpt-4o-mini(15) = 45，不含被前缀排除的 user//virtual/ 行喵。
 	assert.Equal(t, 45, stat.Tpm)
 }
+
+// TestSumUsedQuotaTpmIncludesAnthropicCacheRead 验证 anthropic 语义的缓存读 token 会补进 TPM，
+// 而非 anthropic 语义（prompt_tokens 已含缓存命中）不会被重复相加喵。
+func TestSumUsedQuotaTpmIncludesAnthropicCacheRead(t *testing.T) {
+	truncateTables(t)
+	require.NoError(t, LOG_DB.Exec("DELETE FROM logs").Error)
+
+	// 当前时间，落在 rpm/tpm 的最近 60 秒窗口内喵。
+	now := time.Now().Unix()
+
+	// anthropic 原生 messages 日志：输入 10 + 输出 20 + 缓存读 100，TPM 应为 130 喵。
+	require.NoError(t, LOG_DB.Create(&Log{Username: "me", Type: LogTypeConsume, ModelName: "claude-sonnet-4", PromptTokens: 10, CompletionTokens: 20, Quota: 100, CreatedAt: now, Other: `{"usage_semantic":"anthropic","cache_tokens":100}`}).Error)
+	// OpenAI 语义日志：缓存读已经含在 prompt_tokens 里，other 的 cache_tokens 不得再补，只算 10+20 喵。
+	require.NoError(t, LOG_DB.Create(&Log{Username: "me", Type: LogTypeConsume, ModelName: "gpt-4o", PromptTokens: 10, CompletionTokens: 20, Quota: 100, CreatedAt: now, Other: `{"cache_tokens":50}`}).Error)
+	// 空 other 的普通日志：解析失败按无缓存处理，只算 5+5 喵。
+	require.NoError(t, LOG_DB.Create(&Log{Username: "me", Type: LogTypeConsume, ModelName: "gpt-4o-mini", PromptTokens: 5, CompletionTokens: 5, Quota: 50, CreatedAt: now}).Error)
+
+	stat, err := SumUsedQuota(LogTypeConsume, 0, 0, "", "me", "", 0, "")
+	require.NoError(t, err)
+	assert.Equal(t, 3, stat.Rpm)
+	// 130 + 30 + 10 = 170 喵。
+	assert.Equal(t, 170, stat.Tpm)
+	// quota 口径不受 TPM 缓存补算影响喵。
+	assert.Equal(t, 250, stat.Quota)
+}
