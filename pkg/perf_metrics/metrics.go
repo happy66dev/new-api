@@ -49,6 +49,12 @@ func RecordRelaySample(info *relaycommon.RelayInfo, success bool, outputTokens i
 	if hasTtft {
 		generationMs = now.Sub(info.FirstResponseTime).Milliseconds()
 	}
+	// 流转伪流：客户端首字节发生在全量回放时，原口径会把生成窗口压缩成毫秒级；
+	// 上游首帧→上游结束帧才是真实生成窗口，仅用它覆盖 TPS 分母，延迟与 TTFT 仍保留客户端感知口径喵。
+	if info.IsStream && !info.PerfUpstreamStreamStartTime.IsZero() && info.PerfUpstreamStreamEndTime.After(info.PerfUpstreamStreamStartTime) {
+		generationMs = info.PerfUpstreamStreamEndTime.Sub(info.PerfUpstreamStreamStartTime).Milliseconds()
+	}
+	// 喵~防御：窗口非正时回退总延迟，避免零时长或负时长污染吞吐计算喵。
 	if generationMs <= 0 {
 		generationMs = latencyMs
 	}

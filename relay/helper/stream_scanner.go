@@ -357,6 +357,10 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 					if !fakeStreamEnabled && !isProbeHeartbeat(data) {
 						addedContentChars = common.StreamProbeContentChars(data)
 					}
+					// 流转伪流：记录上游首个非心跳业务帧到达时刻，供性能采样计算真实生成窗口喵。
+					if fakeStreamEnabled && !isProbeHeartbeat(data) && info.PerfUpstreamStreamStartTime.IsZero() {
+						info.PerfUpstreamStreamStartTime = time.Now()
+					}
 					// 缓存该行并取回累计内容字符数；缓存写与快照读都走加锁方法，避免与主循环竞争喵。
 					bufferedContentChars := probeState.bufferProbeData(data, addedContentChars)
 					// 累计缓存字节数，伪流/探测模式都受上限保护，避免异常上游耗尽服务内存喵。
@@ -379,6 +383,8 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 						// "流已完整"，一次性回放全部缓存（含结束事件本身）后正常收尾（bug A）喵。
 						// 不追加合成 [DONE]：这些客户端不期待 [DONE]，结束事件本身就在缓存里，终止符由上层收尾负责发喵。
 						if isNonDoneStreamEndPayload(data) {
+							// 流转伪流：原生结束事件到达即上游真实流式窗口结束，回放不再延长该窗口喵。
+							info.PerfUpstreamStreamEndTime = time.Now()
 							probePassed.Store(true)
 							ticker.Reset(streamingTimeout)
 							for _, bufferedData := range probeState.drainBuffer() {
@@ -432,6 +438,8 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				if probeState != nil && !probePassed.Load() {
 					// 流转伪流：收到 [DONE] 即流完整，一次性回放全部缓存并结束喵。
 					if fakeStreamEnabled {
+						// 流转伪流：上游发出 [DONE] 即真实流式窗口结束，先记结束时刻再回放喵。
+						info.PerfUpstreamStreamEndTime = time.Now()
 						probePassed.Store(true)
 						ticker.Reset(streamingTimeout)
 						for _, bufferedData := range probeState.drainBuffer() {

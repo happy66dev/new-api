@@ -908,6 +908,10 @@ func TestStreamScannerHandler_FakeStreamLongAnswerNotKilledByProbeBudget(t *test
 	require.NotNil(t, info.StreamStatus)
 	assert.Equal(t, relaycommon.StreamEndReasonDone, info.StreamStatus.EndReason)
 	assert.Contains(t, strings.Join(received, ""), "Hello")
+	// 伪流真实窗口必须覆盖上游 1.5s 静默：首帧早于结束帧，且窗口不小于 1.4s 喵。
+	require.False(t, info.PerfUpstreamStreamStartTime.IsZero(), "伪流必须记录上游首帧时刻")
+	require.True(t, info.PerfUpstreamStreamEndTime.After(info.PerfUpstreamStreamStartTime), "上游结束帧必须晚于首帧")
+	assert.GreaterOrEqual(t, info.PerfUpstreamStreamEndTime.Sub(info.PerfUpstreamStreamStartTime), 1400*time.Millisecond)
 }
 
 // TestStreamScannerHandler_BareDoneLineEndsStream 验证裸 [DONE] 行（无 data: 前缀）被识别为结束而非内容（修 :313/:316 口径）喵。

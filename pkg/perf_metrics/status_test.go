@@ -132,3 +132,53 @@ func TestRecordRelaySampleUsesAttemptStart(t *testing.T) {
 	require.Equal(t, int64(1), status.Groups[0].RequestCount)
 	require.InDelta(t, 0.0, status.Groups[0].Availability, 0.001)
 }
+
+// TestRecordRelaySampleFakeStreamUsesUpstreamWindow 验证流转伪流样本按上游真实窗口计算 TPS 喵。
+// 回归：伪流要等整段回答缓存完才回放，回放首字节距请求结束只有几毫秒，
+// 若仍用「回放首字节→结算」当生成窗口，TPS 会被放大成几千 t/s 喵。
+func TestRecordRelaySampleFakeStreamUsesUpstreamWindow(t *testing.T) {
+	setupStatusTestDB(t)
+	group := "fake-stream-sample-group"
+	modelName := "gpt-fake-stream-sample"
+	// 清掉全局热桶可能残留的同键样本，保证断言只看到本用例写入的数据喵。
+	ClearEntityProbeHotBucket(modelName, group)
+	t.Cleanup(func() {
+		ClearEntityProbeHotBucket(modelName, group)
+	})
+
+	// 客户端视角：请求 10 秒前开始、回放首字节 1 秒前；上游真实窗口为 8 秒前到 2 秒前喵。
+	relayInfo := &relaycommon.RelayInfo{
+		OriginModelName:             modelName,
+		UsingGroup:                  group,
+		IsStream:                    true,
+		StartTime:                   time.Now().Add(-10 * time.Second),
+		FirstResponseTime:           time.Now().Add(-1 * time.Second),
+		PerfUpstreamStreamStartTime: time.Now().Add(-8 * time.Second),
+		PerfUpstreamStreamEndTime:   time.Now().Add(-2 * time.Second),
+	}
+	// 成功样本携带 600 个输出 token，供吞吐计算使用喵。
+	RecordRelaySample(relayInfo, true, 600, nil)
+
+	result, queryError := Query(QueryParams{Model: modelName, Group: group, Hours: 1})
+	require.NoError(t, queryError)
+	require.Len(t, result.Groups, 1)
+	// 600 token ÷ 6 秒真实窗口 = 100 t/s；按旧口径会算成 600 token ÷ 1 秒 = 600 t/s 喵。
+	require.InDelta(t, 100.0, result.Groups[0].AvgTps, 0.5)
+	// 延迟与 TTFT 仍保留客户端感知口径：延迟约 10 秒、TTFT 约 9 秒喵。
+	require.GreaterOrEqual(t, result.Groups[0].AvgLatencyMs, int64(9500))
+	require.GreaterOrEqual(t, result.Groups[0].AvgTtftMs, int64(8500))
+
+	// 清空伪流窗口后必须回退旧口径，普通流式采样不受影响喵。
+	ClearEntityProbeHotBucket(modelName, group)
+	relayInfo.PerfUpstreamStreamStartTime = time.Time{}
+	relayInfo.PerfUpstreamStreamEndTime = time.Time{}
+	// 普通流式的生成窗口为「首字节→结算」，这里设为 2 秒，期望 600 token ÷ 2 秒 = 300 t/s 喵。
+	relayInfo.FirstResponseTime = time.Now().Add(-2 * time.Second)
+	RecordRelaySample(relayInfo, true, 600, nil)
+
+	result, queryError = Query(QueryParams{Model: modelName, Group: group, Hours: 1})
+	require.NoError(t, queryError)
+	require.Len(t, result.Groups, 1)
+	// 普通流式不得被伪流窗口逻辑影响，TPS 应接近 300 t/s 喵。
+	require.InDelta(t, 300.0, result.Groups[0].AvgTps, 2.0)
+}

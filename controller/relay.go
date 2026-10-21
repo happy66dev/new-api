@@ -316,6 +316,10 @@ candidateRelayLoop:
 		if _, isVirtualCandidateRequest := middleware.GetActiveVirtualModelCandidateAttempt(c); isVirtualCandidateRequest {
 			// 把本次 try 的起点写进 relayInfo，成功与失败样本都会以它为计时基准喵。
 			relayInfo.PerfAttemptStartTime = time.Now()
+			// 上一 try 的伪流真实窗口不能带入重试，否则本次样本会复用旧窗口喵。
+			relayInfo.PerfUpstreamStreamStartTime = time.Time{}
+			// 结束时刻同样清零，避免只清起点后与新起点组成跨 try 的假窗口喵。
+			relayInfo.PerfUpstreamStreamEndTime = time.Time{}
 		}
 		retryParam := &service.RetryParam{
 			Ctx:         c,

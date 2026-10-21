@@ -93,8 +93,13 @@ type RelayInfo struct {
 	// 零值表示沿用 StartTime；虚拟模型失败规则 retry 会复用同一个 RelayInfo，
 	// 用它才能让每次 try 的延迟与首字节互不累加喵。
 	PerfAttemptStartTime time.Time
-	FirstResponseTime    time.Time
-	isFirstResponse      bool
+	// PerfUpstreamStreamStartTime 流转伪流模式下的上游首个业务数据帧到达时刻，仅供性能采样计算真实生成窗口喵。
+	// 伪流会等整段回答缓存完才一次性回放，不能用回放首字节当作生成起点喵。
+	PerfUpstreamStreamStartTime time.Time
+	// PerfUpstreamStreamEndTime 流转伪流模式下的上游结束帧（[DONE] 或原生结束事件）到达时刻喵。
+	PerfUpstreamStreamEndTime time.Time
+	FirstResponseTime         time.Time
+	isFirstResponse           bool
 	//SendLastReasoningResponse bool
 	IsStream               bool
 	IsGeminiBatchEmbedding bool
