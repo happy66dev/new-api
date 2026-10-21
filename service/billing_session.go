@@ -120,9 +120,17 @@ func (s *BillingSession) Settle(actualQuota int) error {
 				s.relayInfo.UserId, s.relayInfo.TokenId, delta, tokenErr.Error()))
 		}
 	}
-	// 3) 更新 relayInfo 上的订阅 PostDelta（用于日志）
+	// 3) 更新 relayInfo 上的订阅 PostDelta（用于日志）；只统计订阅实际承担的增量喵。
 	if s.funding.Source() == BillingSourceSubscription {
-		s.relayInfo.SubscriptionPostDelta += int64(delta)
+		// 默认按完整增量统计，兼容其它订阅资金来源实现喵。
+		subscriptionDelta := delta
+		// 当前订阅资金来源能提供分摊明细时，改用实际记入订阅的额度喵。
+		if subscriptionFunding, ok := s.funding.(*SubscriptionFunding); ok {
+			// 钱包兜底的部分不计入订阅剩余额度喵。
+			subscriptionDelta = subscriptionFunding.subscriptionDeltaApplied
+		}
+		// 把订阅实际承担的部分累加到日志字段喵。
+		s.relayInfo.SubscriptionPostDelta += int64(subscriptionDelta)
 	}
 	s.state = billingAttemptStateSettled
 	return tokenErr
@@ -153,13 +161,21 @@ func (s *BillingSession) refundLocked() error {
 		}
 		s.fundingRefunded = true
 	}
-	// 第二步：回滚发送前补充预扣的订阅额度；该额度不在 funding.Refund 覆盖范围内喵。
+	// 第二步：回滚发送前补充预扣的额度；订阅与钱包两部分按各自分摊原路退回喵。
 	if !s.extraRefunded {
-		if s.extraReserved > 0 && s.funding.Source() == BillingSourceSubscription && s.relayInfo.SubscriptionId > 0 {
+		// 订阅资金来源能提供分摊明细时交给它分别处理订阅和钱包退款喵。
+		if subscriptionFunding, ok := s.funding.(*SubscriptionFunding); ok && s.extraReserved > 0 {
+			// 任一部分失败都保留待重试状态，已完成部分由内部标记跳过喵。
+			if refundError := subscriptionFunding.refundExtraReserved(); refundError != nil {
+				return refundError
+			}
+		} else if s.extraReserved > 0 && s.funding.Source() == BillingSourceSubscription && s.relayInfo.SubscriptionId > 0 {
+			// 兼容其它订阅资金来源实现：没有分摊明细时仍按原逻辑退回订阅喵。
 			if refundError := model.PostConsumeUserSubscriptionDelta(s.relayInfo.SubscriptionId, -int64(s.extraReserved)); refundError != nil {
 				return refundError
 			}
 		}
+		// 标记补充预扣已全部处理，后续重试不再进入该步骤喵。
 		s.extraRefunded = true
 	}
 	// 第三步：退还令牌维度的预扣额度；Playground 请求不扣令牌额度所以直接跳过喵。
@@ -367,15 +383,37 @@ func (s *BillingSession) reserveFunding(delta int) error {
 		}
 		return nil
 	case *SubscriptionFunding:
-		if err := model.PostConsumeUserSubscriptionDelta(funding.subscriptionId, int64(delta)); err != nil {
+		// 清理上一次补预扣的分摊记录，保证令牌回滚只针对当前增量喵。
+		funding.lastReserveSubscriptionDelta = 0
+		funding.lastReserveWalletDelta = 0
+		// 先尝试把补预扣全部记入原订阅喵。
+		if funding.subscriptionId > 0 {
+			// 订阅成功承担全部增量时直接返回喵。
+			if err := model.PostConsumeUserSubscriptionDelta(funding.subscriptionId, int64(delta)); err == nil {
+				// 记录本次订阅承担额度，供令牌预扣失败时回滚喵。
+				funding.lastReserveSubscriptionDelta = delta
+				// 累加 Reserve 阶段订阅承担总额，供退款按分摊回滚喵。
+				funding.extraSubscriptionReserved += delta
+				return nil
+			} else {
+				// 记录订阅补预扣失败原因，便于管理员核对钱包兜底喵。
+				common.SysLog(fmt.Sprintf("subscription reserve fallback to wallet: subscriptionId=%d, userId=%d, delta=%d, reason=%s", funding.subscriptionId, funding.userId, delta, err.Error()))
+			}
+		}
+		// 订阅无法承担时改用钱包兜底，允许钱包余额为负数喵。
+		if err := model.DecreaseUserQuota(funding.userId, delta, false); err != nil {
 			return types.NewErrorWithStatusCode(
-				fmt.Errorf("订阅额度不足或未配置订阅: %s", err.Error()),
+				fmt.Errorf("订阅与钱包额度均无法完成补预扣: %s", err.Error()),
 				types.ErrorCodeInsufficientUserQuota,
 				http.StatusForbidden,
 				types.ErrOptionWithSkipRetry(),
 				types.ErrOptionWithNoRecordErrorLog(),
 			)
 		}
+		// 记录本次钱包承担额度，供令牌预扣失败时回滚喵。
+		funding.lastReserveWalletDelta = delta
+		// 累加 Reserve 阶段钱包承担总额，供退款按分摊回滚喵。
+		funding.extraWalletReserved += delta
 		return nil
 	default:
 		return types.NewError(fmt.Errorf("unsupported funding source: %s", s.funding.Source()), types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
@@ -387,9 +425,29 @@ func (s *BillingSession) rollbackFundingReserve(delta int) {
 	case *WalletFunding:
 		funding.RollbackAdditionalReserve()
 	case *SubscriptionFunding:
-		if err := model.PostConsumeUserSubscriptionDelta(funding.subscriptionId, -int64(delta)); err != nil {
-			common.SysLog("error rolling back subscription funding reserve: " + err.Error())
+		// 先回滚订阅承担的部分，负增量原路退回订阅喵。
+		if funding.lastReserveSubscriptionDelta > 0 {
+			// 把本次补预扣中订阅承担的额度原路退回喵。
+			if err := model.PostConsumeUserSubscriptionDelta(funding.subscriptionId, -int64(funding.lastReserveSubscriptionDelta)); err != nil {
+				common.SysLog("error rolling back subscription funding reserve: " + err.Error())
+			} else {
+				// 回滚成功后同步扣减累计分摊，避免后续退款重复退回喵。
+				funding.extraSubscriptionReserved -= funding.lastReserveSubscriptionDelta
+			}
 		}
+		// 再回滚钱包承担的部分，把钱加回用户余额喵。
+		if funding.lastReserveWalletDelta > 0 {
+			// 把本次补预扣中钱包兜底的额度加回用户余额喵。
+			if err := model.IncreaseUserQuota(funding.userId, funding.lastReserveWalletDelta, false); err != nil {
+				common.SysLog("error rolling back wallet funding reserve: " + err.Error())
+			} else {
+				// 回滚成功后同步扣减累计分摊，避免后续退款重复退回喵。
+				funding.extraWalletReserved -= funding.lastReserveWalletDelta
+			}
+		}
+		// 清理本次分摊记录，防止后续回滚误用旧值喵。
+		funding.lastReserveSubscriptionDelta = 0
+		funding.lastReserveWalletDelta = 0
 	}
 }
 
@@ -447,10 +505,12 @@ func (s *BillingSession) syncRelayInfo() {
 
 	if sub, ok := s.funding.(*SubscriptionFunding); ok {
 		info.SubscriptionId = sub.subscriptionId
-		info.SubscriptionPreConsumed = sub.preConsumed + int64(s.extraReserved)
+		// 补充预扣中只有订阅承担的部分会占用订阅额度，钱包兜底部分不能算进去喵。
+		info.SubscriptionPreConsumed = sub.preConsumed + int64(sub.extraSubscriptionReserved)
 		info.SubscriptionPostDelta = 0
 		info.SubscriptionAmountTotal = sub.AmountTotal
-		info.SubscriptionAmountUsedAfterPreConsume = sub.AmountUsedAfter + int64(s.extraReserved)
+		// 订阅已用额度同样只累加订阅承担的部分，避免日志显示超额喵。
+		info.SubscriptionAmountUsedAfterPreConsume = sub.AmountUsedAfter + int64(sub.extraSubscriptionReserved)
 		info.SubscriptionPlanId = sub.PlanId
 		info.SubscriptionPlanTitle = sub.PlanTitle
 	} else {

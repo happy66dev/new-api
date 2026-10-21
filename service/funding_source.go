@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -233,6 +234,20 @@ type SubscriptionFunding struct {
 	AmountUsedAfter int64
 	PlanId          int
 	PlanTitle       string
+	// subscriptionDeltaApplied 记录本次结算中真正记入订阅的增量，正数补扣、负数退款，单位：额度喵。
+	subscriptionDeltaApplied int
+	// extraSubscriptionReserved 记录 Reserve 补预扣中由订阅承担的额度，单位：额度喵。
+	extraSubscriptionReserved int
+	// extraWalletReserved 记录 Reserve 补预扣中由钱包兜底的额度，允许钱包余额为负数，单位：额度喵。
+	extraWalletReserved int
+	// lastReserveSubscriptionDelta 记录最近一次 Reserve 中订阅实际承担的增量，供令牌回滚使用，单位：额度喵。
+	lastReserveSubscriptionDelta int
+	// lastReserveWalletDelta 记录最近一次 Reserve 中钱包实际承担的增量，供令牌回滚使用，单位：额度喵。
+	lastReserveWalletDelta int
+	// extraSubscriptionRefunded 标记 Reserve 的订阅部分是否已成功退回，防止重试时重复退款喵。
+	extraSubscriptionRefunded bool
+	// extraWalletRefunded 标记 Reserve 的钱包部分是否已成功退回，防止重试时重复退款喵。
+	extraWalletRefunded bool
 }
 
 func (s *SubscriptionFunding) Source() string { return BillingSourceSubscription }
@@ -256,10 +271,69 @@ func (s *SubscriptionFunding) PreConsume(_ int) error {
 }
 
 func (s *SubscriptionFunding) Settle(delta int) error {
+	// 零增量无需改动任何资金来源，直接视为成功喵。
 	if delta == 0 {
 		return nil
 	}
-	return model.PostConsumeUserSubscriptionDelta(s.subscriptionId, int64(delta))
+	// 负数增量表示退还多扣的额度，必须回到当初预扣的订阅，不能改退钱包喵。
+	if delta < 0 {
+		// 喵~防御：订阅编号缺失时无法定位退款目标，直接报错避免额度丢失喵。
+		if s.subscriptionId <= 0 {
+			return errors.New("subscription id is missing")
+		}
+		// 把负数增量记回原订阅，并记录实际记入订阅的增量供日志使用喵。
+		if err := model.PostConsumeUserSubscriptionDelta(s.subscriptionId, int64(delta)); err != nil {
+			return err
+		}
+		s.subscriptionDeltaApplied = delta
+		return nil
+	}
+	// 正数增量优先记入原订阅；订阅总额或窗口额度不足时才用钱包兜底喵。
+	if s.subscriptionId > 0 {
+		// 尝试把补扣全部记入订阅喵。
+		if err := model.PostConsumeUserSubscriptionDelta(s.subscriptionId, int64(delta)); err == nil {
+			s.subscriptionDeltaApplied = delta
+			return nil
+		} else {
+			// 记录订阅补扣失败原因，便于管理员核对为何改扣钱包喵。
+			common.SysLog(fmt.Sprintf("subscription settle fallback to wallet: subscriptionId=%d, userId=%d, delta=%d, reason=%s", s.subscriptionId, s.userId, delta, err.Error()))
+		}
+	}
+	// 钱包兜底允许余额为负数，保证实际消耗不会被漏扣喵。
+	if err := model.DecreaseUserQuota(s.userId, delta, false); err != nil {
+		return err
+	}
+	// 本次正增量没有记入订阅，因此订阅侧增量为零喵。
+	s.subscriptionDeltaApplied = 0
+	return nil
+}
+
+// refundExtraReserved 退还 Reserve 阶段分摊到订阅与钱包的两部分额度喵。
+// 两部分分别打标记，任一步失败后重试只补做未完成的部分，避免重复退款喵。
+func (s *SubscriptionFunding) refundExtraReserved() error {
+	// 订阅部分尚未退还且确有额度时才执行，负增量写回订阅是幂等保护外的普通增量操作喵。
+	if !s.extraSubscriptionRefunded && s.extraSubscriptionReserved > 0 {
+		// 喵~防御：订阅编号缺失时无法退款，必须报错让上层保留待重试状态喵。
+		if s.subscriptionId <= 0 {
+			return errors.New("subscription id is missing")
+		}
+		// 把 Reserve 时记入订阅的额度原路退回喵。
+		if err := model.PostConsumeUserSubscriptionDelta(s.subscriptionId, -int64(s.extraSubscriptionReserved)); err != nil {
+			return err
+		}
+		// 标记订阅部分已完成，后续重试不再重复退回喵。
+		s.extraSubscriptionRefunded = true
+	}
+	// 钱包部分尚未退还且确有额度时才执行，钱包加额是非幂等操作喵。
+	if !s.extraWalletRefunded && s.extraWalletReserved > 0 {
+		// 把 Reserve 时从钱包兜底扣掉的额度退回用户余额喵。
+		if err := model.IncreaseUserQuota(s.userId, s.extraWalletReserved, false); err != nil {
+			return err
+		}
+		// 标记钱包部分已完成，后续重试不再重复退回喵。
+		s.extraWalletRefunded = true
+	}
+	return nil
 }
 
 func (s *SubscriptionFunding) Refund() error {

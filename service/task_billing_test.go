@@ -1748,3 +1748,32 @@ func TestSettle_TokenRecalcFallsBackToCompletionTokens(t *testing.T) {
 		})
 	}
 }
+
+// TestTaskAdjustFundingFallsBackToNegativeWallet 验证异步任务订阅补扣失败时改扣钱包且允许负数喵。
+func TestTaskAdjustFundingFallsBackToNegativeWallet(t *testing.T) {
+	// 清理用例之间的数据污染喵。
+	truncate(t)
+	// 用户初始余额为 0，便于观察钱包被扣成负数喵。
+	const userID, subscriptionID = 502, 5002
+	seedUser(t, userID, 0)
+	// 订阅总额与已用额度都为 5，已经没有剩余额度喵。
+	seedSubscription(t, subscriptionID, userID, 5, 5)
+	// 构造订阅计费任务喵。
+	task := makeTask(userID, 0, 5, 0, BillingSourceSubscription, subscriptionID)
+	// 正数补扣 7 无法记入订阅，预期由钱包兜底喵。
+	require.NoError(t, taskAdjustFunding(task, 7))
+	// 钱包余额应被扣成 -7喵。
+	var reloadedUser model.User
+	require.NoError(t, model.DB.Select("quota").First(&reloadedUser, userID).Error)
+	require.Equal(t, -7, reloadedUser.Quota)
+	// 订阅已用额度保持 5，不应被钱包兜底部分污染喵。
+	var reloadedSubscription model.UserSubscription
+	require.NoError(t, model.DB.Select("amount_used").First(&reloadedSubscription, subscriptionID).Error)
+	require.EqualValues(t, 5, reloadedSubscription.AmountUsed)
+	// 负数增量是退款，必须回到原订阅而不是钱包喵。
+	require.NoError(t, taskAdjustFunding(task, -3))
+	require.NoError(t, model.DB.Select("amount_used").First(&reloadedSubscription, subscriptionID).Error)
+	require.EqualValues(t, 2, reloadedSubscription.AmountUsed)
+	require.NoError(t, model.DB.Select("quota").First(&reloadedUser, userID).Error)
+	require.Equal(t, -7, reloadedUser.Quota)
+}

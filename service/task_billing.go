@@ -106,9 +106,24 @@ func taskIsSubscription(task *model.Task) bool {
 
 // taskAdjustFunding 调整任务的资金来源（钱包或订阅），delta > 0 表示扣费，delta < 0 表示退还。
 func taskAdjustFunding(task *model.Task, delta int) error {
+	// 订阅任务优先把增量记回创建时选中的订阅喵。
 	if taskIsSubscription(task) {
-		return model.PostConsumeUserSubscriptionDelta(task.PrivateData.SubscriptionId, int64(delta))
+		// 尝试在订阅上完成本次资金调整喵。
+		err := model.PostConsumeUserSubscriptionDelta(task.PrivateData.SubscriptionId, int64(delta))
+		// 订阅调整成功时直接返回喵。
+		if err == nil {
+			return nil
+		}
+		// 负数增量是退款，必须回到原订阅，不能改退钱包喵。
+		if delta <= 0 {
+			return err
+		}
+		// 正数补扣在订阅额度不足时改用钱包兜底，允许余额为负数喵。
+		common.SysLog(fmt.Sprintf("task subscription funding fallback to wallet: task=%s, subscriptionId=%d, userId=%d, delta=%d, reason=%s", task.TaskID, task.PrivateData.SubscriptionId, task.UserId, delta, err.Error()))
+		// 从用户钱包扣除补扣差额，余额不足时允许扣成负数喵。
+		return model.DecreaseUserQuota(task.UserId, delta, false)
 	}
+	// 钱包任务直接按方向增减用户余额喵。
 	if delta > 0 {
 		return model.DecreaseUserQuota(task.UserId, delta, false)
 	}

@@ -505,15 +505,30 @@ func postConsumeQuotaWithResult(relayInfo *relaycommon.RelayInfo, quota int, pre
 
 	// 1) Consume from wallet quota OR subscription item
 	if relayInfo != nil && relayInfo.BillingSource == BillingSourceSubscription {
+		// 喵~防御：订阅计费缺少订阅编号时无法定位扣费目标，直接报错喵。
 		if relayInfo.SubscriptionId == 0 {
 			return result, errors.New("subscription id is missing")
 		}
+		// 把本次增量转换为订阅接口使用的 int64 类型喵。
 		delta := int64(quota)
+		// 零增量无需改动任何资金来源喵。
 		if delta != 0 {
+			// 尝试把增量记回原订阅喵。
 			if err := model.PostConsumeUserSubscriptionDelta(relayInfo.SubscriptionId, delta); err != nil {
-				return result, err
+				// 负数增量是退款，必须回到原订阅，不能改退钱包喵。
+				if delta < 0 {
+					return result, err
+				}
+				// 记录订阅扣费失败原因，便于管理员核对钱包兜底喵。
+				common.SysLog(fmt.Sprintf("subscription post-consume fallback to wallet: subscriptionId=%d, userId=%d, delta=%d, reason=%s", relayInfo.SubscriptionId, relayInfo.UserId, delta, err.Error()))
+				// 正数补扣在订阅额度不足时改用钱包兜底，允许余额为负数喵。
+				if walletErr := model.DecreaseUserQuota(relayInfo.UserId, quota, false); walletErr != nil {
+					return result, walletErr
+				}
+			} else {
+				// 订阅实际承担了增量时，把增量记入日志用的订阅差额字段喵。
+				relayInfo.SubscriptionPostDelta += delta
 			}
-			relayInfo.SubscriptionPostDelta += delta
 		}
 	} else {
 		// Wallet

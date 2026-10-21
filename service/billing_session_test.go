@@ -266,3 +266,160 @@ func TestBillingSessionAsyncRefundRunsOnlyOnce(t *testing.T) {
 	session.Refund(ctx)
 	require.Equal(t, 1, funding.refundCalls)
 }
+
+// seedWalletFallbackSubscription 创建一个总额受限的订阅，供钱包兜底用例使用喵。
+func seedWalletFallbackSubscription(t *testing.T, userId int, total int64) *model.UserSubscription {
+	t.Helper()
+	// 套餐只需要总额字段，其它默认值由模型归一化逻辑补齐喵。
+	plan := &model.SubscriptionPlan{
+		Title:         "wallet-fallback",
+		DurationUnit:  model.SubscriptionDurationMonth,
+		DurationValue: 1,
+		TotalAmount:   total,
+	}
+	// 写入套餐后才能被订阅引用喵。
+	require.NoError(t, model.DB.Create(plan).Error)
+	// 失效套餐缓存，保证预扣读到刚创建的套餐喵。
+	model.InvalidateSubscriptionPlanCache(plan.Id)
+	// 订阅有效期覆盖当前时间，确保被预扣查询选中喵。
+	subscription := &model.UserSubscription{
+		UserId:      userId,
+		PlanId:      plan.Id,
+		AmountTotal: total,
+		Status:      "active",
+		StartTime:   time.Now().Add(-time.Hour).Unix(),
+		EndTime:     time.Now().Add(time.Hour).Unix(),
+	}
+	// 落库后返回给用例继续断言喵。
+	require.NoError(t, model.DB.Create(subscription).Error)
+	return subscription
+}
+
+// TestSubscriptionSettleFallsBackToNegativeWallet 验证结算差额超出订阅额度时改扣钱包且允许负数喵。
+func TestSubscriptionSettleFallsBackToNegativeWallet(t *testing.T) {
+	// 清理用例之间的数据污染喵。
+	truncate(t)
+	gin.SetMode(gin.TestMode)
+	// 用户初始余额为 0，便于观察钱包被扣成负数喵。
+	user := &model.User{Username: "settle-wallet-fallback", Password: "password", Status: common.UserStatusEnabled, Group: "default", Quota: 0}
+	require.NoError(t, model.DB.Create(user).Error)
+	// 订阅总额 10，只够初始预扣喵。
+	subscription := seedWalletFallbackSubscription(t, user.Id, 10)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	// 构造订阅优先的请求信息喵。
+	info := &relaycommon.RelayInfo{
+		RequestId:       "settle-wallet-fallback-request",
+		UserId:          user.Id,
+		UserGroup:       "default",
+		UsingGroup:      "default",
+		OriginModelName: "test-model",
+		IsPlayground:    true,
+		UserSetting:     dto.UserSetting{BillingPreference: "subscription_first"},
+	}
+	// 预扣 10，订阅刚好用尽喵。
+	session, apiErr := NewBillingSession(ctx, info, 10)
+	require.Nil(t, apiErr)
+	require.NotNil(t, session)
+	require.Equal(t, subscription.Id, info.SubscriptionId)
+	// 实际消耗 20，差额 10 由钱包兜底喵。
+	require.NoError(t, session.Settle(20))
+	// 钱包余额应被扣成 -10喵。
+	var reloadedUser model.User
+	require.NoError(t, model.DB.Select("quota").First(&reloadedUser, user.Id).Error)
+	require.Equal(t, -10, reloadedUser.Quota)
+	// 订阅只承担了初始预扣的 10，不应再增加喵。
+	var reloadedSubscription model.UserSubscription
+	require.NoError(t, model.DB.Select("amount_used").First(&reloadedSubscription, subscription.Id).Error)
+	require.EqualValues(t, 10, reloadedSubscription.AmountUsed)
+	// 钱包兜底部分不计入订阅差额日志喵。
+	require.Zero(t, info.SubscriptionPostDelta)
+	// 结算完成后会话必须进入终态喵。
+	require.Equal(t, billingAttemptStateSettled, session.state)
+}
+
+// TestSubscriptionReserveFallsBackToNegativeWalletAndRefundsSplit 验证补预扣分摊到钱包后可原路退回喵。
+func TestSubscriptionReserveFallsBackToNegativeWalletAndRefundsSplit(t *testing.T) {
+	// 清理用例之间的数据污染喵。
+	truncate(t)
+	gin.SetMode(gin.TestMode)
+	// 用户初始余额为 0，便于观察钱包被扣成负数喵。
+	user := &model.User{Username: "reserve-wallet-fallback", Password: "password", Status: common.UserStatusEnabled, Group: "default", Quota: 0}
+	require.NoError(t, model.DB.Create(user).Error)
+	// 订阅总额 20，先由订阅承担一部分，再由钱包兜底剩余部分喵。
+	subscription := seedWalletFallbackSubscription(t, user.Id, 20)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	// 构造订阅优先的请求信息喵。
+	info := &relaycommon.RelayInfo{
+		RequestId:       "reserve-wallet-fallback-request",
+		UserId:          user.Id,
+		UserGroup:       "default",
+		UsingGroup:      "default",
+		OriginModelName: "test-model",
+		IsPlayground:    true,
+		UserSetting:     dto.UserSetting{BillingPreference: "subscription_first"},
+	}
+	// 初始预扣 5，订阅剩余 15喵。
+	session, apiErr := NewBillingSession(ctx, info, 5)
+	require.Nil(t, apiErr)
+	require.NotNil(t, session)
+	// 第一次补预扣 5，全部由订阅承担喵。
+	require.NoError(t, session.Reserve(10))
+	// 第二次补预扣 15，订阅只剩 10，预期由钱包兜底 15喵。
+	require.NoError(t, session.Reserve(25))
+	// 钱包余额应被扣成 -15喵。
+	var reloadedUser model.User
+	require.NoError(t, model.DB.Select("quota").First(&reloadedUser, user.Id).Error)
+	require.Equal(t, -15, reloadedUser.Quota)
+	// 订阅承担初始 5 加补预扣 5，共 10喵。
+	var reloadedSubscription model.UserSubscription
+	require.NoError(t, model.DB.Select("amount_used").First(&reloadedSubscription, subscription.Id).Error)
+	require.EqualValues(t, 10, reloadedSubscription.AmountUsed)
+	// 取到订阅资金来源，直接验证分摊退款逻辑喵。
+	funding, ok := session.funding.(*SubscriptionFunding)
+	require.True(t, ok)
+	require.Equal(t, 5, funding.extraSubscriptionReserved)
+	require.Equal(t, 15, funding.extraWalletReserved)
+	// 退款后钱包恢复为 0，订阅只保留初始预扣的 5喵。
+	require.NoError(t, funding.refundExtraReserved())
+	require.NoError(t, model.DB.Select("quota").First(&reloadedUser, user.Id).Error)
+	require.Zero(t, reloadedUser.Quota)
+	require.NoError(t, model.DB.Select("amount_used").First(&reloadedSubscription, subscription.Id).Error)
+	require.EqualValues(t, 5, reloadedSubscription.AmountUsed)
+	// 重复退款必须被分摊标记挡住，钱包不能再次加额喵。
+	require.NoError(t, funding.refundExtraReserved())
+	require.NoError(t, model.DB.Select("quota").First(&reloadedUser, user.Id).Error)
+	require.Zero(t, reloadedUser.Quota)
+}
+
+// TestPostConsumeQuotaLegacySubscriptionFallsBackToNegativeWallet 验证旧结算路径订阅补扣失败时改扣钱包喵。
+func TestPostConsumeQuotaLegacySubscriptionFallsBackToNegativeWallet(t *testing.T) {
+	// 清理用例之间的数据污染喵。
+	truncate(t)
+	// 用户初始余额为 0，便于观察钱包被扣成负数喵。
+	user := &model.User{Username: "legacy-settle-wallet-fallback", Password: "password", Status: common.UserStatusEnabled, Group: "default", Quota: 0}
+	require.NoError(t, model.DB.Create(user).Error)
+	// 订阅总额 5 且已用尽，后续补扣必须由钱包兜底喵。
+	subscription := seedWalletFallbackSubscription(t, user.Id, 5)
+	require.NoError(t, model.DB.Model(&model.UserSubscription{}).Where("id = ?", subscription.Id).Update("amount_used", 5).Error)
+	// 构造旧结算路径需要的请求信息喵。
+	info := &relaycommon.RelayInfo{
+		UserId:         user.Id,
+		BillingSource:  BillingSourceSubscription,
+		SubscriptionId: subscription.Id,
+		IsPlayground:   true,
+	}
+	// 直接调用旧结算函数，补扣 8 预期由钱包承担喵。
+	result, err := postConsumeQuotaWithResult(info, 8, 0, false)
+	require.NoError(t, err)
+	require.True(t, result.FundingApplied)
+	// 钱包余额应被扣成 -8喵。
+	var reloadedUser model.User
+	require.NoError(t, model.DB.Select("quota").First(&reloadedUser, user.Id).Error)
+	require.Equal(t, -8, reloadedUser.Quota)
+	// 订阅已用额度保持 5，不应被钱包兜底部分污染喵。
+	var reloadedSubscription model.UserSubscription
+	require.NoError(t, model.DB.Select("amount_used").First(&reloadedSubscription, subscription.Id).Error)
+	require.EqualValues(t, 5, reloadedSubscription.AmountUsed)
+	// 钱包兜底部分不计入订阅差额日志喵。
+	require.Zero(t, info.SubscriptionPostDelta)
+}
