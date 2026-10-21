@@ -36,6 +36,8 @@ const i18nKeys = {
   'Custom cost': 'Custom cost',
   'Billed despite being skipped': 'Billed despite being skipped',
   Tokens: 'Tokens',
+  'Cache Read': 'Cache Read',
+  'Cache Write': 'Cache Write',
   'Copy to clipboard': 'Copy to clipboard',
 }
 
@@ -153,6 +155,33 @@ describe('virtual model candidate billing display', () => {
     expect(text).toContain(normalizedText('Billed despite being skipped'))
     // custom 候选的 cents 计费要换算成 5 位小数元展示（250000 cents = 2.5 元）喵。
     expect(text).toContain(normalizedText('Custom cost: ¥2.50000'))
+  })
+
+  test('候选缓存读写 token 在详情中按候选展示', () => {
+    queryClients.push(
+      renderDetails({
+        virtual_model: 'virtual/混合链',
+        final_success: true,
+        candidates: [
+          {
+            seq: 1,
+            source: 'custom',
+            label: 'my-upstream',
+            success: true,
+            status_code: 200,
+            prompt_tokens: 200,
+            completion_tokens: 40,
+            cached_tokens: 60,
+            cache_creation_tokens: 15,
+          },
+        ],
+      })
+    )
+
+    const text = normalizedText(document.body.textContent)
+    // 缓存读写在候选明细中显示，避免只看得到输入/输出而漏掉缓存用量喵。
+    expect(text).toContain(normalizedText('Cache Read: 60'))
+    expect(text).toContain(normalizedText('Cache Write: 15'))
   })
 
   test('没有计费字段的候选不渲染计费行，避免出现空标签', () => {

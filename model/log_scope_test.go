@@ -88,12 +88,14 @@ func TestSumUsedQuotaTpmIncludesAnthropicCacheRead(t *testing.T) {
 	require.NoError(t, LOG_DB.Create(&Log{Username: "me", Type: LogTypeConsume, ModelName: "gpt-4o", PromptTokens: 10, CompletionTokens: 20, Quota: 100, CreatedAt: now, Other: `{"cache_tokens":50}`}).Error)
 	// 空 other 的普通日志：解析失败按无缓存处理，只算 5+5 喵。
 	require.NoError(t, LOG_DB.Create(&Log{Username: "me", Type: LogTypeConsume, ModelName: "gpt-4o-mini", PromptTokens: 5, CompletionTokens: 5, Quota: 50, CreatedAt: now}).Error)
+	// anthropic 语义的另一种缓存命中拼写 cached_tokens 也必须补进 TPM，只算 10+20+40 喵。
+	require.NoError(t, LOG_DB.Create(&Log{Username: "me", Type: LogTypeConsume, ModelName: "claude-haiku-4", PromptTokens: 10, CompletionTokens: 20, Quota: 100, CreatedAt: now, Other: `{"usage_semantic":"anthropic","cached_tokens":40}`}).Error)
 
 	stat, err := SumUsedQuota(LogTypeConsume, 0, 0, "", "me", "", 0, "")
 	require.NoError(t, err)
-	assert.Equal(t, 3, stat.Rpm)
-	// 130 + 30 + 10 = 170 喵。
-	assert.Equal(t, 170, stat.Tpm)
+	assert.Equal(t, 4, stat.Rpm)
+	// 130 + 30 + 10 + 70 = 240 喵。
+	assert.Equal(t, 240, stat.Tpm)
 	// quota 口径不受 TPM 缓存补算影响喵。
-	assert.Equal(t, 250, stat.Quota)
+	assert.Equal(t, 350, stat.Quota)
 }

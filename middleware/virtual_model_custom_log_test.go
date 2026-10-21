@@ -102,8 +102,15 @@ func TestRecordVirtualModelCustomSuccessLog(t *testing.T) {
 		Seq: 1, CandidateID: 71, Source: "custom", Label: "custom-a", Success: true, StatusCode: http.StatusOK, ElapsedMs: 60, TtftMs: 30,
 	})
 
-	// 纯直填 custom 成功：携带上游解析出的 token 计数与请求级首字耗时写日志喵。
-	usage := &dto.Usage{PromptTokens: 120, CompletionTokens: 30}
+	// 纯直填 custom 成功：携带上游解析出的 token 计数、缓存读写与请求级首字耗时写日志喵。
+	usage := &dto.Usage{
+		PromptTokens:     120,
+		CompletionTokens: 30,
+		PromptTokensDetails: dto.InputTokenDetails{
+			CachedTokens:         40,
+			CachedCreationTokens: 10,
+		},
+	}
 	recordVirtualModelCustomSuccess(ctx, 1, usage, 40)
 
 	var logRecord model.Log
@@ -120,6 +127,9 @@ func TestRecordVirtualModelCustomSuccessLog(t *testing.T) {
 	var parsedOther map[string]interface{}
 	require.NoError(t, common.UnmarshalJsonStr(logRecord.Other, &parsedOther))
 	require.Equal(t, true, parsedOther["final_success"])
+	// 缓存读写必须写入 other.cached_tokens / other.cache_creation_tokens，usage-logs 才显示缓存喵。
+	require.Equal(t, float64(40), parsedOther["cached_tokens"])
+	require.Equal(t, float64(10), parsedOther["cache_creation_tokens"])
 	injectedCandidates, hasCandidates := parsedOther["candidates"].([]interface{})
 	require.True(t, hasCandidates, "纯直填 custom 成功日志应携带候选尝试序列")
 	require.Len(t, injectedCandidates, 1)
@@ -129,4 +139,29 @@ func TestRecordVirtualModelCustomSuccessLog(t *testing.T) {
 
 	// 尝试序列与日志行一一对应，确认未重复追加喵。
 	require.Len(t, *attempts, 1)
+}
+
+// TestAttachVirtualModelCandidateCustomBillingCopiesCacheTokens 验证引用上游模型的 custom 候选
+// 结算时把缓存读写回填到候选尝试，供详情逐候选展示缓存用量喵。
+func TestAttachVirtualModelCandidateCustomBillingCopiesCacheTokens(t *testing.T) {
+	executionState, _ := newCustomLogTestState()
+	ctx, attempts, _ := newUpstreamFailureTestContext(executionState)
+	// 先追加一条尚未写入计费的 custom 成功尝试喵。
+	appendVirtualModelCandidateAttempt(ctx, model.VirtualModelCandidateAttemptRecord{
+		Seq: 1, CandidateID: 71, Source: "custom", Label: "custom-a", Success: true, StatusCode: http.StatusOK,
+	})
+	// 结算把费用与缓存读写一起回填到该尝试喵。
+	attachVirtualModelCandidateCustomBilling(ctx, 71, 123, &dto.Usage{
+		PromptTokens:     100,
+		CompletionTokens: 50,
+		PromptTokensDetails: dto.InputTokenDetails{
+			CachedTokens:         60,
+			CachedCreationTokens: 5,
+		},
+	})
+
+	require.Len(t, *attempts, 1)
+	require.Equal(t, int64(123), (*attempts)[0].CustomCostCents)
+	require.Equal(t, 60, (*attempts)[0].CachedTokens)
+	require.Equal(t, 5, (*attempts)[0].CacheCreationTokens)
 }

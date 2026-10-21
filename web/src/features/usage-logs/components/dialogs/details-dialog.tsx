@@ -1461,6 +1461,17 @@ export function DetailsDialog(props: DetailsDialogProps) {
                         {formatTokens(candidate.completion_tokens ?? 0)}
                       </p>
                     )}
+                    {/* 缓存读写仅在候选确实带缓存数时展示，避免无缓存候选多出空行喵 */}
+                    {((candidate.cached_tokens ?? 0) > 0 ||
+                      (candidate.cache_creation_tokens ?? 0) > 0) && (
+                      <p className='text-muted-foreground'>
+                        {/* 缓存命中读与缓存写入分开标注，与 Tokens 列口径一致喵 */}
+                        {t('Cache Read')}:{' '}
+                        {formatTokens(candidate.cached_tokens ?? 0)} ·{' '}
+                        {t('Cache Write')}:{' '}
+                        {formatTokens(candidate.cache_creation_tokens ?? 0)}
+                      </p>
+                    )}
                   </div>
                 </div>
               ))}

@@ -636,9 +636,12 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		// 候选级毫秒耗时与首字耗时供虚拟模型 internal 候选尝试序列展示该候选自己的耗时喵。
 		UseTimeMs:   candidateUseTimeMs,
 		FirstByteMs: firstByteMs,
-		IsStream:    relayInfo.IsStream,
-		Group:       relayInfo.UsingGroup,
-		Other:       other,
+		// 缓存读写供虚拟模型 internal 候选尝试序列展示缓存命中与写入喵。
+		CacheTokens:         summary.CacheTokens,
+		CacheCreationTokens: summary.CacheCreationTokens,
+		IsStream:            relayInfo.IsStream,
+		Group:               relayInfo.UsingGroup,
+		Other:               other,
 	})
 	gopool.Go(func() {
 		perfmetrics.RecordRelaySample(relayInfo, true, int64(summary.CompletionTokens), billingUsage)

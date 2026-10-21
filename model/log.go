@@ -377,9 +377,13 @@ type RecordConsumeLogParams struct {
 	// UseTimeMs 请求级总耗时的毫秒精确值，仅虚拟模型 internal 候选注入候选尝试序列使用，普通请求为零喵。
 	UseTimeMs int64 `json:"-"`
 	// FirstByteMs 请求级首字耗时（毫秒），仅虚拟模型 internal 候选注入候选尝试序列使用，普通请求为零喵。
-	FirstByteMs int64  `json:"-"`
-	IsStream    bool   `json:"is_stream"`
-	Group       string `json:"group"`
+	FirstByteMs int64 `json:"-"`
+	// CacheTokens 本次消费的缓存命中 token 数，仅用于写入虚拟模型 internal 候选尝试序列，普通请求为零喵。
+	CacheTokens int `json:"-"`
+	// CacheCreationTokens 本次消费的缓存写入 token 数，同样仅用于候选尝试序列展示喵。
+	CacheCreationTokens int    `json:"-"`
+	IsStream            bool   `json:"is_stream"`
+	Group               string `json:"group"`
 	// Other 为上游引入的强类型元数据容器（按 user/admin/root 可见性分区存储）喵。
 	Other *LogOther `json:"other"`
 }
@@ -402,7 +406,8 @@ func InjectVirtualModelAttempts(c *gin.Context, other map[string]interface{}) {
 // appendVirtualModelSuccessAttempt 在 internal 候选成功结算时把成功尝试追加到候选尝试切片喵。
 // elapsedMs 与 ttftMs 分别为请求级总耗时与首字耗时（毫秒），由调用点按 relayInfo 计算喵。
 // quota 与 token 为该成功候选自己结算出的额度与用量，供日志详情逐候选对账喵。
-func appendVirtualModelSuccessAttempt(c *gin.Context, candidateModelName string, elapsedMs int64, ttftMs int64, quota int, promptTokens int, completionTokens int) {
+// cachedTokens 与 cacheCreationTokens 为该成功候选自己的缓存读写 token 数喵。
+func appendVirtualModelSuccessAttempt(c *gin.Context, candidateModelName string, elapsedMs int64, ttftMs int64, quota int, promptTokens int, completionTokens int, cachedTokens int, cacheCreationTokens int) {
 	// 喵~防御：空上下文时直接返回喵。
 	if c == nil {
 		return
@@ -424,6 +429,9 @@ func appendVirtualModelSuccessAttempt(c *gin.Context, candidateModelName string,
 		Quota:            quota,
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
+		// 缓存读写随候选尝试落库，详情页才能按候选展示缓存命中与写入喵。
+		CachedTokens:        cachedTokens,
+		CacheCreationTokens: cacheCreationTokens,
 	})
 }
 
@@ -469,7 +477,7 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	if virtualLogType := common.GetContextKeyInt(c, constant.ContextKeyVirtualLogType); virtualLogType > 0 {
 		logType = virtualLogType
 		// 虚拟模型 internal 候选成功：先追加成功尝试（带该候选自己的额度与用量），再注入全部候选尝试序列到 Other 喵。
-		appendVirtualModelSuccessAttempt(c, params.ModelName, params.UseTimeMs, params.FirstByteMs, params.Quota, params.PromptTokens, params.CompletionTokens)
+		appendVirtualModelSuccessAttempt(c, params.ModelName, params.UseTimeMs, params.FirstByteMs, params.Quota, params.PromptTokens, params.CompletionTokens, params.CacheTokens, params.CacheCreationTokens)
 		// 上游把消费日志的 Other 改成强类型 *LogOther：候选尝试先收集成 map，再合并进 public 可见区喵。
 		candidateAttemptsOther := make(map[string]interface{}, 1)
 		InjectVirtualModelAttempts(c, candidateAttemptsOther)
@@ -1102,6 +1110,7 @@ func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelNa
 		var otherPayload struct {
 			UsageSemantic string `json:"usage_semantic"` // 用量语义；anthropic 表示缓存读未计入 prompt_tokens 喵。
 			CacheTokens   int    `json:"cache_tokens"`   // 缓存命中的输入 token 数，单位：个喵。
+			CachedTokens  int    `json:"cached_tokens"`  // 自定上游/虚拟候选使用的同义缓存命中键，单位：个喵。
 		}
 		// 喵~防御：other 可能为空串或历史脏数据，解析失败时按无缓存处理，不能让整次统计失败喵。
 		if err := common.UnmarshalJsonStr(row.Other, &otherPayload); err != nil {
@@ -1111,9 +1120,15 @@ func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelNa
 		if otherPayload.UsageSemantic != "anthropic" {
 			continue
 		}
+		// 两种缓存命中键都兼容：内部日志写 cache_tokens，自定上游/虚拟候选写 cached_tokens喵。
+		cacheTokens := otherPayload.CacheTokens
+		// 喵~防御：cache_tokens 缺失时才回退同义键，避免同一行被重复累加喵。
+		if cacheTokens <= 0 {
+			cacheTokens = otherPayload.CachedTokens
+		}
 		// 喵~防御：异常日志可能写入负值，仅在大于 0 时累加，避免 TPM 被扣成负数喵。
-		if otherPayload.CacheTokens > 0 {
-			totalTpm += otherPayload.CacheTokens
+		if cacheTokens > 0 {
+			totalTpm += cacheTokens
 		}
 	}
 	// 主人注意：这里会在最近 60 秒窗口内把 other 一并读回 Go 解析；窗口外数据已被 created_at 过滤，

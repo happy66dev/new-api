@@ -242,6 +242,8 @@ func SettleUpstreamModelRelaySuccess(c *gin.Context, ttftMs int64) {
 	// 虚拟模型上下文：记录候选成功尝试摘要与候选/整体成功样本喵。
 	if executionState, foundState := getVirtualModelExecutionState(c); foundState && executionState != nil && executionState.currentCandidateIndex >= 0 && executionState.currentCandidateIndex < len(executionState.executionSnapshot.Candidates) {
 		currentCandidate := executionState.executionSnapshot.Candidates[executionState.currentCandidateIndex]
+		// 缓存读写与日志主行同口径提取，供候选尝试明细展示缓存用量喵。
+		attemptCachedTokens, attemptCacheCreationTokens := extractUsageCacheTokens(usage)
 		appendVirtualModelCandidateAttempt(c, model.VirtualModelCandidateAttemptRecord{
 			Seq:         currentVirtualModelCandidateSeq(c),
 			CandidateID: currentCandidate.CandidateID,
@@ -251,6 +253,9 @@ func SettleUpstreamModelRelaySuccess(c *gin.Context, ttftMs int64) {
 			StatusCode:  http.StatusOK,
 			TtftMs:      ttftMs,
 			ElapsedMs:   time.Since(relayCtx.startTime).Milliseconds(),
+			// 缓存读写在候选级同步落库，避免详情只看到输入/输出而看不到缓存喵。
+			CachedTokens:        attemptCachedTokens,
+			CacheCreationTokens: attemptCacheCreationTokens,
 		})
 		recordVirtualModelProbeSuccess(c, executionState, currentCandidate.CandidateID, usage, requestFirstByteMs)
 	}
@@ -1002,6 +1007,38 @@ func recordUserUpstreamModelFailureLog(c *gin.Context, upstreamModel *model.User
 	})
 }
 
+// extractUsageCacheTokens 按与计费同源的统一口径提取缓存命中与缓存写入 token 数喵。
+// 缓存命中覆盖 cached_tokens 与中转站风格 cache_read_input_tokens，写入覆盖 cache_write_tokens 家族喵。
+// 输入：上游解析出的 usage，可为 nil喵。
+// 输出：非负的缓存命中与写入 token 数；无 usage 时均为零喵。
+func extractUsageCacheTokens(usage *dto.Usage) (cachedTokens int, cacheCreationTokens int) {
+	// 喵~防御：无 usage 时返回全零，避免空指针喵。
+	if usage == nil {
+		return 0, 0
+	}
+	// 缓存命中优先用 CachedTokensTotal，同时覆盖 cached_tokens 与 cache_read_input_tokens喵。
+	cachedTokens = usage.PromptTokensDetails.CachedTokensTotal()
+	// 兜底 1：DeepSeek 风格 prompt_cache_hit_tokens 在规范化前也可能直达日志喵。
+	if cachedTokens == 0 {
+		cachedTokens = usage.PromptCacheHitTokens
+	}
+	// 兜底 2：Anthropic 风格 input_tokens_details.cached_tokens喵。
+	if cachedTokens == 0 && usage.InputTokensDetails != nil {
+		cachedTokens = usage.InputTokensDetails.CachedTokens
+	}
+	// 喵~防御：异常负值归零，避免日志展示负数缓存喵。
+	if cachedTokens < 0 {
+		cachedTokens = 0
+	}
+	// 缓存写入按多厂商拼写取最大值，与计费侧 CacheCreationTokensTotal 一致喵。
+	cacheCreationTokens = usage.PromptTokensDetails.CacheCreationTokensTotal()
+	// 喵~防御：异常负值归零喵。
+	if cacheCreationTokens < 0 {
+		cacheCreationTokens = 0
+	}
+	return cachedTokens, cacheCreationTokens
+}
+
 // splitUpstreamModelUsage 从 usage 提取各 token 分类数，空 usage 全部回退为零喵。
 func splitUpstreamModelUsage(usage *dto.Usage) (promptTokens int, completionTokens int, cachedTokens int, cacheCreationTokens int, imageTokens int, audioTokens int, videoTokens int, videoOutputTokens int, cacheCreation5mTokens int, cacheCreation1hTokens int) {
 	// 喵~防御：无 usage 时返回全零，避免空指针喵。
@@ -1010,8 +1047,8 @@ func splitUpstreamModelUsage(usage *dto.Usage) (promptTokens int, completionToke
 	}
 	promptTokens = usage.PromptTokens
 	completionTokens = usage.CompletionTokens
-	cachedTokens = usage.PromptTokensDetails.CachedTokens
-	cacheCreationTokens = usage.PromptTokensDetails.CacheCreationTokensTotal()
+	// 缓存命中/写入复用统一口径，保证日志展示与独立 RMB 计费不漏中转站拼写喵。
+	cachedTokens, cacheCreationTokens = extractUsageCacheTokens(usage)
 	imageTokens = usage.PromptTokensDetails.ImageTokens
 	audioTokens = usage.PromptTokensDetails.AudioTokens
 	// 视频分类：输入与输出分离提取，供独立 RMB 日志展示喵。

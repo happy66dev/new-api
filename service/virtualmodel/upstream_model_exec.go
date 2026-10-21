@@ -371,6 +371,9 @@ func extractUsageFromOpenAIBody(body []byte) *dto.Usage {
 	if err := common.Unmarshal(body, &payload); err != nil {
 		return nil
 	}
+	// Anthropic 把缓存读/写放在 usage 顶层，而 dto.Usage 没有对应顶层 tag；
+	// 非流式正文必须显式搬运到规范缓存分类，否则日志与计费都会漏掉缓存喵。
+	captureAnthropicCacheFields([]byte(gjson.GetBytes(body, "usage").Raw), &payload.Usage)
 	// 只有真正包含 token 计数才返回 usage 喵。
 	if !usageHasTokens(&payload.Usage) {
 		return nil

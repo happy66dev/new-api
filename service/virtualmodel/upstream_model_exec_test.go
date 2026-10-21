@@ -37,6 +37,14 @@ func TestExtractUsageFromOpenAIBody(t *testing.T) {
 
 	// usage 全零返回 nil，避免空 usage 混入日志喵。
 	require.Nil(t, extractUsageFromOpenAIBody([]byte(`{"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`)))
+
+	// Anthropic 非流式正文把缓存读写放 usage 顶层，必须搬运到规范分类；否则 usage-logs 不显示缓存喵。
+	anthropicUsage := extractUsageFromOpenAIBody([]byte(`{"usage":{"input_tokens":200,"output_tokens":80,"cache_read_input_tokens":150,"cache_creation_input_tokens":30}}`))
+	require.NotNil(t, anthropicUsage)
+	assert.Equal(t, 200, anthropicUsage.InputTokens)
+	assert.Equal(t, 80, anthropicUsage.OutputTokens)
+	assert.Equal(t, 150, anthropicUsage.PromptTokensDetails.CachedTokens)
+	assert.Equal(t, 30, anthropicUsage.PromptTokensDetails.CachedCreationTokens)
 }
 
 // TestExtractUsageFromSSELine 验证流式 data 行 usage 的提取与跳过规则喵。

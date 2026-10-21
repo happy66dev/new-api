@@ -51,6 +51,10 @@ type VirtualModelCandidateAttemptRecord struct {
 	PromptTokens int `json:"prompt_tokens,omitempty"`
 	// CompletionTokens 本次尝试对应的输出 token 数，单位：个；零表示未统计到喵。
 	CompletionTokens int `json:"completion_tokens,omitempty"`
+	// CachedTokens 本次尝试命中的缓存读取 token 数，单位：个；零表示未命中或未统计到喵。
+	CachedTokens int `json:"cached_tokens,omitempty"`
+	// CacheCreationTokens 本次尝试的缓存写入 token 数，单位：个；零表示无写入或未统计到喵。
+	CacheCreationTokens int `json:"cache_creation_tokens,omitempty"`
 }
 
 // VirtualModelFailureAction 描述候选失败后的编排动作喵。

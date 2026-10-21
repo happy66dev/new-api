@@ -945,6 +945,8 @@ func attachVirtualModelCandidateCustomBilling(c *gin.Context, candidateID int, c
 		if usage != nil {
 			candidateAttempt.PromptTokens = usage.PromptTokens
 			candidateAttempt.CompletionTokens = usage.CompletionTokens
+			// 缓存读写同样回填，供日志详情逐候选展示缓存命中与写入喵。
+			candidateAttempt.CachedTokens, candidateAttempt.CacheCreationTokens = extractUsageCacheTokens(usage)
 		}
 		return
 	}
@@ -989,15 +991,35 @@ func recordVirtualModelCustomSuccess(c *gin.Context, useTimeSeconds int, usage *
 	// 喵~防御：空 usage 按零 token 处理，避免空指针喵。
 	promptTokens := 0
 	completionTokens := 0
+	cachedTokens := 0
+	cacheCreationTokens := 0
+	cacheCreation5mTokens := 0
+	cacheCreation1hTokens := 0
 	if usage != nil {
-		promptTokens = usage.PromptTokens
-		completionTokens = usage.CompletionTokens
+		// 缓存读写与 type=8 自定上游共用同一提取口径，usage-logs 的 Tokens 列据此展示喵。
+		promptTokens, completionTokens, cachedTokens, cacheCreationTokens, _, _, _, _, cacheCreation5mTokens, cacheCreation1hTokens = splitUpstreamModelUsage(usage)
 	}
 	// 纯直填 custom 候选以解析出的 usage 填 token；候选尝试序列由日志 Other 承载喵。
 	other := map[string]interface{}{
 		"virtual_model":    executionState.virtualModelName,
 		"final_success":    true,
 		"estimated_tokens": usage != nil && usage.BillingUsage != nil && usage.BillingUsage.Estimated,
+	}
+	// 缓存命中与写入写入 other 的同名字段，前端 Tokens 列与详情页都按这些键展示喵。
+	if cachedTokens > 0 {
+		other["cached_tokens"] = cachedTokens
+	}
+	// 缓存写入总量仅在大于零时写入，避免日志出现无意义的 0 字段喵。
+	if cacheCreationTokens > 0 {
+		other["cache_creation_tokens"] = cacheCreationTokens
+	}
+	// Claude 语义的 5 分钟缓存写入分类单独展示喵。
+	if cacheCreation5mTokens > 0 {
+		other["cache_creation_tokens_5m"] = cacheCreation5mTokens
+	}
+	// Claude 语义的 1 小时缓存写入分类单独展示喵。
+	if cacheCreation1hTokens > 0 {
+		other["cache_creation_tokens_1h"] = cacheCreation1hTokens
 	}
 	// 请求级首字耗时写入日志 Timing 展示，纯直填 custom 候选此前未记录首字喵。
 	if requestFirstByteMs > 0 {
@@ -1508,6 +1530,8 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 			if requestFirstByteMs <= 0 {
 				requestFirstByteMs = requestElapsedMs
 			}
+			// 缓存读写与日志主行同口径提取，供候选尝试明细展示缓存用量喵。
+			attemptCachedTokens, attemptCacheCreationTokens := extractUsageCacheTokens(executionUsage)
 			// 先记录该 custom 候选成功尝试摘要，确保后续日志写入时候选序列已包含本次成功（否则首个候选直接成功时详情会为空）喵。
 			appendVirtualModelCandidateAttempt(c, model.VirtualModelCandidateAttemptRecord{
 				Seq:         currentVirtualModelCandidateSeq(c),
@@ -1517,9 +1541,11 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 				Success:     true,
 				StatusCode:  http.StatusOK,
 				// 候选尝试序列展示该候选自己的耗时（模型级口径）：首字取上游响应头到达，总耗时取候选启动到当前喵。
-				TtftMs:     executionResult.TtftMs,
-				ElapsedMs:  time.Since(startTime).Milliseconds(),
-				RetryCount: retryIndex,
+				TtftMs:              executionResult.TtftMs,
+				ElapsedMs:           time.Since(startTime).Milliseconds(),
+				RetryCount:          retryIndex,
+				CachedTokens:        attemptCachedTokens,
+				CacheCreationTokens: attemptCacheCreationTokens,
 			})
 			// 引用上游模型成功时结算独立 RMB 计费并写虚拟模型日志（上下文已把类型覆盖为 9）喵。
 			if hasUpstreamReference && referencedUpstreamModel != nil {

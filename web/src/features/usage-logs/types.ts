@@ -273,6 +273,10 @@ export interface LogOtherData {
     // prompt_tokens / completion_tokens 该候选尝试对应的用量，零或缺失表示未统计到喵。
     prompt_tokens?: number
     completion_tokens?: number
+    // cached_tokens 该候选尝试命中的缓存读取 token 数，零或缺失表示未命中或未统计到喵。
+    cached_tokens?: number
+    // cache_creation_tokens 该候选尝试的缓存写入 token 数，零或缺失表示未统计到喵。
+    cache_creation_tokens?: number
   }>
   // Violation fee fields
   violation_fee?: boolean

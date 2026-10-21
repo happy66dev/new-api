@@ -52,6 +52,9 @@ func TestRecordConsumeLogVirtualModelType(t *testing.T) {
 		// 请求级毫秒耗时与首字耗时随 internal 成功尝试写入候选序列喵。
 		UseTimeMs:   1234,
 		FirstByteMs: 300,
+		// 缓存读写随 internal 成功尝试写入候选序列，供详情逐候选展示喵。
+		CacheTokens:         40,
+		CacheCreationTokens: 10,
 	})
 
 	var log Log
@@ -70,6 +73,9 @@ func TestRecordConsumeLogVirtualModelType(t *testing.T) {
 	require.Equal(t, true, internalSuccess["success"])
 	require.Equal(t, float64(1234), internalSuccess["elapsed_ms"])
 	require.Equal(t, float64(300), internalSuccess["ttft_ms"])
+	// 缓存读写必须随候选尝试落库，否则详情页看不到缓存用量喵。
+	require.Equal(t, float64(40), internalSuccess["cached_tokens"])
+	require.Equal(t, float64(10), internalSuccess["cache_creation_tokens"])
 }
 
 // TestRecordVirtualModelLogType 验证 RecordVirtualModelLog 固定写 type=9 喵。

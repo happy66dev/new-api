@@ -92,6 +92,35 @@ func TestHandleUserUpstreamModelRequestInjectsRelay(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code)
 }
 
+// TestExtractUsageCacheTokens 验证日志缓存数覆盖各厂商拼写，避免计费有缓存但日志不显示喵。
+func TestExtractUsageCacheTokens(t *testing.T) {
+	// 无 usage：缓存数一律为零喵。
+	cached, creation := extractUsageCacheTokens(nil)
+	require.Zero(t, cached)
+	require.Zero(t, creation)
+
+	// 标准 cached_tokens 与 cache_write_tokens 直接读取喵。
+	cached, creation = extractUsageCacheTokens(&dto.Usage{PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 20, CacheWriteTokens: 7}})
+	require.Equal(t, 20, cached)
+	require.Equal(t, 7, creation)
+
+	// 中转站风格 cache_read_input_tokens 与 cache_creation_input_tokens 同样必须识别喵。
+	cached, creation = extractUsageCacheTokens(&dto.Usage{PromptTokensDetails: dto.InputTokenDetails{CacheReadInputTokens: 30, CacheCreationInputTokens: 9}})
+	require.Equal(t, 30, cached)
+	require.Equal(t, 9, creation)
+
+	// DeepSeek 的 prompt_cache_hit_tokens 与 Anthropic 的 input_tokens_details.cached_tokens 作为兜底喵。
+	cached, _ = extractUsageCacheTokens(&dto.Usage{PromptCacheHitTokens: 11})
+	require.Equal(t, 11, cached)
+	cached, _ = extractUsageCacheTokens(&dto.Usage{InputTokensDetails: &dto.InputTokenDetails{CachedTokens: 12}})
+	require.Equal(t, 12, cached)
+
+	// 喵~防御：异常负值钳制为零，日志绝不显示负数缓存喵。
+	cached, creation = extractUsageCacheTokens(&dto.Usage{PromptCacheHitTokens: -5, PromptTokensDetails: dto.InputTokenDetails{CachedCreationTokens: -3}})
+	require.Zero(t, cached)
+	require.Zero(t, creation)
+}
+
 // TestHandleUserUpstreamModelRequestVirtualLogToken 验证虚拟模型 user/xxx 候选成功日志（type=9）token 正确喵。
 func TestHandleUserUpstreamModelRequestVirtualLogToken(t *testing.T) {
 	// 开发模式允许本地 http mock 上游，测试结束后自动恢复环境变量喵。
