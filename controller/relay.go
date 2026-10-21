@@ -311,6 +311,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 candidateRelayLoop:
 	for {
+		// 虚拟候选每次 try 都重置性能采样起点：失败规则 retry 会复用同一个 RelayInfo，
+		// 不重置就会让延迟与首字节跨 try 累加；普通请求的 RelayInfo 生命周期与请求一致，无需处理喵。
+		if _, isVirtualCandidateRequest := middleware.GetActiveVirtualModelCandidateAttempt(c); isVirtualCandidateRequest {
+			// 把本次 try 的起点写进 relayInfo，成功与失败样本都会以它为计时基准喵。
+			relayInfo.PerfAttemptStartTime = time.Now()
+		}
 		retryParam := &service.RetryParam{
 			Ctx:         c,
 			TokenGroup:  relayInfo.TokenGroup,
@@ -416,6 +422,9 @@ candidateRelayLoop:
 			// 喵~防御：只有内部候选完成全部原生 Channel 重试且尚未提交任何响应时，才允许虚拟层编排后备候选喵。
 			nativeFailureDecision := middleware.AdvanceVirtualModelAfterNativeFailure(c, newAPIError)
 			if nativeFailureDecision.RetryCurrentCandidate {
+				// 失败 try 也要计入模型可用性：规则 retry 会复用当前 RelayInfo 并继续循环，
+				// 不在这里补记就会让「最终成功」把之前的失败洗成 100% 喵。
+				recordVirtualModelCandidateAttemptFailureSample(relayInfo)
 				// 失败规则要求重试当前内部候选：清除本次错误并回到候选循环顶部重新走原生分发，不切换候选喵。
 				relayInfo.LastError = nil
 				newAPIError = nil
@@ -428,12 +437,18 @@ candidateRelayLoop:
 					newAPIError = candidateSwitchError
 					break candidateRelayLoop
 				}
+				// 切换成功后旧候选的 RelayInfo 会被整体替换，终局失败样本点再也看不到它，
+				// 必须在这里补记本次失败 try，否则该模型的失败会被后续候选的成功掩盖喵。
+				recordVirtualModelCandidateAttemptFailureSample(relayInfo)
 				// 把当前候选替换为后备候选的独立 RelayInfo，外层 defer 之后只会收尾这一个候选喵。
 				relayInfo = nextCandidateRelayInfo
 				newAPIError = nil
 				continue candidateRelayLoop
 			}
 			if nativeFailureDecision.CustomCandidateCommitted {
+				// 自定义候选已把响应字节交给客户端，旧内部候选同样不会再走到终局样本点，
+				// 先补记它的失败 try，避免这次失败从可用性分母里消失喵。
+				recordVirtualModelCandidateAttemptFailureSample(relayInfo)
 				// 自定义候选已把响应字节交给客户端，此后绝不允许再向同一个响应追加第二个错误正文喵。
 				// 先结算该内部候选在放流前被跳过时登记的计费（按原生口径同样计费），再退还未消耗预扣喵。
 				service.SettlePendingCandidateBilling(c, relayInfo)
@@ -458,6 +473,7 @@ candidateRelayLoop:
 		}
 		if newAPIError != nil {
 			// 先把当前候选的 relay 信息固定到局部变量，避免异步采样读取后续可能被替换的候选状态喵。
+			// 虚拟候选的 relayInfo 已写入尝试级起点，采样会自动按本次 try 计时喵。
 			sampledRelayInfo := relayInfo
 			gopool.Go(func() {
 				perfmetrics.RecordRelaySample(sampledRelayInfo, false, 0, nil)
@@ -510,6 +526,26 @@ func addUsedChannel(c *gin.Context, channelId int) {
 	useChannel := c.GetStringSlice("use_channel")
 	useChannel = append(useChannel, fmt.Sprintf("%d", channelId))
 	c.Set("use_channel", useChannel)
+}
+
+// recordVirtualModelCandidateAttemptFailureSample 为一次失败的虚拟候选尝试补记性能样本喵。
+//
+// 背景喵：虚拟模型的失败规则 retry 与候选切换都会在原生「终局失败样本点」之前 continue，
+// 旧候选的 RelayInfo 要么被复用、要么被整体替换，导致失败 try 完全不进 /status 的可用性分母；
+// 只要链上后面有候选成功，前面的失败就会被掩盖成 100% 喵。
+//
+// 输入：当前候选的 relay 信息（其 PerfAttemptStartTime 已在候选循环顶部写入本次尝试起点）喵。
+// 边界：relayInfo 为空时直接跳过；复制后再异步采样，避免候选切换改写字段喵。
+func recordVirtualModelCandidateAttemptFailureSample(relayInfo *relaycommon.RelayInfo) {
+	// 喵~防御：缺少 relay 信息时跳过，避免空指针喵。
+	if relayInfo == nil {
+		return
+	}
+	// 同步复制尝试级快照：异步采样开始前先冻结字段，避免候选切换后再读到被改写的数据喵。
+	attemptRelayInfo := *relayInfo
+	gopool.Go(func() {
+		perfmetrics.RecordRelaySample(&attemptRelayInfo, false, 0, nil)
+	})
 }
 
 // shouldSuppressFinalErrorBody 判断最终错误正文是否必须被抑制喵。

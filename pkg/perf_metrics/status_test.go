@@ -8,6 +8,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/stretchr/testify/require"
 )
 
@@ -79,4 +80,55 @@ func TestQueryStatusExcludedModelsKeepOtherModelCacheSamples(t *testing.T) {
 	// 请求数与成功数仍应包含两个模型的总和，排除模型不影响非缓存统计喵。
 	require.Equal(t, int64(20), result.Groups[0].RequestCount)
 	require.InDelta(t, 95.0, result.Groups[0].Availability, 0.001)
+}
+
+// TestRecordRelaySampleUsesAttemptStart 验证尝试级样本按 PerfAttemptStartTime 计算延迟与 TTFT 喵。
+// 回归：虚拟模型失败规则 retry 会复用同一个 RelayInfo，若样本仍用 RelayInfo.StartTime，
+// 第 N 次 try 的延迟会把前几次尝试也算进来，上一次的首字节还会污染本尝试的 TTFT 喵。
+func TestRecordRelaySampleUsesAttemptStart(t *testing.T) {
+	setupStatusTestDB(t)
+	group := "attempt-sample-group"
+	modelName := "gpt-attempt-sample"
+	// 清掉全局热桶可能残留的同键样本，保证断言只看到本用例写入的数据喵。
+	ClearEntityProbeHotBucket(modelName, group)
+	t.Cleanup(func() {
+		ClearEntityProbeHotBucket(modelName, group)
+	})
+
+	// 请求起点在 10 秒前、上一次尝试的首字节在 9 秒前；本次尝试起点在 2 秒前喵。
+	relayInfo := &relaycommon.RelayInfo{
+		OriginModelName:      modelName,
+		UsingGroup:           group,
+		IsStream:             true,
+		StartTime:            time.Now().Add(-10 * time.Second),
+		FirstResponseTime:    time.Now().Add(-9 * time.Second),
+		PerfAttemptStartTime: time.Now().Add(-2 * time.Second),
+	}
+	RecordRelaySample(relayInfo, false, 0, nil)
+
+	status, queryError := QueryStatus(1, []string{group}, nil)
+	require.NoError(t, queryError)
+	require.Len(t, status.Groups, 1)
+	// 失败 try 必须进入分母且成功数为零喵。
+	require.Equal(t, int64(1), status.Groups[0].RequestCount)
+	require.InDelta(t, 0.0, status.Groups[0].Availability, 0.001)
+	// 延迟按本次尝试起点计算：约 2 秒，而不是请求起点的 10 秒喵。
+	require.GreaterOrEqual(t, status.Groups[0].AvgLatencyMs, int64(1900))
+	require.Less(t, status.Groups[0].AvgLatencyMs, int64(3000))
+	// 上一次尝试的首字节早于本次起点，TTFT 必须为零喵。
+	require.Equal(t, int64(0), status.Groups[0].AvgTtftMs)
+
+	// 清空尝试级起点后应回退到请求起点，验证零值语义喵。
+	ClearEntityProbeHotBucket(modelName, group)
+	relayInfo.PerfAttemptStartTime = time.Time{}
+	RecordRelaySample(relayInfo, false, 0, nil)
+	status, queryError = QueryStatus(1, []string{group}, nil)
+	require.NoError(t, queryError)
+	require.Len(t, status.Groups, 1)
+	require.GreaterOrEqual(t, status.Groups[0].AvgLatencyMs, int64(9500))
+	// 回退到请求起点后，9 秒前的首字节重新成为有效 TTFT 喵。
+	require.GreaterOrEqual(t, status.Groups[0].AvgTtftMs, int64(900))
+	// 清空热桶后只保留第二条失败样本，验证回退样本同样进入分母喵。
+	require.Equal(t, int64(1), status.Groups[0].RequestCount)
+	require.InDelta(t, 0.0, status.Groups[0].Availability, 0.001)
 }

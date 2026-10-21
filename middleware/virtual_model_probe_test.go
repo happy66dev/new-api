@@ -175,7 +175,9 @@ func TestAdvanceVirtualModelAfterNativeFailureRecordsProbe(t *testing.T) {
 
 	candidateState, candidateErr := model.GetEntityProbeState(model.EntityProbeScopeVirtualCandidate, 71)
 	require.NoError(t, candidateErr)
-	require.Equal(t, int64(1), candidateState.RequestCount)
+	// 可用性按 try 计数：前两次规则 retry 各记一次失败，第三次放弃再记一次，共 3 次喵。
+	require.Equal(t, int64(3), candidateState.RequestCount)
+	require.Equal(t, int64(0), candidateState.SuccessCount)
 	require.False(t, candidateState.LastSuccess)
 
 	overallState, overallErr := model.GetEntityProbeState(model.EntityProbeScopeVirtual, 9)

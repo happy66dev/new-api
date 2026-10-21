@@ -582,6 +582,9 @@ func AdvanceVirtualModelAfterNativeFailure(c *gin.Context, nativeError *types.Ne
 		executionState.ruleRetryCounts[currentCandidate.CandidateID]++
 		// 恢复客户端原始请求体后重新改写为当前候选，供 relay 循环再次走原生分发喵。
 		if restoreVirtualModelOriginalRequest(c, executionState.originalRequestBody) && applyInternalVirtualModelCandidate(c, executionState.modelRequest, executionState.virtualModelName, &currentCandidate) {
+			// 实体状态检测：规则 retry 也是一次独立 try，先记录本次候选失败，
+			// 否则最终成功会把中间所有失败 try 从候选节点可用性里洗掉喵。
+			RecordActiveVirtualModelCandidateProbe(c, false, nativeFailure.ErrorClass)
 			decision.RetryCurrentCandidate = true
 			return decision
 		}
@@ -1646,12 +1649,14 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 					retryDelay = remainingDuration
 				}
 			}
+			// 实体状态检测：每次重试尝试都独立计数，进入退避前先记录本次候选失败，
+			// 避免后续重试成功把中间失败 try 从候选节点与引用上游模型的可用性里洗掉喵。
+			recordCustomCandidateFailureProbe(c, candidate, hasUpstreamReference, referencedUpstreamModel, customFailure.Failure.ErrorClass, startTime, false)
 			select {
 			case <-time.After(retryDelay):
 				continue
 			case <-c.Request.Context().Done():
-				// 实体状态检测：客户端取消导致候选无法继续，记录候选失败喵。
-				recordCustomCandidateFailureProbe(c, candidate, hasUpstreamReference, referencedUpstreamModel, customFailure.Failure.ErrorClass, startTime, false)
+				// 本次失败的 try 已在上方记录，这里只需结束候选执行，避免重复计数喵。
 				return false
 			}
 		}

@@ -593,6 +593,9 @@ func handleVirtualModelUpstreamFailure(c *gin.Context, upstreamModel *model.User
 		maxUpstreamRetries = ruleRetryCount
 	}
 	if action == model.VirtualModelActionRetry && executionState.ruleRetryCounts[candidateID] < maxUpstreamRetries && !hedgeFroze {
+		// 实体状态检测：每次重试尝试都独立计数，先记录本次候选与上游模型失败，
+		// 避免后面重试成功把中间失败 try 从可用性里洗掉喵。
+		recordVirtualModelUpstreamFailureProbe(c, executionState, candidateID, upstreamModel, isShared, errorClass, startTime, false)
 		executionState.ruleRetryCounts[candidateID]++
 		return virtualModelUpstreamFailureRetry
 	}

@@ -32,13 +32,19 @@ func RecordRelaySample(info *relaycommon.RelayInfo, success bool, outputTokens i
 	if !info.IsChannelTest {
 		NoteStatusCheckPassiveActivity(info.UsingGroup)
 	}
+	// 采样起点优先取尝试级起点：虚拟候选 retry 复用同一个 RelayInfo 时避免延迟跨 try 累加喵。
+	sampleStartTime := info.StartTime
+	if !info.PerfAttemptStartTime.IsZero() {
+		sampleStartTime = info.PerfAttemptStartTime
+	}
 	now := time.Now()
-	hasTtft := info.IsStream && info.HasSendResponse()
+	// 首字节必须晚于本次尝试起点才算本 try 的 TTFT，避免继承上一次尝试的首字节喵。
+	hasTtft := info.IsStream && info.FirstResponseTime.After(sampleStartTime)
 	ttftMs := int64(0)
 	if hasTtft {
-		ttftMs = info.FirstResponseTime.Sub(info.StartTime).Milliseconds()
+		ttftMs = info.FirstResponseTime.Sub(sampleStartTime).Milliseconds()
 	}
-	latencyMs := now.Sub(info.StartTime).Milliseconds()
+	latencyMs := now.Sub(sampleStartTime).Milliseconds()
 	generationMs := latencyMs
 	if hasTtft {
 		generationMs = now.Sub(info.FirstResponseTime).Milliseconds()

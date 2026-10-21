@@ -81,16 +81,20 @@ type TokenCountMeta struct {
 }
 
 type RelayInfo struct {
-	TokenId           int
-	TokenKey          string
-	TokenGroup        string
-	UserId            int
-	UsingGroup        string // 使用的分组，当auto跨分组重试时，会变动
-	UserGroup         string // 用户所在分组
-	TokenUnlimited    bool
-	StartTime         time.Time
-	FirstResponseTime time.Time
-	isFirstResponse   bool
+	TokenId        int
+	TokenKey       string
+	TokenGroup     string
+	UserId         int
+	UsingGroup     string // 使用的分组，当auto跨分组重试时，会变动
+	UserGroup      string // 用户所在分组
+	TokenUnlimited bool
+	StartTime      time.Time
+	// PerfAttemptStartTime 当前上游尝试的起点，仅供性能采样按尝试计时喵。
+	// 零值表示沿用 StartTime；虚拟模型失败规则 retry 会复用同一个 RelayInfo，
+	// 用它才能让每次 try 的延迟与首字节互不累加喵。
+	PerfAttemptStartTime time.Time
+	FirstResponseTime    time.Time
+	isFirstResponse      bool
 	//SendLastReasoningResponse bool
 	IsStream               bool
 	IsGeminiBatchEmbedding bool
