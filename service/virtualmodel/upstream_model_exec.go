@@ -469,6 +469,20 @@ func extractUsageFromSSELine(lineBytes []byte, target *dto.Usage) {
 			mergeUpstreamModelUsage(target, &usage)
 		}
 	}
+	// OpenAI Responses 流式：真实 usage 只出现在 response.completed / response.incomplete 事件的
+	// response.usage 里，顶层没有 usage 字段，不解析这里就会退化成按文本估算计费喵。
+	if responsesUsageRaw := gjson.GetBytes(dataPayload, "response.usage"); responsesUsageRaw.Exists() {
+		var usage dto.Usage
+		if err := common.Unmarshal([]byte(responsesUsageRaw.Raw), &usage); err == nil {
+			// Responses 把推理 token 放在 output_tokens_details.reasoning_tokens，dto.Usage 只映射
+			// completion_tokens_details，需显式搬运，避免输出侧只靠文本估算喵。
+			if reasoningTokens := gjson.Get(responsesUsageRaw.Raw, "output_tokens_details.reasoning_tokens"); reasoningTokens.Exists() && reasoningTokens.Int() > 0 {
+				usage.CompletionTokenDetails.ReasoningTokens = int(reasoningTokens.Int())
+			}
+			// Responses 的缓存命中/写入放在 input_tokens_details 子对象，由 mergeUpstreamModelUsage 搬运喵。
+			mergeUpstreamModelUsage(target, &usage)
+		}
+	}
 }
 
 // captureAnthropicCacheFields 从 Anthropic usage JSON 补充缓存读取/写入字段喵。
@@ -559,6 +573,30 @@ func mergeUpstreamModelUsage(target *dto.Usage, candidate *dto.Usage) {
 	}
 	if candidate.PromptTokensDetails.CacheReadInputTokens > 0 {
 		target.PromptTokensDetails.CacheReadInputTokens = candidate.PromptTokensDetails.CacheReadInputTokens
+	}
+	// Responses 原生把缓存写入放在 prompt_tokens_details.cache_write_tokens，需同样合并进规范分类参与缓存价计费喵。
+	if candidate.PromptTokensDetails.CacheWriteTokens > 0 {
+		target.PromptTokensDetails.CacheWriteTokens = candidate.PromptTokensDetails.CacheWriteTokens
+	}
+	// Responses 的缓存细节常写在 input_tokens_details 子对象里（cached_tokens / cache_write_tokens），
+	// 逐字段非零合并，交给 normalizeUpstreamModelUsage 回填到规范缓存分类喵。
+	if candidate.InputTokensDetails != nil {
+		// 喵~防御：目标尚无子对象时按候选副本新建，避免空指针喵。
+		if target.InputTokensDetails == nil {
+			inputTokenDetailsCopy := *candidate.InputTokensDetails
+			target.InputTokensDetails = &inputTokenDetailsCopy
+		} else {
+			// 目标已有子对象时只覆盖候选非零字段，避免全零占位把已有缓存计数清空喵。
+			if candidate.InputTokensDetails.CachedTokens > 0 {
+				target.InputTokensDetails.CachedTokens = candidate.InputTokensDetails.CachedTokens
+			}
+			if candidate.InputTokensDetails.CacheWriteTokens > 0 {
+				target.InputTokensDetails.CacheWriteTokens = candidate.InputTokensDetails.CacheWriteTokens
+			}
+			if candidate.InputTokensDetails.CachedCreationTokens > 0 {
+				target.InputTokensDetails.CachedCreationTokens = candidate.InputTokensDetails.CachedCreationTokens
+			}
+		}
 	}
 	if candidate.CompletionTokenDetails.ReasoningTokens > 0 {
 		target.CompletionTokenDetails.ReasoningTokens = candidate.CompletionTokenDetails.ReasoningTokens
@@ -652,6 +690,16 @@ func normalizeUpstreamModelUsage(usage *dto.Usage) *dto.Usage {
 			usage.PromptTokensDetails.CachedTokens = usage.PromptCacheHitTokens
 		} else if usage.InputTokensDetails != nil && usage.InputTokensDetails.CachedTokens > 0 {
 			usage.PromptTokensDetails.CachedTokens = usage.InputTokensDetails.CachedTokens
+		}
+	}
+	// 缓存写入回填：OpenAI Responses 把缓存写入写在 input_tokens_details.cache_write_tokens，
+	// 而计费只读 PromptTokensDetails.CacheCreationTokensTotal()，不搬运会漏掉缓存创建价喵。
+	if usage.InputTokensDetails != nil {
+		if usage.PromptTokensDetails.CacheWriteTokens == 0 && usage.InputTokensDetails.CacheWriteTokens > 0 {
+			usage.PromptTokensDetails.CacheWriteTokens = usage.InputTokensDetails.CacheWriteTokens
+		}
+		if usage.PromptTokensDetails.CachedCreationTokens == 0 && usage.InputTokensDetails.CachedCreationTokens > 0 {
+			usage.PromptTokensDetails.CachedCreationTokens = usage.InputTokensDetails.CachedCreationTokens
 		}
 	}
 	// 防御钳制：异常负值统一归零，防止上游异常把计费与命中率拉偏喵。
