@@ -108,8 +108,10 @@ export function transformFormDataToPayload(
     // For update: quota is adjusted atomically via /api/user/manage, not sent here
     payload.group = data.group
     payload.group_access_mode = data.group_access_mode ?? ''
-    // 多选组件给出字符串数组，后端约定用 JSON 数组字符串落库，这里统一序列化喵。
-    payload.usable_groups = data.usable_groups ?? []
+    // 后端 model.User.UsableGroups 是字符串列，且内部按 JSON 数组解析；
+    // 直接发数组会触发 "cannot unmarshal array into Go struct field" 导致整单更新失败，
+    // 因此这里必须序列化成 JSON 数组字符串再提交喵。
+    payload.usable_groups = JSON.stringify(data.usable_groups ?? [])
     payload.remark = data.remark || undefined
     payload.id = userId
   }

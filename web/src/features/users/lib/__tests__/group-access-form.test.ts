@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { describe, expect, test } from 'vitest'
 
-import { parseUsableGroups, transformUserToFormDefaults } from '../user-form'
+import { parseUsableGroups, transformFormDataToPayload, transformUserToFormDefaults } from '../user-form'
 
 // 最小用户 fixture：只填充被测字段相关属性喵。
 const baseUser = {
@@ -79,5 +79,44 @@ describe('transformUserToFormDefaults group access fields', () => {
 
     expect(defaults.group_access_mode).toBe('')
     expect(defaults.usable_groups).toEqual([])
+  })
+})
+
+describe('transformFormDataToPayload group access fields', () => {
+  test('serializes the usable group list into a JSON array string', () => {
+    // 后端 User.UsableGroups 是字符串列，发数组会被 JSON 绑定直接拒绝喵。
+    // 这条断言锁住"前端必须序列化成 JSON 数组字符串"的契约喵。
+    const payload = transformFormDataToPayload(
+      {
+        username: 'alice',
+        display_name: 'Alice',
+        group: 'default',
+        group_access_mode: 'custom',
+        usable_groups: ['vip', 'virtual'],
+      },
+      7
+    )
+
+    expect(payload.group_access_mode).toBe('custom')
+    expect(typeof payload.usable_groups).toBe('string')
+    expect(payload.usable_groups).toBe('["vip","virtual"]')
+    // 回读必须与写入等价，保证保存后再打开表单不出偏差喵。
+    expect(parseUsableGroups(payload.usable_groups)).toEqual(['vip', 'virtual'])
+  })
+
+  test('serializes an empty list as an empty JSON array instead of omitting it', () => {
+    // 空白名单在 custom 模式下表示"只允许内置伪分组"，是有效配置，不能当成未提交喵。
+    const payload = transformFormDataToPayload(
+      {
+        username: 'bob',
+        display_name: 'Bob',
+        group: 'default',
+        group_access_mode: 'custom',
+        usable_groups: [],
+      },
+      8
+    )
+
+    expect(payload.usable_groups).toBe('[]')
   })
 })

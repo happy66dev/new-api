@@ -132,7 +132,7 @@ export interface UserFormData {
   // 分组权限模式：'' = 跟随全局，'legacy' = 原 newapi 旧口径，'custom' = 仅新分组管理喵。
   group_access_mode?: string
   // 可用分组白名单，custom 模式下生效；提交给后端时序列化为 JSON 数组字符串喵。
-  usable_groups?: string[]
+  usable_groups?: string
   remark?: string // Only used when updating user
   admin_permissions?: AdminPermissionMatrix
 }
