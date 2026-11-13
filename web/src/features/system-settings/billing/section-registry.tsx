@@ -160,6 +160,7 @@ const BILLING_SECTIONS = [
     build: (settings: BillingSettings) => (
       <GroupAccessRulesSection
         defaultValue={settings['console_setting.group_access_rules']}
+        defaultAccessMode={settings['console_setting.group_access_mode']}
       />
     ),
   },

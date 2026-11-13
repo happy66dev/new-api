@@ -106,6 +106,17 @@ func getTokenRequestUserGroup(c *gin.Context) (string, error) {
 	return model.GetUserGroup(c.GetInt("id"), false)
 }
 
+// requestGroupAccessSource 读取当前用户的"分组权限模式"与"可用分组白名单"原始 JSON喵。
+// 控制器里的分组相关判定都要这两个值，集中在这里取可避免各处重复回查用户缓存喵。
+func requestGroupAccessSource(c *gin.Context) (string, string) {
+	userCache, err := model.GetUserCache(c.GetInt("id"))
+	// 喵~防御：缓存读取失败时退回"跟随全局 + 空白名单"，与 service 层兜底口径一致喵。
+	if err != nil {
+		return service.GroupAccessModeAuto, ""
+	}
+	return service.GetUserGroupAccessMode(userCache), service.GetUserUsableGroupWhitelist(userCache)
+}
+
 func setTokenAutoGroups(c *gin.Context, token *model.Token, groups []string) bool {
 	if len(groups) == 0 {
 		if err := token.SetAutoGroups(nil); err != nil {
@@ -127,13 +138,15 @@ func setTokenAutoGroups(c *gin.Context, token *model.Token, groups []string) boo
 		return false
 	}
 	seen := make(map[string]struct{}, len(groups))
+	// 分组权限模式与白名单只解析一次，避免每个候选分组都回查一次用户缓存喵。
+	groupAccessMode, usableGroupsRaw := requestGroupAccessSource(c)
 	for _, group := range groups {
 		if _, ok := seen[group]; ok {
 			common.ApiErrorI18n(c, i18n.MsgTokenAutoGroupsDuplicate, map[string]any{"Group": group})
 			return false
 		}
 		seen[group] = struct{}{}
-		if !service.IsUserSelectableGroupForUser(c.GetInt("id"), userGroup, group) {
+		if !service.IsUserSelectableGroupForUser(c.GetInt("id"), userGroup, group, groupAccessMode, usableGroupsRaw) {
 			common.ApiErrorI18n(c, i18n.MsgTokenAutoGroupsInvalid, map[string]any{"Group": group})
 			return false
 		}
@@ -274,8 +287,9 @@ func GetTokenAutoGroups(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	groupAccessMode, usableGroupsRaw := requestGroupAccessSource(c)
 	common.ApiSuccess(c, gin.H{
-		"groups":    service.GetUserAutoGroupForUser(c.GetInt("id"), userGroup),
+		"groups":    service.GetUserAutoGroupForUser(c.GetInt("id"), userGroup, groupAccessMode, usableGroupsRaw),
 		"max_count": setting.GetMaxTokenAutoGroups(),
 	})
 }

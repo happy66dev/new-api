@@ -47,6 +47,10 @@ export const userSchema = z.object({
   used_quota: z.number(),
   request_count: z.number(),
   group: z.string(),
+  // 分组权限模式：空 = 跟随全局设置，legacy = 原 newapi 旧口径，custom = 仅新分组管理喵。
+  group_access_mode: z.string().optional(),
+  // custom 模式下允许访问的分组白名单（JSON 数组字符串），只允许管理员写入喵。
+  usable_groups: z.string().optional(),
   aff_code: z.string().optional(),
   aff_count: z.number().optional(),
   aff_quota: z.number().optional(),
@@ -125,6 +129,10 @@ export interface UserFormData {
   role?: number // Only used when creating user
   quota?: number // Only used when updating user
   group?: string // Only used when updating user
+  // 分组权限模式：'' = 跟随全局，'legacy' = 原 newapi 旧口径，'custom' = 仅新分组管理喵。
+  group_access_mode?: string
+  // 可用分组白名单，custom 模式下生效；提交给后端时序列化为 JSON 数组字符串喵。
+  usable_groups?: string[]
   remark?: string // Only used when updating user
   admin_permissions?: AdminPermissionMatrix
 }

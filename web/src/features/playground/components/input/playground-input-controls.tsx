@@ -39,6 +39,10 @@ type PlaygroundInputControlsProps = {
   modelValue: string
   onGroupChange: (value: string) => void
   onModelChange: (value: string) => void
+  // 是否允许在分组下拉追加「虚拟模型」分类，未授权时该分类完全不出现喵。
+  showVirtualModels?: boolean
+  // 是否允许在分组下拉追加「自定上游」分类，未授权时该分类完全不出现喵。
+  showUserUpstreamModels?: boolean
   onStop?: () => void
   text: string
   tools: ReactNode
@@ -54,6 +58,8 @@ export function PlaygroundInputControls({
   modelValue,
   onGroupChange,
   onModelChange,
+  showVirtualModels = true,
+  showUserUpstreamModels = true,
   onStop,
   text,
   tools,
@@ -82,8 +88,9 @@ export function PlaygroundInputControls({
       onGroupChange={onGroupChange}
       disabled={isSelectorDisabled}
       // 仅游乐场聊天输入启用「虚拟模型」与「自定上游」分组分类，其余页面不显示喵。
-      showVirtualModels
-      showUserUpstreamModels
+      // 两个开关还叠加后端的内置伪分组放行位，未授权时分类整体隐藏喵。
+      showUserUpstreamModels={showUserUpstreamModels}
+      showVirtualModels={showVirtualModels}
     />
   )
 

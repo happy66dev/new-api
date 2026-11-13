@@ -65,6 +65,9 @@ export type FailureRuleDraft = {
   timeoutSeconds: string
   // retryCount 规则重试当前候选的最大重试次数，空串表示未配置时沿用候选 MaxRetries 喵。
   retryCount: string
+  // consecutiveFailureThreshold 规则级连续失败阈值，空串表示该规则不启用连续失败冻结喵。
+  // 只统计"匹配本条规则条件"的失败，其它错误类型既不计数也不清零喵。
+  consecutiveFailureThreshold: string
   id?: number
   action: VirtualModelFailureRule['action']
 }
@@ -73,6 +76,8 @@ export type FailureRuleDraft = {
 export const MAXIMUM_FAILURE_RULES = 32
 // MAXIMUM_RULE_RETRY_COUNT 限制单条失败规则的最大重试次数，与后端控制面上限一致喵。
 export const MAXIMUM_RULE_RETRY_COUNT = 20
+// MAXIMUM_RULE_CONSECUTIVE_FAILURE_THRESHOLD 限制单条失败规则的连续失败阈值，与后端控制面上限一致喵。
+export const MAXIMUM_RULE_CONSECUTIVE_FAILURE_THRESHOLD = 1000
 // MAXIMUM_HTTP_STATUS 是合法 HTTP 状态码的控制面最大值喵。
 export const MAXIMUM_HTTP_STATUS = 599
 // MAXIMUM_FREEZE_SECONDS 限制单条规则最多冻结一个自然日喵。
@@ -145,6 +150,8 @@ export function toFailureRuleDraft(rule: VirtualModelFailureRule): FailureRuleDr
     timeoutSeconds: String(rule.timeout_seconds ?? 0),
     // 规则级重试次数原样回填，零表示未配置时沿用候选 MaxRetries 喵。
     retryCount: String(rule.retry_count ?? 0),
+    // 规则级连续失败阈值原样回填，零表示该规则不启用连续失败冻结喵。
+    consecutiveFailureThreshold: String(rule.consecutive_failure_threshold ?? 0),
     id: rule.id,
     action: rule.action ?? 'next',
   }
@@ -171,6 +178,8 @@ export function createFailureRuleDraft(): FailureRuleDraft {
     timeoutSeconds: '0',
     // 规则级重试次数默认零，表示未配置时沿用候选 MaxRetries 喵。
     retryCount: '0',
+    // 规则级连续失败阈值默认零，表示该规则不启用连续失败冻结喵。
+    consecutiveFailureThreshold: '0',
     action: 'next',
   }
 }
@@ -268,11 +277,19 @@ export function validateFailureRuleDraft(
   if (rule.action === 'retry') {
     retryCount = parseProbeNumber(rule.retryCount, MAXIMUM_RULE_RETRY_COUNT, t, index, 'Failure rule {{index}} retry count must be between 0 and 20')
   }
-  // 冻结参数仅在 freeze 动作时生效：其他动作（next/retry/passthrough 等）跳过校验并清零，
-  // 避免用户在 freeze 下输入的隐藏越界值阻断无关动作的保存喵。
+  // 规则级连续失败阈值解析：零表示该规则不启用连续失败冻结，可配任意动作喵。
+  const consecutiveFailureThreshold = parseProbeNumber(
+    rule.consecutiveFailureThreshold,
+    MAXIMUM_RULE_CONSECUTIVE_FAILURE_THRESHOLD,
+    t,
+    index,
+    'Failure rule {{index}} consecutive failure threshold must be between 0 and 1000'
+  )
+  // 冻结参数在两种情况下生效：动作是 freeze，或规则启用了连续失败阈值（阈值冻结复用该时长）喵。
+  // 其它情况跳过校验并清零，避免用户在隐藏字段里输入的越界值阻断无关动作的保存喵。
   let freezeSeconds = 0
   let freezeField = ''
-  if (rule.action === 'freeze') {
+  if (rule.action === 'freeze' || consecutiveFailureThreshold > 0) {
     // 将冻结秒数文本转换为数值，零表示不追加固定冻结时间喵。
     freezeSeconds = Number(rule.freezeSeconds)
     // 喵~防御：冻结时长必须处于零到一天，防止意外长期冻结候选喵。
@@ -307,6 +324,8 @@ export function validateFailureRuleDraft(
     timeout_seconds: timeoutSeconds,
     // retry 动作写入规则级最大重试次数，其他动作写 0 沿用候选 MaxRetries 喵。
     retry_count: retryCount,
+    // 规则级连续失败阈值，零表示该规则不启用连续失败冻结喵。
+    consecutive_failure_threshold: consecutiveFailureThreshold,
   }
 }
 

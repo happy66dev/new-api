@@ -69,6 +69,8 @@ const defaultBillingSettings: BillingSettings = {
   'billing_setting.group_billing_expr': '{}',
   'console_setting.model_square_visible_groups': '[]',
   'console_setting.group_access_rules': '[]',
+  // 全局分组管理模式默认 legacy，与后端默认值保持一致，升级后行为不变喵。
+  'console_setting.group_access_mode': 'legacy',
   PayAddress: '',
   EpayId: '',
   EpayKey: '',

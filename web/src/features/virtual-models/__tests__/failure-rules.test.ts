@@ -48,6 +48,8 @@ function makeDraft(overrides: Partial<FailureRuleDraft> = {}): FailureRuleDraft 
     timeoutSeconds: '0',
     // 规则级重试次数默认零，表示未配置时沿用候选 MaxRetries 喵。
     retryCount: '0',
+    // 规则级连续失败阈值默认零，表示该规则不启用连续失败冻结喵。
+    consecutiveFailureThreshold: '0',
     action: 'next',
     ...overrides,
   }
@@ -83,6 +85,8 @@ describe('toFailureRuleDraft', () => {
       timeoutSeconds: '0',
       // 规则级重试次数未配置时草稿默认零，表示沿用候选 MaxRetries 喵。
       retryCount: '0',
+      // 规则级连续失败阈值未配置时草稿默认零，表示该规则不启用连续失败冻结喵。
+      consecutiveFailureThreshold: '0',
       id: 7,
       action: 'freeze',
     })
@@ -122,6 +126,8 @@ describe('toFailureRuleDraft', () => {
       timeoutSeconds: '0',
       // 规则级重试次数未配置时草稿默认零，表示沿用候选 MaxRetries 喵。
       retryCount: '0',
+      // 规则级连续失败阈值未配置时草稿默认零，表示该规则不启用连续失败冻结喵。
+      consecutiveFailureThreshold: '0',
       id: undefined,
       action: 'next',
     })
@@ -162,6 +168,8 @@ describe('createFailureRuleDraft', () => {
       timeoutSeconds: '0',
       // 规则级重试次数未配置时草稿默认零，表示沿用候选 MaxRetries 喵。
       retryCount: '0',
+      // 规则级连续失败阈值默认零，表示该规则不启用连续失败冻结喵。
+      consecutiveFailureThreshold: '0',
       action: 'next',
     })
   })
@@ -289,6 +297,8 @@ describe('validateFailureRuleDraft', () => {
       timeout_seconds: 0,
       // retry 动作未配置规则级重试次数时写零，表示沿用候选 MaxRetries 喵。
       retry_count: 0,
+      // 未配置连续失败阈值时写零，表示该规则不启用连续失败冻结喵。
+      consecutive_failure_threshold: 0,
     })
   })
 
@@ -296,6 +306,36 @@ describe('validateFailureRuleDraft', () => {
     // retry 动作配置 3 次规则级重试，运行时覆盖候选 MaxRetries 喵。
     const payload = validateFailureRuleDraft(makeDraft({ action: 'retry', retryCount: '3' }), 0, identityTranslator)
     expect(payload.retry_count).toBe(3)
+  })
+
+  it('writes the consecutive failure threshold together with its freeze seconds', () => {
+    // 规则级连续失败阈值可配在任意动作上，且必须把本条规则的冻结秒数一并写入，阈值才有冻结效果喵。
+    const payload = validateFailureRuleDraft(
+      makeDraft({ action: 'next', consecutiveFailureThreshold: '3', freezeSeconds: '90' }),
+      0,
+      identityTranslator
+    )
+    expect(payload.consecutive_failure_threshold).toBe(3)
+    expect(payload.freeze_seconds).toBe(90)
+  })
+
+  it('treats zero as disabled and does not require freeze seconds', () => {
+    // 阈值为零表示关闭该功能，动作不是 freeze 时冻结秒数仍应清零，避免无关字段污染配置喵。
+    const payload = validateFailureRuleDraft(makeDraft({ action: 'next', consecutiveFailureThreshold: '0', freezeSeconds: '90' }), 0, identityTranslator)
+    expect(payload.consecutive_failure_threshold).toBe(0)
+    expect(payload.freeze_seconds).toBe(0)
+  })
+
+  it('rejects a consecutive failure threshold above the upper bound', () => {
+    // 喵~防御：超过 1000 的阈值必须在校验阶段拒绝，避免写入后端会拒收的配置喵。
+    // identityTranslator 原样返回 key，因此断言比对的是未插值的文案键喵。
+    expect(() => validateFailureRuleDraft(makeDraft({ consecutiveFailureThreshold: '1001' }), 0, identityTranslator)).toThrow(
+      'Failure rule {{index}} consecutive failure threshold must be between 0 and 1000'
+    )
+    // 非整数同样必须拒绝喵。
+    expect(() => validateFailureRuleDraft(makeDraft({ consecutiveFailureThreshold: '1.5' }), 0, identityTranslator)).toThrow(
+      'Failure rule {{index}} consecutive failure threshold must be between 0 and 1000'
+    )
   })
 
   it('maps the timeout condition to its stable error class', () => {

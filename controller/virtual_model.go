@@ -88,6 +88,10 @@ type virtualModelFailureRuleInput struct {
 	TimeoutSeconds int `json:"timeout_seconds"`
 	// RetryCount 规则重试当前候选的最大重试次数，零表示未配置沿用候选 MaxRetries 喵。
 	RetryCount int `json:"retry_count"`
+	// ConsecutiveFailureThreshold 规则级连续失败阈值，达到该次数才冻结候选喵。
+	// 只统计"匹配本条规则条件"的失败，其它错误类型既不计数也不清零（直接忽略）；
+	// 阈值命中后按本条规则的 FreezeSeconds 冻结，零表示关闭该功能喵。
+	ConsecutiveFailureThreshold int `json:"consecutive_failure_threshold"`
 }
 
 // virtualModelFailureRulesReplaceInput 描述候选失败规则的版本化整体替换请求喵。
@@ -973,7 +977,7 @@ func ReplaceVirtualModelCandidateFailureRules(c *gin.Context) {
 			return deleteError
 		}
 		for ruleOrder, ruleInput := range input.Rules {
-			failureRule := &model.VirtualModelFailureRule{CandidateID: candidateID, RuleOrder: ruleOrder, HTTPStatus: ruleInput.HTTPStatus, HTTPStatusMax: ruleInput.HTTPStatusMax, ErrorClass: strings.TrimSpace(ruleInput.ErrorClass), BodyRegex: strings.TrimSpace(ruleInput.BodyRegex), Action: ruleInput.Action, FreezeSeconds: ruleInput.FreezeSeconds, FreezeField: strings.TrimSpace(ruleInput.FreezeField), FreezeUnit: ruleInput.FreezeUnit, StallTimeoutSeconds: ruleInput.StallTimeoutSeconds, MinContentChars: ruleInput.MinContentChars, ProbeTotalTimeoutSeconds: ruleInput.ProbeTotalTimeoutSeconds, TimeoutSeconds: ruleInput.TimeoutSeconds, RetryCount: ruleInput.RetryCount}
+			failureRule := &model.VirtualModelFailureRule{CandidateID: candidateID, RuleOrder: ruleOrder, HTTPStatus: ruleInput.HTTPStatus, HTTPStatusMax: ruleInput.HTTPStatusMax, ErrorClass: strings.TrimSpace(ruleInput.ErrorClass), BodyRegex: strings.TrimSpace(ruleInput.BodyRegex), Action: ruleInput.Action, FreezeSeconds: ruleInput.FreezeSeconds, FreezeField: strings.TrimSpace(ruleInput.FreezeField), FreezeUnit: ruleInput.FreezeUnit, StallTimeoutSeconds: ruleInput.StallTimeoutSeconds, MinContentChars: ruleInput.MinContentChars, ProbeTotalTimeoutSeconds: ruleInput.ProbeTotalTimeoutSeconds, TimeoutSeconds: ruleInput.TimeoutSeconds, RetryCount: ruleInput.RetryCount, ConsecutiveFailureThreshold: ruleInput.ConsecutiveFailureThreshold}
 			if validateError := virtualmodelservice.ValidateCandidateFailureRule(failureRule); validateError != nil {
 				return validateError
 			}
@@ -1039,7 +1043,7 @@ func ReplaceVirtualModelGlobalFailureRules(c *gin.Context) {
 			return deleteError
 		}
 		for ruleOrder, ruleInput := range input.Rules {
-			globalFailureRule := &model.VirtualModelGlobalFailureRule{VirtualModelID: modelID, RuleOrder: ruleOrder, HTTPStatus: ruleInput.HTTPStatus, HTTPStatusMax: ruleInput.HTTPStatusMax, ErrorClass: strings.TrimSpace(ruleInput.ErrorClass), BodyRegex: strings.TrimSpace(ruleInput.BodyRegex), Action: ruleInput.Action, FreezeSeconds: ruleInput.FreezeSeconds, FreezeField: strings.TrimSpace(ruleInput.FreezeField), FreezeUnit: ruleInput.FreezeUnit, StallTimeoutSeconds: ruleInput.StallTimeoutSeconds, MinContentChars: ruleInput.MinContentChars, ProbeTotalTimeoutSeconds: ruleInput.ProbeTotalTimeoutSeconds, TimeoutSeconds: ruleInput.TimeoutSeconds, RetryCount: ruleInput.RetryCount}
+			globalFailureRule := &model.VirtualModelGlobalFailureRule{VirtualModelID: modelID, RuleOrder: ruleOrder, HTTPStatus: ruleInput.HTTPStatus, HTTPStatusMax: ruleInput.HTTPStatusMax, ErrorClass: strings.TrimSpace(ruleInput.ErrorClass), BodyRegex: strings.TrimSpace(ruleInput.BodyRegex), Action: ruleInput.Action, FreezeSeconds: ruleInput.FreezeSeconds, FreezeField: strings.TrimSpace(ruleInput.FreezeField), FreezeUnit: ruleInput.FreezeUnit, StallTimeoutSeconds: ruleInput.StallTimeoutSeconds, MinContentChars: ruleInput.MinContentChars, ProbeTotalTimeoutSeconds: ruleInput.ProbeTotalTimeoutSeconds, TimeoutSeconds: ruleInput.TimeoutSeconds, RetryCount: ruleInput.RetryCount, ConsecutiveFailureThreshold: ruleInput.ConsecutiveFailureThreshold}
 			if validateError := virtualmodelservice.ValidateGlobalFailureRule(globalFailureRule); validateError != nil {
 				return validateError
 			}

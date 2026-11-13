@@ -35,6 +35,9 @@ type ConsoleSetting struct {
 	ModelSquareTablePageSize int    `json:"model_square_table_page_size"`
 	ModelSquareVisibleGroups string `json:"model_square_visible_groups"`
 	GroupAccessRules         string `json:"group_access_rules"`
+	// GroupAccessMode 全局分组管理模式：legacy = 原 newapi 旧口径，custom = 仅新分组管理（按用户白名单）喵。
+	// 用户在用户页填了独立模式时以用户设置为准，此值只对"跟随全局"的用户生效喵。
+	GroupAccessMode          string `json:"group_access_mode"`
 	HomepageStyle            string `json:"homepage_style"`
 	HomepagePresetTitleMode  string `json:"homepage_preset_title_mode"`
 	HomepagePresetSLAEnabled bool   `json:"homepage_preset_sla_enabled"`
@@ -70,6 +73,8 @@ var defaultConsoleSetting = ConsoleSetting{
 	ModelSquareTablePageSize: 20,
 	ModelSquareVisibleGroups: "[]",
 	GroupAccessRules:         "[]",
+	// 默认沿用原 newapi 旧口径，升级后不会突然改变任何用户的可用分组喵。
+	GroupAccessMode:          "legacy",
 	HomepageStyle:            "default",
 	HomepagePresetTitleMode:  "i18n",
 	HomepagePresetSLAEnabled: true,
@@ -256,6 +261,9 @@ func ValidatePublicOption(key, value string) error {
 		if !ogTypePattern.MatchString(value) {
 			return fmt.Errorf("invalid Open Graph type")
 		}
+	case "group_access_mode":
+		// 喵~防御：只接受两个已知模式，避免脏配置让权限判定进入未定义分支喵。
+		return validateEnum(value, "legacy", "custom")
 	}
 	return nil
 }

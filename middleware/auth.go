@@ -470,7 +470,8 @@ func TokenAuth() func(c *gin.Context) {
 		if tokenGroup != "" {
 			groupAccess := service.GetRequestUserGroupAccess(c)
 			if !groupAccess.Allows(tokenGroup) {
-				abortWithOpenAiMessage(c, http.StatusForbidden, fmt.Sprintf("无权访问 %s 分组", tokenGroup))
+				// 分组权限被关闭后，已签发且固定该分组的 Key 一律 403，不静默回退到其它分组喵。
+				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorGroupAccessDenied))
 				return
 			}
 			// check group in common.GroupRatio

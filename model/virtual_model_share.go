@@ -100,15 +100,15 @@ type VirtualModelShareCandidate struct {
 // VirtualModelShareFailureRule 描述快照里的一个失败规则喵。
 // 与 VirtualModelFailureRule 字段一一对应，但不带主键、候选编号和版本等本地运行态字段喵。
 type VirtualModelShareFailureRule struct {
-	RuleOrder     int   `json:"rule_order"`
-	HTTPStatus    int   `json:"http_status"`
-	HTTPStatusMax int   `json:"http_status_max"`
-	ErrorClass    string `json:"error_class,omitempty"`
-	BodyRegex     string `json:"body_regex,omitempty"`
+	RuleOrder     int                       `json:"rule_order"`
+	HTTPStatus    int                       `json:"http_status"`
+	HTTPStatusMax int                       `json:"http_status_max"`
+	ErrorClass    string                    `json:"error_class,omitempty"`
+	BodyRegex     string                    `json:"body_regex,omitempty"`
 	Action        VirtualModelFailureAction `json:"action"`
-	FreezeSeconds int   `json:"freeze_seconds"`
-	FreezeField   string `json:"freeze_field,omitempty"`
-	FreezeUnit    VirtualModelFreezeUnit `json:"freeze_unit,omitempty"`
+	FreezeSeconds int                       `json:"freeze_seconds"`
+	FreezeField   string                    `json:"freeze_field,omitempty"`
+	FreezeUnit    VirtualModelFreezeUnit    `json:"freeze_unit,omitempty"`
 	// StallTimeoutSeconds 静默多久判定流式卡流，单位：秒；零表示运行时默认 60 喵。
 	StallTimeoutSeconds int `json:"stall_timeout_seconds"`
 	// MinContentChars 探测放流前需累积的内容字符门槛，零表示默认 10 喵。
@@ -119,6 +119,9 @@ type VirtualModelShareFailureRule struct {
 	TimeoutSeconds int `json:"timeout_seconds"`
 	// RetryCount 规则重试当前候选的最大重试次数，零表示沿用候选 MaxRetries 喵。
 	RetryCount int `json:"retry_count"`
+	// ConsecutiveFailureThreshold 规则级连续失败阈值，零表示该规则不启用连续失败冻结喵。
+	// 只统计匹配本条规则的失败，阈值命中后按本条 FreezeSeconds 冻结候选喵。
+	ConsecutiveFailureThreshold int `json:"consecutive_failure_threshold"`
 }
 
 // GenerateVirtualModelShareCodeValue 生成一个新的高熵分享码字符串喵。

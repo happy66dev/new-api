@@ -40,6 +40,10 @@ export const userFormSchema = z.object({
   role: z.number().optional(),
   quota_dollars: z.number().min(0).optional(),
   group: z.string().optional(),
+  // 分组权限模式：'' = 跟随全局设置，'legacy' = 原 newapi 旧口径，'custom' = 仅新分组管理喵。
+  group_access_mode: z.string().optional(),
+  // 可用分组白名单：custom 模式下决定用户能访问哪些分组喵。
+  usable_groups: z.array(z.string()).optional(),
   remark: z.string().optional(),
   admin_permissions: z
     .record(z.string(), z.record(z.string(), z.boolean()))
@@ -59,6 +63,9 @@ export const USER_FORM_DEFAULT_VALUES: UserFormValues = {
   role: 1, // Default to common user
   quota_dollars: 0,
   group: DEFAULT_GROUP,
+  // 默认跟随全局分组管理模式，管理员需要时才显式切换喵。
+  group_access_mode: '',
+  usable_groups: [],
   remark: '',
   // Filled against the backend catalog at render time; see UsersMutateDrawer.
   admin_permissions: {},
@@ -100,6 +107,9 @@ export function transformFormDataToPayload(
   } else {
     // For update: quota is adjusted atomically via /api/user/manage, not sent here
     payload.group = data.group
+    payload.group_access_mode = data.group_access_mode ?? ''
+    // 多选组件给出字符串数组，后端约定用 JSON 数组字符串落库，这里统一序列化喵。
+    payload.usable_groups = data.usable_groups ?? []
     payload.remark = data.remark || undefined
     payload.id = userId
   }
@@ -120,7 +130,28 @@ export function transformUserToFormDefaults(user: User): UserFormValues {
     role: user.role,
     quota_dollars: quotaUnitsToDollars(user.quota),
     group: user.group || DEFAULT_GROUP,
+    group_access_mode: user.group_access_mode ?? '',
+    // 后端存的是 JSON 数组字符串，编辑表单里转成字符串数组方便多选组件直接使用喵。
+    usable_groups: parseUsableGroups(user.usable_groups),
     remark: user.remark || '',
     admin_permissions: user.admin_permissions ?? {},
+  }
+}
+
+/**
+ * Parse the backend `usable_groups` JSON string into a string array.
+ * Malformed or legacy payloads fall back to an empty list, which the backend
+ * interprets as "only the built-in pseudo groups" in custom mode.
+ */
+export function parseUsableGroups(raw: string | undefined): string[] {
+  // 喵~防御：空值与空串直接返回空数组，避免 JSON.parse 抛异常喵。
+  if (!raw) return []
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    // 喵~防御：非数组或元素不是字符串时按空列表处理，保守方向只是让用户少几个分组喵。
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((item): item is string => typeof item === 'string')
+  } catch {
+    return []
   }
 }

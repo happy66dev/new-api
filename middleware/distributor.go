@@ -336,6 +336,9 @@ type virtualModelExecutionState struct {
 	streamCutRetries int
 	// streamCutRetryCounts 记录断流处理措施对候选的重试次数，防止断流 retry 无限重放喵。
 	streamCutRetryCounts map[int]int
+	// groupAccessSkippedCandidateIDs 记录因调用者失去分组权限而被摘除的内部候选喵。
+	// 用途：整条候选链都是"分组无权被跳过"时，收尾要给「你没有访问该分组的权限」而不是笼统的模型不可用喵。
+	groupAccessSkippedCandidateIDs map[int]bool
 }
 
 // handleVirtualModelRequest 验证虚拟模型授权、构造请求级快照并激活首个可执行候选喵。
@@ -351,6 +354,11 @@ func handleVirtualModelRequest(c *gin.Context, modelRequest *ModelRequest) bool 
 	}
 	if !model.VirtualModelFunctionEnabled() {
 		abortWithOpenAiMessage(c, http.StatusNotFound, "virtual model execution is disabled", types.ErrorCode("virtual_model_disabled"))
+		return false
+	}
+	// custom 模式下"虚拟模型分组"必须在可用分组白名单里（或留空时的默认放行位），否则整条链都不允许执行喵。
+	if !service.GetRequestUserGroupAccess(c).AllowsBuiltinGroup(constant.GroupVirtual) {
+		abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorGroupAccessDenied), types.ErrorCode("group_access_denied"))
 		return false
 	}
 	normalizedName, normalizeError := model.NormalizeVirtualModelName(modelRequest.Model)
@@ -443,6 +451,8 @@ func handleVirtualModelRequest(c *gin.Context, modelRequest *ModelRequest) bool 
 		streamCutAction:                 virtualModel.StreamCutAction,
 		streamCutRetries:                virtualModel.StreamCutRetries,
 		streamCutRetryCounts:            make(map[int]int),
+		// 分组无权跳过的候选集合初始化为空，收尾据此判定是否需要报"你没有访问该分组的权限"喵。
+		groupAccessSkippedCandidateIDs: make(map[int]bool),
 		// 整体与候选延迟都从请求进入虚拟层开始计时喵。
 		startTime:                 time.Now(),
 		currentCandidateStartedAt: time.Now(),
@@ -478,6 +488,19 @@ func handleVirtualModelRequest(c *gin.Context, modelRequest *ModelRequest) bool 
 			failureSummaries = append(failureSummaries, fmt.Sprintf("seq=%d src=%s status=%d class=%s msg=%s body=%q", attempt.Seq, attempt.Source, attempt.StatusCode, attempt.ErrorClass, attempt.ErrorMessage, errorBodyPreview))
 		}
 		common.SysError("virtual model candidate chain exhausted: " + strings.Join(failureSummaries, "; "))
+	}
+	// 候选链全部是因为"调用者失去分组权限"被摘除时，返回明确的 403 分组权限提示喵。
+	// 判定口径：至少有一个候选因无权被摘除，且完全没有产生过任何候选尝试（尝试记录只有真正执行过的候选才有）喵。
+	if executionState, foundState := getVirtualModelExecutionState(c); foundState && len(executionState.groupAccessSkippedCandidateIDs) > 0 {
+		attemptCount := 0
+		if attempts, foundAttempts := common.GetContextKeyType[*[]model.VirtualModelCandidateAttemptRecord](c, constant.ContextKeyVirtualCandidateAttempts); foundAttempts && attempts != nil {
+			attemptCount = len(*attempts)
+		}
+		// 零尝试才代表"一个候选都没跑"，此时无权是最准确的失败原因喵。
+		if attemptCount == 0 {
+			abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorGroupAccessDenied), types.ErrorCode("group_access_denied"))
+			return false
+		}
 	}
 	abortWithOpenAiMessage(c, http.StatusBadGateway, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
 	return false
@@ -552,7 +575,26 @@ func AdvanceVirtualModelAfterNativeFailure(c *gin.Context, nativeError *types.Ne
 		CompletionTokens: attemptBilling.CompletionTokens,
 		BilledOnSkip:     !attemptBilling.IsZero(),
 	})
-	// 断流失败与普通失败统一走失败规则决策（候选规则优先，无则全局兜底），目标模式断流措施已由全局兜底规则代替喵。
+	// 规则级连续失败阈值：只统计"匹配当前选中规则"的失败，其它错误类型既不计数也不清零喵。
+	// 必须先于自动避险判定，因为达阈值冻结后本次请求不得再重试该候选喵。
+	failureDecision := virtualmodelservice.DecideVirtualModelFailure(executionState.executionSnapshot, currentCandidate.CandidateID, nativeFailure)
+	ruleFroze, ruleFreezeError := virtualmodelservice.RecordCandidateRuleConsecutiveFailure(executionState.ownerUserID, currentCandidate, failureDecision, common.GetTimestamp())
+	// 喵~防御：规则级计数写入失败时保守中止候选链，避免上游故障扩大为循环请求喵。
+	if ruleFreezeError != nil {
+		abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
+		return decision
+	}
+	// 规则级阈值命中：按该规则的冻结秒数冻结候选，并同步内存快照让后续候选激活立即跳过喵。
+	if ruleFroze {
+		ruleFrozenUntil := common.GetTimestamp() + int64(failureDecision.FreezeSeconds)
+		freezeError := model.UpsertVirtualModelInternalFreezeState(executionState.ownerUserID, currentCandidate.CandidateID, ruleFrozenUntil, nativeFailure.ErrorClass, common.GetTimestamp())
+		// 喵~防御：冻结状态写入失败时保守中止候选链，与 action=freeze 的失败处理保持一致喵。
+		if freezeError != nil {
+			abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
+			return decision
+		}
+		executionState.internalFreezeStatesByCandidate[currentCandidate.CandidateID] = model.VirtualModelInternalFreezeState{CandidateID: currentCandidate.CandidateID, FrozenUntil: ruleFrozenUntil}
+	}
 	// 自动避险独立于失效规则：候选配置了连续失败阈值时，无论失效规则决策为何都累计连续失败，达阈值即冻结退避喵。
 	hedgeFroze, hedgeError := virtualmodelservice.RecordCandidateAutoHedge(executionState.ownerUserID, currentCandidate, nativeFailure, common.GetTimestamp())
 	// 喵~防御：连续失败计数写入失败时保守中止候选链，避免上游故障扩大为循环请求喵。
@@ -564,7 +606,9 @@ func AdvanceVirtualModelAfterNativeFailure(c *gin.Context, nativeError *types.Ne
 	if hedgeFroze {
 		executionState.internalFreezeStatesByCandidate[currentCandidate.CandidateID] = model.VirtualModelInternalFreezeState{CandidateID: currentCandidate.CandidateID, FrozenUntil: common.GetTimestamp() + int64(currentCandidate.HedgeFreezeSeconds)}
 	}
-	action, freezeSeconds, ruleRetryCount := virtualmodelservice.DecideVirtualModelFailureAction(executionState.executionSnapshot, currentCandidate.CandidateID, nativeFailure)
+	// 任一阈值（规则级或自动避险）本次触发冻结时都不再重试当前候选，直接进入候选切换喵。
+	candidateFroze := hedgeFroze || ruleFroze
+	action, freezeSeconds, ruleRetryCount := failureDecision.Action, failureDecision.FreezeSeconds, failureDecision.RetryCount
 	if action == model.VirtualModelActionPassthrough {
 		// 实体状态检测：内部候选失败按规则透传错误，记录候选失败与虚拟模型整体失败喵。
 		RecordActiveVirtualModelCandidateProbe(c, false, nativeFailure.ErrorClass)
@@ -572,13 +616,13 @@ func AdvanceVirtualModelAfterNativeFailure(c *gin.Context, nativeError *types.Ne
 		return decision
 	}
 	// 失败规则 retry：规则级最大重试次数优先，未配置时回退候选 MaxRetries 重放当前内部候选喵。
-	// 喵~防御：自动避险刚达阈值冻结该候选时不得再重试，直接进入候选切换退避喵。
+	// 喵~防御：规则级或自动避险阈值刚触发冻结该候选时不得再重试，直接进入候选切换退避喵。
 	maxInternalRetries := currentCandidate.MaxRetries
 	if ruleRetryCount > 0 {
 		maxInternalRetries = ruleRetryCount
 	}
 	internalRetryCount := executionState.ruleRetryCounts[currentCandidate.CandidateID]
-	if action == model.VirtualModelActionRetry && internalRetryCount < maxInternalRetries && !hedgeFroze {
+	if action == model.VirtualModelActionRetry && internalRetryCount < maxInternalRetries && !candidateFroze {
 		executionState.ruleRetryCounts[currentCandidate.CandidateID]++
 		// 恢复客户端原始请求体后重新改写为当前候选，供 relay 循环再次走原生分发喵。
 		if restoreVirtualModelOriginalRequest(c, executionState.originalRequestBody) && applyInternalVirtualModelCandidate(c, executionState.modelRequest, executionState.virtualModelName, &currentCandidate) {
@@ -641,6 +685,10 @@ func ClearCurrentVirtualModelCandidateAutomaticFreeze(c *gin.Context) {
 		return
 	}
 	currentCandidate := executionState.executionSnapshot.Candidates[executionState.currentCandidateIndex]
+	// 成功即打断规则级连续失败序列：清除该候选在所有失败规则下的计数喵。
+	if clearError := virtualmodelservice.ClearCandidateRuleConsecutiveFailures(executionState.ownerUserID, currentCandidate); clearError != nil {
+		common.SysError("failed to clear virtual model rule failure counters: " + clearError.Error())
+	}
 	// 只清除内部候选的自动冻结，自定义候选由透传执行成功路径自行清理喵。
 	if currentCandidate.SourceType != model.VirtualModelSourceInternal {
 		return
@@ -740,12 +788,19 @@ func activateNextVirtualModelCandidate(c *gin.Context, executionState *virtualMo
 		if candidateSnapshot.SourceType == model.VirtualModelSourceInternal &&
 			strings.TrimSpace(candidateSnapshot.GroupName) != "" && candidateSnapshot.GroupName != "auto" &&
 			!service.GetRequestUserGroupAccess(c).Allows(candidateSnapshot.GroupName) {
+			// 记下被摘除的候选，供候选链全部因无权而耗尽时给出明确的分组权限提示喵。
+			executionState.groupAccessSkippedCandidateIDs[candidateSnapshot.CandidateID] = true
 			continue
 		}
 		if candidateSnapshot.SourceType == model.VirtualModelSourceCustom {
 			// 系统总开关(UserUpstreamEnabled)关闭时，自定义候选（直填或引用上游）一律视为不可用跳过，
 			// 让候选链前进到内部候选；存量候选仅拦截不删除，重新开启后恢复可用喵。
 			if !model.UserUpstreamFeatureEnabled() {
+				continue
+			}
+			// custom 模式下"自定上游分组"未授权时，自定义候选同样从调用链上摘除，并记入无权跳过集合喵。
+			if !service.GetRequestUserGroupAccess(c).AllowsBuiltinGroup(constant.GroupUserUpstream) {
+				executionState.groupAccessSkippedCandidateIDs[candidateSnapshot.CandidateID] = true
 				continue
 			}
 			identityDigest := virtualmodelservice.CustomCandidateIdentityDigest(*candidateSnapshot)
@@ -1583,6 +1638,10 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 				// 喵~防御：冻结清理失败不影响已提交成功响应，仅保留后续请求可能继续跳过该候选的保守状态喵。
 				_ = model.ClearVirtualModelCustomFreezeState(c.GetInt("id"), identityDigest, expectedUpdatedTime, common.GetTimestamp())
 			}
+			// 成功即打断规则级连续失败序列：清除该自定义候选在所有失败规则下的计数喵。
+			if clearError := virtualmodelservice.ClearCandidateRuleConsecutiveFailures(c.GetInt("id"), *candidate); clearError != nil {
+				common.SysError("failed to clear virtual model rule failure counters: " + clearError.Error())
+			}
 			c.Abort()
 			return false
 		}
@@ -1609,11 +1668,37 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 			return false
 		}
 		// 候选失败后按规则决策动作；断流与普通失败统一走失败规则（候选规则优先，无则全局兜底），目标模式断流措施已由全局兜底规则代替喵。
-		action, freezeSeconds, ruleRetryCount := virtualmodelservice.DecideVirtualModelFailureAction(executionSnapshot, candidate.CandidateID, customFailure.Failure)
+		failureDecision := virtualmodelservice.DecideVirtualModelFailure(executionSnapshot, candidate.CandidateID, customFailure.Failure)
+		action, freezeSeconds, ruleRetryCount := failureDecision.Action, failureDecision.FreezeSeconds, failureDecision.RetryCount
 		// 记录该 custom 候选的失败尝试摘要，供最终日志展示候选链故障转移过程喵。
 		appendVirtualModelCandidateAttempt(c, buildVirtualModelCustomFailureAttempt(c, candidate, candidateRealModelName, customFailure.Failure, retryIndex, startTime))
-		// 自动避险独立于失效规则：候选配置了连续失败阈值时，无论失效规则决策为何都累计连续失败，达阈值即冻结退避喵。
 		ownerUserID := c.GetInt("id")
+		// 规则级连续失败阈值：只统计"匹配当前选中规则"的失败，其它错误类型既不计数也不清零喵。
+		ruleFroze, ruleFreezeError := virtualmodelservice.RecordCandidateRuleConsecutiveFailure(ownerUserID, *candidate, failureDecision, common.GetTimestamp())
+		// 喵~防御：规则级计数写入失败时保守中止候选链，避免上游故障扩大为循环请求喵。
+		if ruleFreezeError != nil {
+			// 实体状态检测：计数写入失败终结候选链，记录候选失败与整体失败喵。
+			recordCustomCandidateFailureProbe(c, candidate, hasUpstreamReference, referencedUpstreamModel, customFailure.Failure.ErrorClass, startTime, true)
+			abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
+			return false
+		}
+		// 规则级阈值命中：按该规则的冻结秒数冻结候选并同步内存快照喵。
+		if ruleFroze {
+			identityDigest := virtualmodelservice.CustomCandidateIdentityDigest(*candidate)
+			ruleFrozenUntil := common.GetTimestamp() + int64(failureDecision.FreezeSeconds)
+			freezeError := model.UpsertVirtualModelCustomFreezeState(ownerUserID, identityDigest, ruleFrozenUntil, customFailure.Failure.ErrorClass, common.GetTimestamp())
+			// 喵~防御：冻结状态写入失败时保守中止候选链，与 action=freeze 的失败处理保持一致喵。
+			if freezeError != nil {
+				recordCustomCandidateFailureProbe(c, candidate, hasUpstreamReference, referencedUpstreamModel, customFailure.Failure.ErrorClass, startTime, true)
+				abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
+				return false
+			}
+			// 同步内存快照，让本次请求后续候选激活立即跳过刚冻结的自定义候选喵。
+			if currentState, foundState := getVirtualModelExecutionState(c); foundState {
+				currentState.automaticFreezeStatesByIdentity[identityDigest] = model.VirtualModelCustomFreezeState{IdentityDigest: identityDigest, FrozenUntil: ruleFrozenUntil}
+			}
+		}
+		// 自动避险独立于失效规则：候选配置了连续失败阈值时，无论失效规则决策为何都累计连续失败，达阈值即冻结退避喵。
 		hedgeFroze, hedgeError := virtualmodelservice.RecordCandidateAutoHedge(ownerUserID, *candidate, customFailure.Failure, common.GetTimestamp())
 		// 喵~防御：连续失败计数写入失败时保守中止候选链，避免上游故障扩大为循环请求喵。
 		if hedgeError != nil {
@@ -1630,12 +1715,14 @@ func executeCustomVirtualModelCandidate(c *gin.Context, candidate *model.Virtual
 				executionState.automaticFreezeStatesByIdentity[identityDigest] = model.VirtualModelCustomFreezeState{IdentityDigest: identityDigest, FrozenUntil: common.GetTimestamp() + int64(candidate.HedgeFreezeSeconds)}
 			}
 		}
+		// 任一阈值（规则级或自动避险）本次触发冻结时都不再重试当前候选，直接进入候选切换喵。
+		candidateFroze := hedgeFroze || ruleFroze
 		// 断流 retry 用规则级最大重试次数优先，未配置时回退候选 MaxRetries 喵。
 		maxCustomRetries := maximumRetries
 		if ruleRetryCount > 0 {
 			maxCustomRetries = ruleRetryCount
 		}
-		if action == model.VirtualModelActionRetry && retryIndex < maxCustomRetries && !hedgeFroze {
+		if action == model.VirtualModelActionRetry && retryIndex < maxCustomRetries && !candidateFroze {
 			retryDelay := time.Duration(virtualmodelservice.RetryBackoffSeconds(retryIndex)) * time.Second
 			// 喵~防御：退避等待必须响应客户端取消和总 deadline，避免断开请求仍占用 goroutine 和连接喵。
 			if executionState, foundState := getVirtualModelExecutionState(c); foundState && !executionState.requestDeadline.IsZero() {
@@ -1713,7 +1800,7 @@ func applyInternalVirtualModelCandidate(c *gin.Context, modelRequest *ModelReque
 	}
 	// 喵~防御：候选分组必须属于当前 API Key 的可访问范围，避免私有模型升级调用方权限喵。
 	if !service.GetRequestUserGroupAccess(c).Allows(candidate.GroupName) {
-		abortWithOpenAiMessage(c, http.StatusForbidden, "token does not have access to the virtual model candidate group", types.ErrorCode("virtual_model_not_found"))
+		abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorGroupAccessDenied), types.ErrorCode("group_access_denied"))
 		return false
 	}
 	// 候选激活即代表本候选必须从自己的分组重新选择渠道：清空上一个候选（或渠道固定）留下的

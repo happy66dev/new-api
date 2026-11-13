@@ -28,6 +28,7 @@ export {
   userFormSchema,
   type UserFormValues,
   USER_FORM_DEFAULT_VALUES,
+  parseUsableGroups,
   transformFormDataToPayload,
   transformUserToFormDefaults,
 } from './user-form'

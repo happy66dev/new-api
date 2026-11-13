@@ -47,10 +47,17 @@ func GetPricing(c *gin.Context) {
 	groupRatio := map[string]float64{}
 	maps.Copy(groupRatio, ratio_setting.GetGroupRatioCopy())
 	var group string
+	// 分组权限解析结果：custom 模式下是否允许看到共享分组要按放行位判定喵。
+	groupAccess := service.UserGroupAccess{UsableGroups: map[string]string{}}
+	// 分组权限模式与白名单只在下面解析一次，供可用分组与自动分组共用喵。
+	groupAccessMode := service.GroupAccessModeAuto
+	usableGroupsRaw := ""
 	if exists {
 		user, err := model.GetUserCache(userId.(int))
 		if err == nil {
 			group = user.Group
+			groupAccessMode = service.GetUserGroupAccessMode(user)
+			usableGroupsRaw = service.GetUserUsableGroupWhitelist(user)
 			for g := range groupRatio {
 				ratio, ok := ratio_setting.GetGroupGroupRatio(group, g)
 				if ok {
@@ -64,14 +71,24 @@ func GetPricing(c *gin.Context) {
 	if exists {
 		userID, _ = userId.(int)
 	}
-	usableGroup = service.GetUserUsableGroupsForUser(userID, group)
+	groupAccess = service.ResolveUserGroupAccessForUser(userID, group, groupAccessMode, usableGroupsRaw).WithBuiltinGroupFeatureGates()
+	usableGroup = groupAccess.UsableGroups
 	visibleGroups := console_setting.GetModelSquareVisibleGroups()
 	pricingGroups := make(map[string]string, len(usableGroup)+len(visibleGroups))
 	for groupName, description := range usableGroup {
 		pricingGroups[groupName] = description
 	}
+	// 自动分组只在旧口径下出现，custom 模式不再返回，避免前端走旧规则喵。
+	autoGroups := []string{}
+	if !groupAccess.HasCustomMode() {
+		autoGroups = service.GetUserAutoGroupForUser(userID, group, service.GroupAccessModeLegacy, "")
+	}
 	visibleDescriptions := console_setting.GetModelSquareVisibleGroupDescriptions()
 	for _, groupName := range visibleGroups {
+		// 喵~防御：custom 模式下"模型广场可见分组"不得突破用户白名单，否则管理员配的公开分组会绕过权限喵。
+		if groupAccess.HasCustomMode() && !groupAccess.Allows(groupName) {
+			continue
+		}
 		if _, exists := pricingGroups[groupName]; !exists {
 			if description, ok := visibleDescriptions[groupName]; ok && description != "" {
 				pricingGroups[groupName] = description
@@ -82,7 +99,10 @@ func GetPricing(c *gin.Context) {
 	}
 	pricing = filterPricingByUsableGroups(pricing, pricingGroups)
 	// 追加共享中的用户上游模型条目，供模型广场在 user-shared 分组展示喵。
-	pricing = appendSharedUpstreamPricing(pricing, userId)
+	// 喵~防御：custom 模式下共享分组未获授权时不得追加，否则共享模型会绕过分组权限出现在广场里喵。
+	if !groupAccess.HasCustomMode() || groupAccess.AllowsBuiltinGroup(constant.GroupUserShared) {
+		pricing = appendSharedUpstreamPricing(pricing, userId)
+	}
 	// 分组描述已由上游的 visibleDescriptions（console 设置）统一提供，此处不再重复拼装喵。
 	// check groupRatio contains usableGroup
 	for group := range ratio_setting.GetGroupRatioCopy() {
@@ -100,8 +120,11 @@ func GetPricing(c *gin.Context) {
 		"model_square_groups":             visibleGroups,
 		"model_square_group_descriptions": visibleDescriptions,
 		"supported_endpoint":              model.GetSupportedEndpointMap(),
-		"auto_groups":                     service.GetUserAutoGroupForUser(userID, group),
-		"pricing_version":                 "a42d372ccf0b5dd13ecf71203521f9d2",
+		"auto_groups":                     autoGroups,
+		// 内置伪分组放行位与模式透传，模型广场据此隐藏未授权的分类喵。
+		"builtin_groups":           groupAccess.BuiltinGroups,
+		"group_access_custom_mode": groupAccess.HasCustomMode(),
+		"pricing_version":          "a42d372ccf0b5dd13ecf71203521f9d2",
 	})
 }
 

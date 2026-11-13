@@ -53,9 +53,12 @@ const DEFAULT_RULES = `[
   }
 ]`
 
-type GroupAccessRulesSectionProps = { defaultValue: string }
-type AccessCondition = {
-  type: string
+type GroupAccessRulesSectionProps = {
+  defaultValue: string
+  // 全局分组管理模式的当前值：legacy 沿用旧口径，custom 为新分组管理喵。
+  defaultAccessMode: string
+}
+type AccessCondition = {  type: string
   providers?: string[]
   days?: number
   min_quota?: number
@@ -73,6 +76,12 @@ type AccessRule = {
 const LOGIC_OPTIONS = [
   { value: 'and', label: 'AND' },
   { value: 'or', label: 'OR' },
+]
+
+// 全局分组管理模式选项：legacy 沿用旧四套口径，custom 只认用户页白名单喵。
+const ACCESS_MODE_OPTIONS = [
+  { value: 'legacy', labelKey: 'Original new-api rules' },
+  { value: 'custom', labelKey: 'Custom group list only' },
 ]
 
 function cloneAccessRule(rule: AccessRule): AccessRule {
@@ -121,9 +130,25 @@ function conditionAmount(condition: AccessCondition): number {
 
 export function GroupAccessRulesSection({
   defaultValue,
+  defaultAccessMode,
 }: GroupAccessRulesSectionProps) {
   const { t } = useTranslation()
   const updateOption = useUpdateOption()
+  const [accessMode, setAccessMode] = useState(
+    // 喵~防御：只有明确 custom 才按新模式展示，其余值一律视作 legacy喵。
+    defaultAccessMode === 'custom' ? 'custom' : 'legacy'
+  )
+  useEffect(
+    () => setAccessMode(defaultAccessMode === 'custom' ? 'custom' : 'legacy'),
+    [defaultAccessMode]
+  )
+  // 模式切换与规则编辑同属一个设置区块，用底部统一的保存按钮一次性提交两处配置喵。
+  const saveAccessMode = async () => {
+    await updateOption.mutateAsync({
+      key: 'console_setting.group_access_mode',
+      value: accessMode,
+    })
+  }
   const initialValue = useMemo(
     () => normalizeJsonString(defaultValue || '[]'),
     [defaultValue]
@@ -202,10 +227,12 @@ export function GroupAccessRulesSection({
 
   const save = async () => {
     if (!validation.valid) return
+    // 先保存分组访问规则，再保存全局分组管理模式，两处都是同一页面上的配置喵。
     await updateOption.mutateAsync({
       key: 'console_setting.group_access_rules',
       value: normalizeJsonString(value),
     })
+    await saveAccessMode()
   }
 
   const renderConditionRows = (
@@ -320,11 +347,49 @@ export function GroupAccessRulesSection({
     <>
       <SettingsPageFormActions
         onSave={save}
-        onReset={() => setValue(initialValue)}
+        onReset={() => {
+          setValue(initialValue)
+          // 重置动作同时把全局分组管理模式恢复为页面加载时的值喵。
+          setAccessMode(defaultAccessMode === 'custom' ? 'custom' : 'legacy')
+        }}
         isSaving={updateOption.isPending}
         isSaveDisabled={!validation.valid}
         saveLabel='Save access rules'
       />
+      <Card>
+        <CardHeader>
+          <CardTitle>{t('Group Access Mode')}</CardTitle>
+          <CardDescription>
+            {t(
+              'Controls which rules decide a user group access when the user does not override it. Custom mode only allows the groups selected on each user page.'
+            )}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className='space-y-3'>
+          <Select
+            items={ACCESS_MODE_OPTIONS.map((option) => ({
+              value: option.value,
+              label: t(option.labelKey),
+            }))}
+            value={accessMode}
+            onValueChange={(value) => value !== null && setAccessMode(value)}
+          >
+            <SelectTrigger className='w-full'>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent alignItemWithTrigger={false}>
+              <SelectGroup>
+                <SelectItem value='legacy'>
+                  {t('Original new-api rules')}
+                </SelectItem>
+                <SelectItem value='custom'>
+                  {t('Custom group list only')}
+                </SelectItem>
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+        </CardContent>
+      </Card>
       <Card>
         <CardHeader>
           <CardTitle>{t('Group Access Thresholds')}</CardTitle>

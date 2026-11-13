@@ -44,7 +44,7 @@ import { requireServerSuccess } from '@/lib/server-error-message'
 import { USER_UPSTREAM_GROUP_VALUE, VIRTUAL_GROUP_VALUE } from '@/components/model-group-selector'
 import { getVirtualModels } from '@/features/virtual-models/api'
 import { getUserUpstreamModels } from '@/features/upstream-models/api'
-import { getUserGroups, getUserModels } from '../api'
+import { getUserGroupsWithBuiltin, getUserModels } from '../api'
 import {
   buildUserUpstreamModelOptions,
   buildVirtualModelOptions,
@@ -113,7 +113,7 @@ export function usePlaygroundOptions({
     isError: isGroupsError,
   } = useQuery({
     queryKey: ['playground-groups'],
-    queryFn: async () => requireServerSuccess(await getUserGroups()),
+    queryFn: async () => requireServerSuccess(await getUserGroupsWithBuiltin()),
   })
 
   useEffect(() => {
@@ -189,17 +189,27 @@ export function usePlaygroundOptions({
   useEffect(() => {
     if (!groupsData) return
 
-    setGroups(groupsData)
+    setGroups(groupsData.groups)
     // 追加分组是前端追加的分类，不在后端分组数据里，跳过回退避免被重置喵。
     if (isAppendedGroup) return
-    const fallback = getGroupFallback(groupsData, currentGroup)
+    const fallback = getGroupFallback(groupsData.groups, currentGroup)
 
     if (fallback) {
       updateConfig('group', fallback)
     }
   }, [groupsData, isAppendedGroup, currentGroup, setGroups, updateConfig])
 
+  // 内置伪分组放行位：只在后端返回该字段（即 custom 分组模式）时才参与判定喵。
+  const builtinGroups = groupsData?.builtinGroups ?? null
+  // 虚拟模型分类是否可见：legacy 模式（字段缺失）沿用旧行为始终可见喵。
+  const showVirtualModels = builtinGroups === null || builtinGroups.virtual === true
+  // 自定上游分类同理，未授权时整个分类从分组下拉消失喵。
+  const showUserUpstreamModels =
+    builtinGroups === null || builtinGroups['user-upstream'] === true
+
   return {
     isLoadingModels,
+    showVirtualModels,
+    showUserUpstreamModels,
   }
 }

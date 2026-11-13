@@ -100,6 +100,45 @@ export async function getUserGroups(): Promise<GroupOption[]> {
   }))
 }
 
+/**
+ * Get user groups together with the built-in pseudo group flags.
+ * The backend only returns `builtin_groups` in custom group access mode, where
+ * the playground must hide the virtual-model and user-upstream categories the
+ * administrator did not grant.
+ */
+export async function getUserGroupsWithBuiltin(): Promise<{
+  groups: GroupOption[]
+  // 内置伪分组放行位：键为 virtual / user-upstream / user-shared，值为是否允许喵。
+  builtinGroups: Record<string, boolean> | null
+}> {
+  const res = await api.get(API_ENDPOINTS.USER_GROUPS)
+  const { data } = res
+  requireServerSuccess(data)
+
+  if (!data.success || !data.data) {
+    return { groups: [], builtinGroups: null }
+  }
+
+  const groupData = data.data as Record<string, { desc: string; ratio: number }>
+  // 喵~防御：后端在 legacy 模式下不返回 builtin_groups，此处保持 null 让前端沿用旧行为喵。
+  const rawBuiltinGroups = (
+    data as { builtin_groups?: Record<string, boolean> }
+  ).builtin_groups
+
+  return {
+    groups: Object.entries(groupData).map(([group, info]) => ({
+      label: group,
+      value: group,
+      ratio: info.ratio,
+      desc: info.desc,
+    })),
+    builtinGroups:
+      rawBuiltinGroups && typeof rawBuiltinGroups === 'object'
+        ? rawBuiltinGroups
+        : null,
+  }
+}
+
 export async function generateImage(
   payload: ImageGenerationRequest,
   signal?: AbortSignal

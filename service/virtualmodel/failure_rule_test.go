@@ -671,3 +671,146 @@ func TestValidateGlobalFailureRuleThreshold(t *testing.T) {
 	// 非冻结动作同样不再受阈值约束，正常允许保存喵。
 	require.NoError(t, ValidateGlobalFailureRule(&model.VirtualModelGlobalFailureRule{VirtualModelID: 1, RuleOrder: 0, HTTPStatus: http.StatusInternalServerError, Action: model.VirtualModelActionNext}))
 }
+
+// TestDecideCandidateFailureCarriesRuleThreshold 验证决策结果带回命中规则的序号与连续失败阈值喵。
+func TestDecideCandidateFailureCarriesRuleThreshold(t *testing.T) {
+	// 第一条规则状态码不匹配，第二条规则才命中并启用连续失败阈值 2 喵。
+	rules := []model.VirtualModelFailureRule{
+		{RuleOrder: 0, HTTPStatus: http.StatusTooManyRequests, Action: model.VirtualModelActionRetry, ConsecutiveFailureThreshold: 5},
+		{RuleOrder: 1, HTTPStatus: http.StatusBadGateway, Action: model.VirtualModelActionFreeze, FreezeSeconds: 90, ConsecutiveFailureThreshold: 2},
+	}
+	decision := DecideCandidateFailure(rules, CandidateFailure{HTTPStatus: http.StatusBadGateway, ErrorClass: "upstream_server_error"})
+	require.True(t, decision.Matched)
+	require.Equal(t, model.VirtualModelActionFreeze, decision.Action)
+	require.Equal(t, 90, decision.FreezeSeconds)
+	require.Equal(t, 1, decision.RuleOrder)
+	require.Equal(t, 2, decision.ConsecutiveFailureThreshold)
+
+	// 全部未命中时不应带走任何规则信息，避免调用方误以为要计数喵。
+	unmatched := DecideCandidateFailure(rules, CandidateFailure{HTTPStatus: http.StatusNotFound, ErrorClass: "upstream_client_error"})
+	require.False(t, unmatched.Matched)
+	require.Equal(t, model.VirtualModelActionNext, unmatched.Action)
+	require.Zero(t, unmatched.RuleOrder)
+	require.Zero(t, unmatched.ConsecutiveFailureThreshold)
+}
+
+// TestRecordCandidateRuleConsecutiveFailure 验证规则级连续失败阈值：只统计命中该规则的失败，达阈值才冻结喵。
+// 语义要点：非匹配失败直接忽略（既不计数也不清零），冻结秒数复用该规则配置，计数按候选独立喵。
+func TestRecordCandidateRuleConsecutiveFailure(t *testing.T) {
+	// 测试库没有 TestMain，为计数断言临时准备独立数据库喵。
+	testDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	oldDB := model.DB
+	model.DB = testDB
+	defer func() { model.DB = oldDB }()
+	require.NoError(t, testDB.AutoMigrate(&model.VirtualModelRuleFailureCounter{}))
+
+	candidate := model.VirtualModelCandidateSnapshot{CandidateID: 91, SourceType: model.VirtualModelSourceInternal}
+	// 规则级决策：命中第 2 条规则（序号 1），连续失败阈值 2，冻结 45 秒喵。
+	matchedDecision := CandidateFailureDecision{Action: model.VirtualModelActionNext, FreezeSeconds: 45, RuleOrder: 1, Matched: true, ConsecutiveFailureThreshold: 2}
+	// 表示"这次失败没命中任何规则"：必须完全不计数喵。
+	unmatchedDecision := CandidateFailureDecision{Action: model.VirtualModelActionNext}
+
+	// 未命中规则的失败：忽略且不落库，保证"非该类型失败既不计数也不清零"喵。
+	froze, recordError := RecordCandidateRuleConsecutiveFailure(7, candidate, unmatchedDecision, 1000)
+	require.NoError(t, recordError)
+	require.False(t, froze)
+	var counterRows []model.VirtualModelRuleFailureCounter
+	require.NoError(t, testDB.Find(&counterRows).Error)
+	require.Empty(t, counterRows)
+
+	// 第 1 次命中：计数 1，未达阈值 2 不冻结喵。
+	froze, recordError = RecordCandidateRuleConsecutiveFailure(7, candidate, matchedDecision, 1001)
+	require.NoError(t, recordError)
+	require.False(t, froze)
+	// 中间插入一次未命中的失败：计数保持 1，不被清零喵。
+	froze, recordError = RecordCandidateRuleConsecutiveFailure(7, candidate, unmatchedDecision, 1002)
+	require.NoError(t, recordError)
+	require.False(t, froze)
+	// 第 2 次命中：计数 2 达到阈值，触发冻结喵。
+	froze, recordError = RecordCandidateRuleConsecutiveFailure(7, candidate, matchedDecision, 1003)
+	require.NoError(t, recordError)
+	require.True(t, froze)
+	// 触发后计数清零，供冻结到期后重新攒满一轮喵。
+	counterRows = nil
+	require.NoError(t, testDB.Where("owner_user_id = ? AND candidate_key = ? AND rule_order = ?", 7, "internal:91", 1).Find(&counterRows).Error)
+	require.Len(t, counterRows, 1)
+	require.Zero(t, counterRows[0].ConsecutiveFails)
+
+	// 成功调用清除全部规则计数，打断连续序列喵。
+	require.NoError(t, ClearCandidateRuleConsecutiveFailures(7, candidate))
+	counterRows = nil
+	require.NoError(t, testDB.Find(&counterRows).Error)
+	require.Empty(t, counterRows)
+}
+
+// TestRecordCandidateRuleConsecutiveFailureIsolation 验证不同规则序号与不同候选之间计数互不干扰喵。
+func TestRecordCandidateRuleConsecutiveFailureIsolation(t *testing.T) {
+	// 使用独立内存库，避免与其它测试共享全局连接喵。
+	testDB, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	oldDB := model.DB
+	model.DB = testDB
+	defer func() { model.DB = oldDB }()
+	require.NoError(t, testDB.AutoMigrate(&model.VirtualModelRuleFailureCounter{}))
+
+	firstCandidate := model.VirtualModelCandidateSnapshot{CandidateID: 92, SourceType: model.VirtualModelSourceInternal}
+	secondCandidate := model.VirtualModelCandidateSnapshot{CandidateID: 93, SourceType: model.VirtualModelSourceInternal}
+	// 同一候选的两条规则各自阈值 2，序号不同喵。
+	firstRuleDecision := CandidateFailureDecision{RuleOrder: 0, Matched: true, ConsecutiveFailureThreshold: 2, FreezeSeconds: 10}
+	secondRuleDecision := CandidateFailureDecision{RuleOrder: 1, Matched: true, ConsecutiveFailureThreshold: 2, FreezeSeconds: 20}
+
+	// 候选 1 命中规则 0 一次、规则 1 一次：两条规则各自计数 1，都不该触发冻结喵。
+	froze, recordError := RecordCandidateRuleConsecutiveFailure(7, firstCandidate, firstRuleDecision, 2000)
+	require.NoError(t, recordError)
+	require.False(t, froze)
+	froze, recordError = RecordCandidateRuleConsecutiveFailure(7, firstCandidate, secondRuleDecision, 2001)
+	require.NoError(t, recordError)
+	require.False(t, froze)
+	// 候选 2 命中规则 0 一次：不能复用候选 1 的计数喵。
+	froze, recordError = RecordCandidateRuleConsecutiveFailure(7, secondCandidate, firstRuleDecision, 2002)
+	require.NoError(t, recordError)
+	require.False(t, froze)
+	// 候选 1 再命中规则 0 一次：达到自己的阈值 2 才冻结喵。
+	froze, recordError = RecordCandidateRuleConsecutiveFailure(7, firstCandidate, firstRuleDecision, 2003)
+	require.NoError(t, recordError)
+	require.True(t, froze)
+
+	var counterRows []model.VirtualModelRuleFailureCounter
+	require.NoError(t, testDB.Order("candidate_key asc, rule_order asc").Find(&counterRows).Error)
+	require.Len(t, counterRows, 3)
+	// 排序后依次为：候选 1 规则 0、候选 1 规则 1、候选 2 规则 0 喵。
+	require.Equal(t, "internal:92", counterRows[0].CandidateKey)
+	require.Equal(t, 0, counterRows[0].RuleOrder)
+	// 候选 1 的规则 0 已触发冻结并清零计数喵。
+	require.Zero(t, counterRows[0].ConsecutiveFails)
+	require.Equal(t, "internal:92", counterRows[1].CandidateKey)
+	require.Equal(t, 1, counterRows[1].RuleOrder)
+	// 候选 1 的规则 1 只累计过一次，仍保持 1 喵。
+	require.Equal(t, 1, counterRows[1].ConsecutiveFails)
+	require.Equal(t, "internal:93", counterRows[2].CandidateKey)
+	require.Equal(t, 0, counterRows[2].RuleOrder)
+	// 候选 2 的规则 0 独立计数，仍是 1，没有被候选 1 的触发连带清零喵。
+	require.Equal(t, 1, counterRows[2].ConsecutiveFails)
+}
+
+// TestValidateCandidateFailureRuleConsecutiveThreshold 验证规则级连续失败阈值的内存校验边界喵。
+func TestValidateCandidateFailureRuleConsecutiveThreshold(t *testing.T) {
+	baseRule := func() *model.VirtualModelFailureRule {
+		return &model.VirtualModelFailureRule{CandidateID: 1, RuleOrder: 0, HTTPStatus: http.StatusInternalServerError, Action: model.VirtualModelActionFreeze, FreezeSeconds: 30}
+	}
+	// 零表示关闭该功能，合法喵。
+	rule := baseRule()
+	require.NoError(t, ValidateCandidateFailureRule(rule))
+	// 一千是允许的上界喵。
+	rule = baseRule()
+	rule.ConsecutiveFailureThreshold = 1000
+	require.NoError(t, ValidateCandidateFailureRule(rule))
+	// 负数与超过一千的阈值必须拒绝持久化喵。
+	rule = baseRule()
+	rule.ConsecutiveFailureThreshold = -1
+	require.Error(t, ValidateCandidateFailureRule(rule))
+	rule = baseRule()
+	rule.ConsecutiveFailureThreshold = 1001
+	require.Error(t, ValidateCandidateFailureRule(rule))
+}

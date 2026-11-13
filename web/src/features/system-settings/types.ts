@@ -380,6 +380,8 @@ export type BillingSettings = {
   GroupRetryTimes: string
   'console_setting.model_square_visible_groups': string
   'console_setting.group_access_rules': string
+  /** 全局分组管理模式：legacy 沿用原 newapi 旧口径，custom 为仅新分组管理（按用户白名单）喵。 */
+  'console_setting.group_access_mode': string
   /** 分组定制定价：分组 -> 模型 -> 定价覆盖项的 JSON 字符串喵。 */
   GroupModelPricing: string
   /** 分组级计费方式：分组 -> 模型 -> tiered_expr 的 JSON 字符串喵。 */

@@ -79,7 +79,9 @@ func scanVirtualModelCandidateAnomalies(ownerUserID int, userGroup string) ([]vi
 		return nil, err
 	}
 	// 可用分组只计算一次，供所有内部候选共享判定喵。
-	usableGroups := service.GetUserUsableGroupsForUser(ownerUserID, userGroup)
+	// 用 ByUserID 版本：它同时读取用户的分组权限模式与白名单，custom 模式下不会误判候选可用喵。
+	groupAccess := service.ResolveUserGroupAccessByUserID(ownerUserID, userGroup)
+	usableGroups := groupAccess.UsableGroups
 	// 主人注意：不同分组的启模型列表只查一次并缓存，把 N 个候选的 N 次查询压到「不同分组数」次；
 	// 分组数上限就是候选数量上限 32，且只有异常判定需要，不会拖慢正常调用喵。
 	enabledModelsByGroup := make(map[string]map[string]bool)

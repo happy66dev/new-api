@@ -680,3 +680,41 @@ func TestManageUserQuotaCacheUsesCommittedIntegerDifference(t *testing.T) {
 		})
 	}
 }
+
+// TestNormalizeAdminGroupAccessInput 验证管理员提交的分组权限入参校验与规范化喵。
+func TestNormalizeAdminGroupAccessInput(t *testing.T) {
+	setupManageUserTestDB(t)
+
+	t.Run("rejects unknown mode", func(t *testing.T) {
+		// 喵~防御：未知模式必须报参数错误，而不是静默落库成未定义分支喵。
+		_, err := normalizeAdminGroupAccessInput(&model.User{GroupAccessMode: "custom-mode"})
+		require.Error(t, err)
+	})
+
+	t.Run("deduplicates and keeps builtin pseudo groups", func(t *testing.T) {
+		updatedUser := &model.User{GroupAccessMode: "custom", UsableGroups: `["default","default"," virtual ","user-shared"]`}
+		normalized, err := normalizeAdminGroupAccessInput(updatedUser)
+		require.NoError(t, err)
+		// 去重后保留去空白的合法分组，内置伪分组与现存倍率分组都允许喵。
+		assert.JSONEq(t, `["default","virtual","user-shared"]`, normalized)
+	})
+
+	t.Run("rejects group missing from ratios", func(t *testing.T) {
+		// 喵~防御：白名单只能写现存倍率分组或内置伪分组，其它值一律拒绝喵。
+		_, err := normalizeAdminGroupAccessInput(&model.User{GroupAccessMode: "custom", UsableGroups: `["not-exists"]`})
+		require.Error(t, err)
+	})
+
+	t.Run("rejects malformed json", func(t *testing.T) {
+		// 喵~防御：非数组 JSON 必须报错，不能静默清空用户白名单喵。
+		_, err := normalizeAdminGroupAccessInput(&model.User{GroupAccessMode: "custom", UsableGroups: `{"default":true}`})
+		require.Error(t, err)
+	})
+
+	t.Run("keeps empty whitelist as empty", func(t *testing.T) {
+		// 空白名单是合法配置：custom 模式下表示只放行内置伪分组喵。
+		normalized, err := normalizeAdminGroupAccessInput(&model.User{GroupAccessMode: "custom", UsableGroups: ""})
+		require.NoError(t, err)
+		assert.Equal(t, "", normalized)
+	})
+}

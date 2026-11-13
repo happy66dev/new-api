@@ -149,7 +149,16 @@ export function FailureRuleEditorRow({
               <span className='flex items-center gap-1'>
                 {t('Timeout seconds')}
                 <HelpHint hint={t('Per-attempt timeout for custom candidates; candidate rules override global rules.')}>
-                  <p>{t('Range: 0 to 600 seconds. For custom candidates, a value greater than 0 sets the wall-clock timeout for one upstream attempt. Candidate-level rules are checked before global rules; when all are 0, the referenced upstream model timeout or the candidate timeout is used. For internal candidates this field does not add a separate deadline; the virtual model total timeout is the outer limit.')}</p>
+                  <p>
+                    {t(
+                      'Range: 0 to 600 seconds. For custom candidates, a value greater than 0 sets the wall-clock timeout for one upstream attempt. Candidate-level rules are checked before global rules; when all are 0, the referenced upstream model timeout or the candidate timeout is used. For internal candidates this field does not add a separate deadline; the virtual model total timeout is the outer limit.'
+                    )}
+                  </p>
+                  <p>
+                    {t(
+                      'Timeout priority, innermost first: the failure rule Timeout seconds if greater than 0, otherwise the candidate Timeout seconds, both hard-capped at 600 seconds; then the stream probe budgets (Stall timeout, default 60, and Probe total timeout, default 300); then the virtual model Total timeout as the outermost limit; and after the stream has been released, the gateway streaming idle timeout (STREAMING_TIMEOUT, default 300 seconds of silence). A timeout during the probe phase writes no bytes to the client, so the gateway can switch to the next candidate; a timeout after the stream has been released forcibly ends the response and cannot switch candidates.'
+                    )}
+                  </p>
                 </HelpHint>
               </span>
               <Input inputMode='numeric' value={rule.timeoutSeconds} disabled={isSaving} placeholder={t('Seconds before a candidate is judged timed out (default: candidate timeout)')} onChange={(event) => onChange({ timeoutSeconds: event.target.value })} />
@@ -171,6 +180,11 @@ export function FailureRuleEditorRow({
                 {t('Stall timeout seconds')}
                 <HelpHint hint={t('Silence duration that marks a stream as stalled (default 60).')}>
                   <p>{t('Range: 0 to 600 seconds; 0 uses the backend default of 60 seconds. The value is resolved from candidate rules first, then global rules, then the default. The probe restarts whenever upstream sends new content. This budget only controls the stream probe and does not extend the per-attempt execution timeout.')}</p>
+                  <p>
+                    {t(
+                      'Timeout priority, innermost first: Stall timeout, then Probe total timeout, then the per-attempt timeout of this candidate, then the virtual model Total timeout as the outermost limit. The stall timer only runs during the probe phase; after the stream is released, the gateway streaming idle timeout takes over. A stall during the probe phase writes no bytes to the client, so the gateway can switch to the next candidate; a stall after the stream has been released ends the response and cannot switch candidates.'
+                    )}
+                  </p>
                 </HelpHint>
               </span>
               <Input inputMode='numeric' value={rule.stallTimeoutSeconds} disabled={isSaving} placeholder={t('Seconds of silence before judging stalled (default 60)')} onChange={(event) => onChange({ stallTimeoutSeconds: event.target.value })} />
@@ -191,6 +205,11 @@ export function FailureRuleEditorRow({
                 {t('Probe total timeout seconds')}
                 <HelpHint hint={t('Total time budget for the stream probe phase (default 300).')}>
                   <p>{t('Range: 0 to 3600 seconds; 0 uses the backend default of 300. The value is resolved from candidate rules first, then global rules, then the default. This budget limits the whole probe phase and is separate from the per-attempt execution timeout. When it is exhausted, the stream is treated as stalled even if the silence threshold has not been reached.')}</p>
+                  <p>
+                    {t(
+                      'Timeout priority, innermost first: Stall timeout, then Probe total timeout, then the per-attempt timeout of this candidate, then the virtual model Total timeout as the outermost limit. In fake stream mode the probe phase buffers the whole answer, so the effective probe budget is widened to at least the 600 second candidate hard cap to avoid cutting long but healthy answers. A probe-phase timeout writes no bytes to the client, so the gateway can still switch to the next candidate.'
+                    )}
+                  </p>
                 </HelpHint>
               </span>
               <Input inputMode='numeric' value={rule.probeTotalTimeoutSeconds} disabled={isSaving} placeholder={t('Total budget for the probe phase (default 300)')} onChange={(event) => onChange({ probeTotalTimeoutSeconds: event.target.value })} />
@@ -224,13 +243,43 @@ export function FailureRuleEditorRow({
               {t('Max retries')}
               <HelpHint hint={t('Retries for this rule; 0 uses the candidate Maximum retries.')}>
                 <p>{t("Only used by Retry current candidate. Range: 0 to 20. When greater than 0, it replaces the candidate Maximum retries for this rule; when 0, the candidate value is used. The total request timeout and auto hedge freeze can still stop retries earlier.")}</p>
+                <p>
+                  {t(
+                    'Retry priority: this rule Max retries wins whenever it is greater than 0, otherwise the candidate Maximum retries is used. Retries also stop early when the virtual model Total timeout is exhausted, when the candidate chain is exhausted and looping is disabled or out of rounds, when auto hedge or a consecutive failure threshold freezes the candidate, or when the client disconnects.'
+                  )}
+                </p>
               </HelpHint>
             </span>
             <Input inputMode='numeric' value={rule.retryCount} disabled={isSaving} placeholder={t('0 = candidate default, up to 20')} onChange={(event) => onChange({ retryCount: event.target.value })} />
           </label>
         )}
-        {/* 冻结秒数只在冻结动作时展示，避免其它动作暴露无意义的冻结配置喵。 */}
-        {rule.action === 'freeze' && (
+        {/* 规则级连续失败阈值：只统计匹配本条规则的失败，达阈值才冻结候选喵。 */}
+        <label className='grid gap-1 text-sm font-medium'>
+          {/* 连续失败阈值带帮助，说明非匹配失败会被忽略且冻结时长复用本条规则喵。 */}
+          <span className='flex items-center gap-1'>
+            {t('Rule consecutive failure threshold')}
+            <HelpHint hint={t('Freeze this candidate only after this rule matches N times in a row.')}>
+              <p>
+                {t(
+                  "Range: 0 to 1000; 0 disables this option. Only failures that match this rule are counted, and each candidate keeps its own counter. Failures that do not match this rule are ignored: they neither increment nor reset the counter. When the threshold is reached, the candidate is frozen for this rule's Freeze seconds, whether or not the action is Freeze candidate, and the current request does not retry it again."
+                )}
+              </p>
+            </HelpHint>
+          </span>
+          <Input
+            inputMode='numeric'
+            value={rule.consecutiveFailureThreshold}
+            disabled={isSaving}
+            placeholder={t('0 = disabled, up to 1000')}
+            onChange={(event) => onChange({ consecutiveFailureThreshold: event.target.value })}
+          />
+          {/* 阈值仅在 Freeze seconds 大于零时才有冻结效果，提示用户补齐冻结时长喵。 */}
+          {rule.action !== 'freeze' && rule.consecutiveFailureThreshold.trim() !== '' && rule.consecutiveFailureThreshold.trim() !== '0' && rule.freezeSeconds === '0' && (
+            <span className='text-xs text-muted-foreground'>{t('Freeze seconds must be greater than 0 for the threshold to freeze the candidate')}</span>
+          )}
+        </label>
+        {/* 冻结秒数在冻结动作或启用连续失败阈值时展示：阈值冻结复用本条规则的冻结时长喵。 */}
+        {(rule.action === 'freeze' || rule.consecutiveFailureThreshold.trim() !== '' && rule.consecutiveFailureThreshold.trim() !== '0') && (
           <>
             <label className='grid gap-1 text-sm font-medium'>
               {/* 固定冻结时长带帮助，说明 0 会改为从响应体解析喵。 */}

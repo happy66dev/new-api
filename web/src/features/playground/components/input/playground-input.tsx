@@ -54,6 +54,10 @@ interface PlaygroundInputProps {
   groups: GroupOption[]
   groupValue: string
   onGroupChange: (value: string) => void
+  // 是否允许在分组下拉追加「虚拟模型」分类，由后端内置伪分组放行位决定喵。
+  showVirtualModels?: boolean
+  // 是否允许在分组下拉追加「自定上游」分类，同样由放行位决定喵。
+  showUserUpstreamModels?: boolean
   hasMessages?: boolean
   onConfigChange: <K extends keyof PlaygroundConfig>(
     key: K,
@@ -80,6 +84,8 @@ export function PlaygroundInput({
   groups,
   groupValue,
   onGroupChange,
+  showVirtualModels = true,
+  showUserUpstreamModels = true,
   hasMessages = false,
   onConfigChange,
   onClearMessages,
@@ -148,6 +154,8 @@ export function PlaygroundInput({
             modelValue={modelValue}
             onGroupChange={onGroupChange}
             onModelChange={onModelChange}
+            showUserUpstreamModels={showUserUpstreamModels}
+            showVirtualModels={showVirtualModels}
             onStop={onStop}
             text={text}
             tools={

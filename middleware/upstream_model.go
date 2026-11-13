@@ -11,6 +11,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -321,9 +322,16 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 	}
 	// 授权解析：先查当前用户自己名下的上游模型，再回退查询共享中的同名模型喵。
 	ownerUserID := c.GetInt("id")
+	groupAccess := service.GetRequestUserGroupAccess(c)
 	upstreamModel, queryError := model.GetEnabledUserUpstreamModelByOwnerName(ownerUserID, normalizedName)
 	isShared := false
 	if queryError != nil {
+		// custom 模式下"用户共享分组"未授权时不再回退查询共享模型，直接按不存在处理喵。
+		if !groupAccess.AllowsBuiltinGroup(constant.GroupUserShared) {
+			touchUpstreamModelConfigState(c, ownerUserID, normalizedName, startTime)
+			abortWithOpenAiMessage(c, http.StatusNotFound, "user upstream model not found", types.ErrorCode("upstream_model_not_found"))
+			return false
+		}
 		// 属主名下没有该模型时，查询共享中的同名模型（按调用者白名单/黑名单过滤），供共享调用喵。
 		upstreamModel, queryError = model.GetEnabledSharedUserUpstreamModelByName(normalizedName, ownerUserID)
 		if queryError != nil {
@@ -333,6 +341,11 @@ func handleUserUpstreamModelRequest(c *gin.Context, modelRequest *ModelRequest) 
 			return false
 		}
 		isShared = true
+	}
+	// 自用调用要求"自定上游分组"放行：custom 模式下未勾选该分组时直接 403 分组无权限喵。
+	if !isShared && !groupAccess.AllowsBuiltinGroup(constant.GroupUserUpstream) {
+		abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorGroupAccessDenied), types.ErrorCode("group_access_denied"))
+		return false
 	}
 	// 请求前硬检查：有价自用调用需余额与可用额度都大于 0；共享调用由查询条件保证闸门喵。
 	// 免费模型(单价规范化为0)整次费用恒为 0，豁免三账户>0 要求，三账户为 0 也可自用喵。
@@ -585,14 +598,38 @@ func handleVirtualModelUpstreamFailure(c *gin.Context, upstreamModel *model.User
 		executionState.internalFreezeStatesByCandidate[candidateID] = model.VirtualModelInternalFreezeState{CandidateID: candidateID, FrozenUntil: common.GetTimestamp() + int64(currentCandidate.HedgeFreezeSeconds)}
 	}
 	// 按失败规则决策动作；候选未配置规则时回退模型级全局兜底规则喵。
-	action, freezeSeconds, ruleRetryCount := virtualmodelservice.DecideVirtualModelFailureAction(executionState.executionSnapshot, candidateID, customFailure.Failure)
+	failureDecision := virtualmodelservice.DecideVirtualModelFailure(executionState.executionSnapshot, candidateID, customFailure.Failure)
+	action, freezeSeconds, ruleRetryCount := failureDecision.Action, failureDecision.FreezeSeconds, failureDecision.RetryCount
+	// 规则级连续失败阈值：只统计"匹配当前选中规则"的失败，其它错误类型既不计数也不清零喵。
+	ruleFroze, ruleFreezeError := virtualmodelservice.RecordCandidateRuleConsecutiveFailure(executionState.ownerUserID, currentCandidate, failureDecision, common.GetTimestamp())
+	// 喵~防御：规则级计数写入失败时保守终结候选链，避免上游故障扩大为循环请求喵。
+	if ruleFreezeError != nil {
+		// 实体状态检测：计数写入失败终结请求，记录候选、上游模型与整体失败喵。
+		recordVirtualModelUpstreamFailureProbe(c, executionState, candidateID, upstreamModel, isShared, errorClass, startTime, true)
+		abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
+		return virtualModelUpstreamFailureEnd
+	}
+	// 规则级阈值命中：按该规则的冻结秒数冻结候选并同步内存快照喵。
+	if ruleFroze {
+		ruleFrozenUntil := common.GetTimestamp() + int64(failureDecision.FreezeSeconds)
+		freezeError := model.UpsertVirtualModelInternalFreezeState(executionState.ownerUserID, candidateID, ruleFrozenUntil, errorClass, common.GetTimestamp())
+		// 喵~防御：冻结状态写入失败时保守终结候选链，与 action=freeze 的失败处理保持一致喵。
+		if freezeError != nil {
+			recordVirtualModelUpstreamFailureProbe(c, executionState, candidateID, upstreamModel, isShared, errorClass, startTime, true)
+			abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "virtual model execution is not available", types.ErrorCode("virtual_model_unavailable"))
+			return virtualModelUpstreamFailureEnd
+		}
+		executionState.internalFreezeStatesByCandidate[candidateID] = model.VirtualModelInternalFreezeState{CandidateID: candidateID, FrozenUntil: ruleFrozenUntil}
+	}
 	// 失败规则 retry：规则级最大重试次数优先，未配置时回退候选 MaxRetries，在其内重放当前上游请求喵。
-	// 喵~防御：自动避险刚达阈值冻结该候选时不得再重试，直接进入候选切换退避喵。
+	// 喵~防御：规则级或自动避险阈值刚触发冻结该候选时不得再重试，直接进入候选切换退避喵。
 	maxUpstreamRetries := currentCandidate.MaxRetries
 	if ruleRetryCount > 0 {
 		maxUpstreamRetries = ruleRetryCount
 	}
-	if action == model.VirtualModelActionRetry && executionState.ruleRetryCounts[candidateID] < maxUpstreamRetries && !hedgeFroze {
+	// 任一阈值（规则级或自动避险）本次触发冻结时都不再重试当前候选喵。
+	candidateFroze := hedgeFroze || ruleFroze
+	if action == model.VirtualModelActionRetry && executionState.ruleRetryCounts[candidateID] < maxUpstreamRetries && !candidateFroze {
 		// 实体状态检测：每次重试尝试都独立计数，先记录本次候选与上游模型失败，
 		// 避免后面重试成功把中间失败 try 从可用性里洗掉喵。
 		recordVirtualModelUpstreamFailureProbe(c, executionState, candidateID, upstreamModel, isShared, errorClass, startTime, false)

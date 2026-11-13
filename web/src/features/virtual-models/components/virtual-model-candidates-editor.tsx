@@ -756,6 +756,11 @@ function VirtualModelCandidatesEditorBody({
                     {t('Timeout seconds')}
                     <HelpHint hint={t('Fallback timeout for direct custom candidates; failure rules can override it.')}>
                       <p>{t('Range: 1 to 600 seconds. For direct custom candidates, this value applies when no failure rule sets Timeout seconds. Referenced user upstream models use their own timeout instead. Internal candidates are bounded by the virtual model total timeout. The final per-attempt timeout is capped at 600 seconds and by the remaining total timeout.')}</p>
+                      <p>
+                        {t(
+                          'Timeout priority, innermost first: the failure rule Timeout seconds if greater than 0, otherwise this candidate Timeout seconds, both hard-capped at 600 seconds; then the stream probe budgets (Stall timeout, default 60, and Probe total timeout, default 300); then the virtual model Total timeout as the outermost limit; and after the stream has been released, the gateway streaming idle timeout (STREAMING_TIMEOUT, default 300 seconds of silence). A timeout during the probe phase writes no bytes to the client, so the gateway can switch to the next candidate; a timeout after the stream has been released ends the response and cannot switch candidates.'
+                        )}
+                      </p>
                     </HelpHint>
                   </span>
                   <Input inputMode='numeric' value={candidate.timeoutSeconds} disabled={isSaving} onChange={(event) => updateCandidate(index, { timeoutSeconds: event.target.value })} />
@@ -766,6 +771,11 @@ function VirtualModelCandidatesEditorBody({
                     {t('Maximum retries')}
                     <HelpHint hint={t('Default retries when the matching failure rule has no retry count.')}>
                       <p>{t("Range: 0 to 20. Used when a failure rule matches with Retry current candidate and that rule's Max retries is 0. A rule Max retries greater than 0 replaces this value. Retries stop when the virtual model total timeout is exhausted or auto hedge freezes the candidate.")}</p>
+                      <p>
+                        {t(
+                          'Retry priority: a failure rule Max retries greater than 0 replaces this value; otherwise this candidate value is used. Retries also stop early when the virtual model Total timeout is exhausted, when the candidate chain is exhausted and looping is disabled or out of rounds, when auto hedge or a consecutive failure threshold freezes the candidate, or when the client disconnects.'
+                        )}
+                      </p>
                     </HelpHint>
                   </span>
                   <Input inputMode='numeric' value={candidate.maxRetries} disabled={isSaving} onChange={(event) => updateCandidate(index, { maxRetries: event.target.value })} />

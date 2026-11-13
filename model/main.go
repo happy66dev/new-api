@@ -386,6 +386,8 @@ func migrateDB() error {
 		&VirtualModelManualFreeze{},
 		&VirtualModelCustomFreezeState{},
 		&VirtualModelInternalFreezeState{},
+		// 失败规则级连续失败计数：按用户 + 候选 + 规则序号隔离，与冻结状态表分开避免改旧唯一键喵。
+		&VirtualModelRuleFailureCounter{},
 		&VirtualModelAuditLog{},
 		// 虚拟模型分享码：保存脱敏后的方案快照，供用户之间一对一分发喵。
 		&VirtualModelShareCode{},
@@ -478,6 +480,8 @@ func migrateDBFast() error {
 		{&VirtualModelManualFreeze{}, "VirtualModelManualFreeze"},
 		{&VirtualModelCustomFreezeState{}, "VirtualModelCustomFreezeState"},
 		{&VirtualModelInternalFreezeState{}, "VirtualModelInternalFreezeState"},
+		// 失败规则级连续失败计数表，与主迁移路径保持一致喵。
+		{&VirtualModelRuleFailureCounter{}, "VirtualModelRuleFailureCounter"},
 		{&VirtualModelAuditLog{}, "VirtualModelAuditLog"},
 		// 虚拟模型分享码表随快速迁移一并建表，保证启动时两套迁移路径都覆盖喵。
 		{&VirtualModelShareCode{}, "VirtualModelShareCode"},

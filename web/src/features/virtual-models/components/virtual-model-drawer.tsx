@@ -219,6 +219,11 @@ export function VirtualModelDrawer({
                       {t('Total timeout seconds')}
                       <HelpHint hint={t('Outermost hard limit for one request; no candidate, retry, or loop can exceed it.')}>
                         <p>{t('Range: 1 to 3600 seconds. The deadline starts when the request enters the virtual model. Candidate timeouts, failure-rule timeouts, retry backoff, and loop rounds all draw from this budget and cannot extend it. When the budget is exhausted, the request fails immediately.')}</p>
+                        <p>
+                          {t(
+                            'Timeout priority, outermost last: the stream probe budgets come first (Stall timeout, default 60, and Probe total timeout, default 300), then the per-attempt timeout of the candidate actually running (failure rule Timeout seconds or the candidate Timeout seconds, hard-capped at 600), and this Total timeout closes the request no matter which candidate or round is running. A timeout during the probe phase writes no bytes to the client, so the gateway can switch to the next candidate; a timeout after the stream has been released forcibly ends the response and cannot switch candidates.'
+                          )}
+                        </p>
                       </HelpHint>
                     </span>
                     <Input inputMode='numeric' value={totalTimeoutSeconds} onChange={(event) => setTotalTimeoutSeconds(event.target.value)} disabled={isSavingBasics} />

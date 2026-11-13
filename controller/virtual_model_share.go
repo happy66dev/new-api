@@ -238,6 +238,8 @@ func loadVirtualModelShareFailureRules(candidateID int) ([]model.VirtualModelSha
 			ProbeTotalTimeoutSeconds: storedRule.ProbeTotalTimeoutSeconds,
 			TimeoutSeconds:           storedRule.TimeoutSeconds,
 			RetryCount:               storedRule.RetryCount,
+			// 规则级连续失败阈值随分享码一起传递，保证导入方得到相同的冻结行为喵。
+			ConsecutiveFailureThreshold: storedRule.ConsecutiveFailureThreshold,
 		})
 	}
 	return shareRules, nil
@@ -266,6 +268,8 @@ func loadVirtualModelShareGlobalFailureRules(virtualModelID int) ([]model.Virtua
 			ProbeTotalTimeoutSeconds: storedRule.ProbeTotalTimeoutSeconds,
 			TimeoutSeconds:           storedRule.TimeoutSeconds,
 			RetryCount:               storedRule.RetryCount,
+			// 模型级全局兜底规则同样携带连续失败阈值喵。
+			ConsecutiveFailureThreshold: storedRule.ConsecutiveFailureThreshold,
 		})
 	}
 	return shareRules, nil
@@ -485,8 +489,9 @@ func resolveVirtualModelShareImportPlan(c *gin.Context, payload *model.VirtualMo
 		return nil, errors.New("导入方身份无效")
 	}
 	userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
-	// 使用 ForUser 版本：只有它才叠加 console_setting 的分组访问规则过滤，旧版本会漏判喵。
-	usableGroups := service.GetUserUsableGroupsForUser(ownerUserID, userGroup)
+	// 使用 ByUserID 版本：它同时叠加 console_setting 分组访问规则与用户自己的分组权限模式/白名单喵。
+	groupAccess := service.ResolveUserGroupAccessByUserID(ownerUserID, userGroup)
+	usableGroups := groupAccess.UsableGroups
 	// 主人注意：这里先把全部内部候选的分组去重，每个不同分组只查一次 abilities 表，
 	// 把 N 个候选的 N 次查询压到「不同分组数」次；分组数上限就是候选数量上限 32 喵。
 	enabledModelsByGroup := make(map[string]map[string]bool)
@@ -708,6 +713,8 @@ func ImportVirtualModelShareCode(c *gin.Context) {
 				ProbeTotalTimeoutSeconds: globalRule.ProbeTotalTimeoutSeconds,
 				TimeoutSeconds:           globalRule.TimeoutSeconds,
 				RetryCount:               globalRule.RetryCount,
+				// 导入时同样恢复规则级连续失败阈值，保证分享前后冻结行为一致喵。
+				ConsecutiveFailureThreshold: globalRule.ConsecutiveFailureThreshold,
 			}
 			if createError := tx.Create(globalFailureRule).Error; createError != nil {
 				return createError
@@ -843,6 +850,8 @@ func createImportedVirtualModelCandidate(tx *gorm.DB, virtualModelID int, shareC
 			ProbeTotalTimeoutSeconds: shareRule.ProbeTotalTimeoutSeconds,
 			TimeoutSeconds:           shareRule.TimeoutSeconds,
 			RetryCount:               shareRule.RetryCount,
+			// 候选级规则导入时同样恢复连续失败阈值喵。
+			ConsecutiveFailureThreshold: shareRule.ConsecutiveFailureThreshold,
 		}
 		if createError := tx.Create(failureRule).Error; createError != nil {
 			return createError

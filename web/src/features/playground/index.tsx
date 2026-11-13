@@ -99,7 +99,8 @@ export function Playground() {
     clearMessages()
   }
 
-  const { isLoadingModels } = usePlaygroundOptions({
+  const { isLoadingModels, showUserUpstreamModels, showVirtualModels } =
+    usePlaygroundOptions({
     currentGroup: config.group,
     currentModel: config.model,
     setGroups,
@@ -219,6 +220,8 @@ export function Playground() {
             onStop={stopGeneration}
             onSubmit={handleSendMessage}
             parameterEnabled={parameterEnabled}
+            showUserUpstreamModels={showUserUpstreamModels}
+            showVirtualModels={showVirtualModels}
             hasMessages={messages.length > 0}
           />
         </div>

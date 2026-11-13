@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +21,7 @@ import (
 	"github.com/QuantumNous/new-api/service/authz"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/QuantumNous/new-api/constant"
 
@@ -717,7 +719,10 @@ func GetUserModels(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	groups := service.GetUserUsableGroupsForUser(id, user.Group)
+	// 分组权限模式与白名单跟随被查询用户自己，避免管理员视角或缓存缺失造成口径不一致喵。
+	groupAccessMode := service.GetUserGroupAccessMode(user)
+	usableGroupsRaw := service.GetUserUsableGroupWhitelist(user)
+	groups := service.ResolveUserGroupAccessForUser(id, user.Group, groupAccessMode, usableGroupsRaw).UsableGroups
 	group := c.Query("group")
 	var groupsToQuery []string
 	switch {
@@ -728,7 +733,7 @@ func GetUserModels(c *gin.Context) {
 	case group == "auto":
 		// auto is a virtual group resolved from the user's selectable groups;
 		// it is not required to be present in the usable-group map itself.
-		groupsToQuery = service.GetUserAutoGroupForUser(id, user.Group)
+		groupsToQuery = service.GetUserAutoGroupForUser(id, user.Group, groupAccessMode, usableGroupsRaw)
 	default:
 		if _, ok := groups[group]; ok {
 			groupsToQuery = []string{group}
@@ -739,6 +744,59 @@ func GetUserModels(c *gin.Context) {
 		"message": "",
 		"data":    service.GetGroupsEnabledModels(groupsToQuery, c.GetInt("id")),
 	})
+}
+
+// normalizeAdminGroupAccessInput 校验并规范化管理员提交的分组管理模式与白名单喵。
+// 返回可直接落库的白名单 JSON 字符串；出错时返回带明确原因的 error，由调用方回 400 喵。
+func normalizeAdminGroupAccessInput(updatedUser *model.User) (string, error) {
+	// 喵~防御：空对象无法校验，直接拒绝避免空指针喵。
+	if updatedUser == nil {
+		return "", errors.New("user is required")
+	}
+	mode := strings.TrimSpace(updatedUser.GroupAccessMode)
+	if mode != "" && mode != service.GroupAccessModeLegacy && mode != service.GroupAccessModeCustom {
+		return "", fmt.Errorf("group access mode must be legacy or custom")
+	}
+	updatedUser.GroupAccessMode = mode
+	rawWhitelist := strings.TrimSpace(updatedUser.UsableGroups)
+	if rawWhitelist == "" {
+		// 空白名单在 custom 模式下表示"只保留内置伪分组"，是合法配置，落库为空串便于人工阅读喵。
+		return "", nil
+	}
+	var submittedGroups []string
+	// 喵~防御：白名单必须是字符串数组，其它形状一律报参数错误而不是静默清空喵。
+	if err := common.UnmarshalJsonStr(rawWhitelist, &submittedGroups); err != nil {
+		return "", fmt.Errorf("usable groups must be a JSON array of group names")
+	}
+	validRatioGroups := ratio_setting.GetGroupRatioCopy()
+	builtinGroups := service.GetBuiltinGroupNamesCopy()
+	// 主人注意：白名单上限 64 项，与 service 层解析保持一致，避免超长 JSON 拖慢每次鉴权喵。
+	if len(submittedGroups) > 64 {
+		return "", fmt.Errorf("usable groups must not exceed %d entries", 64)
+	}
+	normalized := make([]string, 0, len(submittedGroups))
+	seen := make(map[string]struct{}, len(submittedGroups))
+	for _, group := range submittedGroups {
+		group = strings.TrimSpace(group)
+		if group == "" {
+			continue
+		}
+		// 喵~防御：只接受现存倍率分组与三个内置伪分组，防止白名单写入任意字符串喵。
+		_, isRatioGroup := validRatioGroups[group]
+		if !isRatioGroup && !slices.Contains(builtinGroups, group) {
+			return "", fmt.Errorf("unknown group %q", group)
+		}
+		if _, duplicate := seen[group]; duplicate {
+			continue
+		}
+		seen[group] = struct{}{}
+		normalized = append(normalized, group)
+	}
+	data, marshalErr := common.Marshal(normalized)
+	if marshalErr != nil {
+		return "", marshalErr
+	}
+	return string(data), nil
 }
 
 func UpdateUser(c *gin.Context) {
@@ -757,6 +815,13 @@ func UpdateUser(c *gin.Context) {
 		common.ApiErrorI18n(c, i18n.MsgUserInputInvalid, map[string]any{"Error": err.Error()})
 		return
 	}
+	// 分组管理模式与可用分组白名单只有管理员能改，且必须在这里完成取值校验喵。
+	normalizedUsableGroups, normalizeErr := normalizeAdminGroupAccessInput(&updatedUser)
+	if normalizeErr != nil {
+		common.ApiErrorI18n(c, i18n.MsgUserInputInvalid, map[string]any{"Error": normalizeErr.Error()})
+		return
+	}
+	updatedUser.UsableGroups = normalizedUsableGroups
 	originUser, err := model.GetUserById(updatedUser.Id, false)
 	if err != nil {
 		common.ApiError(c, err)
@@ -774,8 +839,17 @@ func UpdateUser(c *gin.Context) {
 	}
 	updatePassword := updatedUser.Password != ""
 	authzTouched := false
+	// 分组权限两个值先取到局部变量：EditWithTx 结尾会用 tx.First 回填整个用户对象，
+	// 直接把 updatedUser 的字段带进事务会被数据库旧值覆盖喵。
+	groupAccessMode := updatedUser.GroupAccessMode
+	usableGroups := updatedUser.UsableGroups
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
 		if err := updatedUser.EditWithTx(tx, updatePassword); err != nil {
+			return err
+		}
+		// 分组管理模式与可用分组白名单单独写入：EditWithTx 走 Updates(struct) 会跳过空字符串，
+		// 而"清空白名单"和"把模式切回跟随全局"都是合法操作，必须显式落库喵。
+		if err := model.UpdateUserGroupAccess(tx, updatedUser.Id, groupAccessMode, usableGroups); err != nil {
 			return err
 		}
 		touched, err := updateAdminPermissionsForUserInTx(c, tx, updatedUser.Id, originUser.Role, updatedUser.AdminPermissions)

@@ -81,44 +81,50 @@ func resolveUserSortOptions(sortOptions []UserSortOptions) UserSortOptions {
 // User if you add sensitive fields, don't forget to clean them in setupLogin function.
 // Otherwise, the sensitive information will be saved on local storage in plain text!
 type User struct {
-	Id                   int                        `json:"id"`
-	Username             string                     `json:"username" gorm:"unique;index" validate:"max=20"`
-	Password             string                     `json:"password" gorm:"not null;" validate:"min=8,max=128"`
-	HasPassword          bool                       `json:"-" gorm:"-:all"`
-	OriginalPassword     string                     `json:"original_password" gorm:"-:all"` // this field is only for Password change verification, don't save it to database!
-	DisplayName          string                     `json:"display_name" gorm:"index" validate:"max=20"`
-	Role                 int                        `json:"role" gorm:"type:int;default:1"`   // admin, common
-	Status               int                        `json:"status" gorm:"type:int;default:1"` // enabled, disabled
-	Email                string                     `json:"email" gorm:"index" validate:"max=50"`
-	RegisterIp           string                     `json:"register_ip" gorm:"type:varchar(64);column:register_ip;index"`
-	GitHubId             string                     `json:"github_id" gorm:"column:github_id;index"`
-	GitHubCreatedAt      int64                      `json:"-" gorm:"column:github_created_at;index"`
-	DiscordId            string                     `json:"discord_id" gorm:"column:discord_id;index"`
-	OidcId               string                     `json:"oidc_id" gorm:"column:oidc_id;index"`
-	WeChatId             string                     `json:"wechat_id" gorm:"column:wechat_id;index"`
-	TelegramId           string                     `json:"telegram_id" gorm:"column:telegram_id;index"`
-	VerificationCode     string                     `json:"verification_code" gorm:"-:all"`                         // this field is only for Email verification, don't save it to database!
-	AccessToken          *string                    `json:"-" gorm:"type:char(32);column:access_token;uniqueIndex"` // this token is for system management
-	AccessTokenCreatedAt *int64                     `json:"-" gorm:"type:bigint;column:access_token_created_at"`
-	Quota                int                        `json:"quota" gorm:"type:int;default:0"`
-	CheckinQuota         int                        `json:"checkin_quota" gorm:"type:int;default:0"`
-	UsedQuota            int                        `json:"used_quota" gorm:"type:int;default:0;column:used_quota"` // used quota
-	RequestCount         int                        `json:"request_count" gorm:"type:int;default:0;"`               // request number
-	Group                string                     `json:"group" gorm:"type:varchar(64);default:'default'"`
-	AffCode              string                     `json:"aff_code" gorm:"type:varchar(32);column:aff_code;uniqueIndex"`
-	AffCount             int                        `json:"aff_count" gorm:"type:int;default:0;column:aff_count"`
-	AffQuota             int                        `json:"aff_quota" gorm:"type:int;default:0;column:aff_quota"`           // 邀请剩余额度
-	AffHistoryQuota      int                        `json:"aff_history_quota" gorm:"type:int;default:0;column:aff_history"` // 邀请历史额度
-	InviterId            int                        `json:"inviter_id" gorm:"type:int;column:inviter_id;index"`
-	DeletedAt            gorm.DeletedAt             `gorm:"index"`
-	LinuxDOId            string                     `json:"linux_do_id" gorm:"column:linux_do_id;index"`
-	Setting              string                     `json:"setting" gorm:"type:text;column:setting"`
-	Remark               string                     `json:"remark,omitempty" gorm:"type:varchar(255)" validate:"max=255"`
-	StripeCustomer       string                     `json:"stripe_customer" gorm:"type:varchar(64);column:stripe_customer;index"`
-	CreatedAt            int64                      `json:"created_at" gorm:"autoCreateTime;column:created_at"`
-	LastLoginAt          int64                      `json:"last_login_at" gorm:"default:0;column:last_login_at"`
-	AuthVersion          int64                      `json:"-" gorm:"type:bigint;not null;default:1;column:auth_version"`
-	AdminPermissions     map[string]map[string]bool `json:"admin_permissions,omitempty" gorm:"-:all"`
+	Id                   int     `json:"id"`
+	Username             string  `json:"username" gorm:"unique;index" validate:"max=20"`
+	Password             string  `json:"password" gorm:"not null;" validate:"min=8,max=128"`
+	HasPassword          bool    `json:"-" gorm:"-:all"`
+	OriginalPassword     string  `json:"original_password" gorm:"-:all"` // this field is only for Password change verification, don't save it to database!
+	DisplayName          string  `json:"display_name" gorm:"index" validate:"max=20"`
+	Role                 int     `json:"role" gorm:"type:int;default:1"`   // admin, common
+	Status               int     `json:"status" gorm:"type:int;default:1"` // enabled, disabled
+	Email                string  `json:"email" gorm:"index" validate:"max=50"`
+	RegisterIp           string  `json:"register_ip" gorm:"type:varchar(64);column:register_ip;index"`
+	GitHubId             string  `json:"github_id" gorm:"column:github_id;index"`
+	GitHubCreatedAt      int64   `json:"-" gorm:"column:github_created_at;index"`
+	DiscordId            string  `json:"discord_id" gorm:"column:discord_id;index"`
+	OidcId               string  `json:"oidc_id" gorm:"column:oidc_id;index"`
+	WeChatId             string  `json:"wechat_id" gorm:"column:wechat_id;index"`
+	TelegramId           string  `json:"telegram_id" gorm:"column:telegram_id;index"`
+	VerificationCode     string  `json:"verification_code" gorm:"-:all"`                         // this field is only for Email verification, don't save it to database!
+	AccessToken          *string `json:"-" gorm:"type:char(32);column:access_token;uniqueIndex"` // this token is for system management
+	AccessTokenCreatedAt *int64  `json:"-" gorm:"type:bigint;column:access_token_created_at"`
+	Quota                int     `json:"quota" gorm:"type:int;default:0"`
+	CheckinQuota         int     `json:"checkin_quota" gorm:"type:int;default:0"`
+	UsedQuota            int     `json:"used_quota" gorm:"type:int;default:0;column:used_quota"` // used quota
+	RequestCount         int     `json:"request_count" gorm:"type:int;default:0;"`               // request number
+	Group                string  `json:"group" gorm:"type:varchar(64);default:'default'"`
+	// GroupAccessMode 表示该用户的分组权限来源：空或 legacy = 沿用原 newapi 的四套旧口径；
+	// custom = 只认 UsableGroups 白名单（白名单为空时仅内置伪分组可用）喵。
+	GroupAccessMode string `json:"group_access_mode" gorm:"type:varchar(16);default:'';column:group_access_mode"`
+	// UsableGroups 是 custom 模式下允许访问的分组白名单，值为分组名的 JSON 字符串数组；
+	// 只允许管理员写入，用户自助接口不可改动，避免用户自行提权喵。
+	UsableGroups     string                     `json:"usable_groups" gorm:"type:text;column:usable_groups"`
+	AffCode          string                     `json:"aff_code" gorm:"type:varchar(32);column:aff_code;uniqueIndex"`
+	AffCount         int                        `json:"aff_count" gorm:"type:int;default:0;column:aff_count"`
+	AffQuota         int                        `json:"aff_quota" gorm:"type:int;default:0;column:aff_quota"`           // 邀请剩余额度
+	AffHistoryQuota  int                        `json:"aff_history_quota" gorm:"type:int;default:0;column:aff_history"` // 邀请历史额度
+	InviterId        int                        `json:"inviter_id" gorm:"type:int;column:inviter_id;index"`
+	DeletedAt        gorm.DeletedAt             `gorm:"index"`
+	LinuxDOId        string                     `json:"linux_do_id" gorm:"column:linux_do_id;index"`
+	Setting          string                     `json:"setting" gorm:"type:text;column:setting"`
+	Remark           string                     `json:"remark,omitempty" gorm:"type:varchar(255)" validate:"max=255"`
+	StripeCustomer   string                     `json:"stripe_customer" gorm:"type:varchar(64);column:stripe_customer;index"`
+	CreatedAt        int64                      `json:"created_at" gorm:"autoCreateTime;column:created_at"`
+	LastLoginAt      int64                      `json:"last_login_at" gorm:"default:0;column:last_login_at"`
+	AuthVersion      int64                      `json:"-" gorm:"type:bigint;not null;default:1;column:auth_version"`
+	AdminPermissions map[string]map[string]bool `json:"admin_permissions,omitempty" gorm:"-:all"`
 }
 
 func (user *User) ToBaseUser() *UserBase {
@@ -133,6 +139,9 @@ func (user *User) ToBaseUser() *UserBase {
 		Email:       user.Email,
 		AuthVersion: user.AuthVersion,
 		CacheSchema: userCacheSchemaVersion,
+		// 分组权限快照随用户缓存一起下发，避免每次请求都回查数据库喵。
+		GroupAccessMode: user.GroupAccessMode,
+		UsableGroups:    user.UsableGroups,
 	}
 	return cache
 }
@@ -975,6 +984,25 @@ func (user *User) FinalizeOAuthUserCreation(inviterId int) {
 	}
 }
 
+// 分组权限相关列名白名单：用户自助接口与普通资料更新都不得改写它们，避免用户自行提权喵。
+const (
+	userColumnGroupAccessMode = "group_access_mode"
+	userColumnUsableGroups    = "usable_groups"
+)
+
+// UpdateUserGroupAccess 显式写入分组权限模式与可用分组白名单，空值也照实落库喵。
+// 为什么不用 Updates(struct)：GORM 的 Updates(struct) 会跳过零值，导致"清空白名单"无效喵。
+func UpdateUserGroupAccess(tx *gorm.DB, userId int, groupAccessMode string, usableGroups string) error {
+	// 喵~防御：空事务或非法用户 id 时直接报错，避免误更新整表喵。
+	if tx == nil || userId <= 0 {
+		return errors.New("invalid user group access update")
+	}
+	return tx.Model(&User{}).Where("id = ?", userId).Updates(map[string]interface{}{
+		userColumnGroupAccessMode: groupAccessMode,
+		userColumnUsableGroups:    usableGroups,
+	}).Error
+}
+
 func (user *User) Update(updatePassword bool) error {
 	var previousAuthVersion int64
 	if err := DB.Model(&User{}).Where("id = ?", user.Id).Select("auth_version").Find(&previousAuthVersion).Error; err != nil {
@@ -1030,6 +1058,9 @@ func (user *User) UpdateWithTx(tx *gorm.DB, updatePassword bool) error {
 		"aff_quota",
 		"aff_history",
 		"auth_version",
+		// 分组权限两列只允许管理员通过 UpdateUserGroupAccess 写入，用户自助资料更新不得触碰喵。
+		userColumnGroupAccessMode,
+		userColumnUsableGroups,
 	).Updates(newUser).Error; err != nil {
 		return err
 	}

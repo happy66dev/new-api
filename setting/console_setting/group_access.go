@@ -162,6 +162,12 @@ func GetGroupAccessRules() []GroupAccessRule {
 	return rules
 }
 
+// IsCustomGroupAccessModeGlobal 读取全局分组管理模式喵。
+// 只有显式配置为 custom 才启用"仅新分组管理"，空值、未知值一律按 legacy 处理，保证升级后行为不变喵。
+func IsCustomGroupAccessModeGlobal() bool {
+	return strings.TrimSpace(consoleSetting.GroupAccessMode) == "custom"
+}
+
 // GetModelSquareVisibleGroups returns only configured groups that still have
 // a pricing ratio. This keeps deleted groups from leaking into the public plaza.
 func GetModelSquareVisibleGroups() []string {

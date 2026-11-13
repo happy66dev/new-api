@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQuery } from '@tanstack/react-query'
 import { Pencil } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -31,6 +31,7 @@ import {
   sideDrawerFormClassName,
   sideDrawerHeaderClassName,
 } from '@/components/drawer-layout'
+import { MultiSelect } from '@/components/multi-select'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Combobox } from '@/components/ui/combobox'
@@ -103,6 +104,33 @@ type UsersMutateDrawerProps = {
   currentRow?: User
 }
 
+// 分组管理模式选项：follow 表示跟随全局设置（提交给后端时转为空串），
+// legacy 与 custom 分别是两种明确策略喵。
+const GROUP_ACCESS_MODE_ITEMS = [
+  { value: 'follow', labelKey: 'Follow Global' },
+  { value: 'legacy', labelKey: 'Original new-api rules' },
+  { value: 'custom', labelKey: 'Custom group list only' },
+]
+
+// 表单值到 Select 值的映射：空串（跟随全局）在 UI 上用 follow 表示，避免空值选项喵。
+function groupAccessModeToSelectValue(mode: string | undefined): string {
+  // 喵~防御：空值、空串与未知值统一落到跟随全局，保证下拉始终有选中项喵。
+  if (mode === 'legacy' || mode === 'custom') return mode
+  return 'follow'
+}
+
+// Select 值回到表单值：follow 还原为空串，后端据此跟随全局设置喵。
+function selectValueToGroupAccessMode(value: string): string {
+  return value === 'follow' ? '' : value
+}
+
+// 内置伪分组：它们不在站点倍率配置里，但可以作为"可用分组"被勾选喵。
+const BUILTIN_USABLE_GROUPS = [
+  { value: 'virtual', labelKey: 'Virtual Models' },
+  { value: 'user-upstream', labelKey: 'User Upstream Models' },
+  { value: 'user-shared', labelKey: 'User Shared' },
+]
+
 export function UsersMutateDrawer({
   open,
   onOpenChange,
@@ -123,6 +151,19 @@ export function UsersMutateDrawer({
   })
 
   const groups = groupsData?.data || []
+
+  // 可用分组多选选项 = 站点现存分组 + 三个内置伪分组（虚拟模型/自定上游/用户共享）喵。
+  // 依赖直接写 groupsData?.data：`groups` 是每次渲染新建的空数组兜底，放进依赖会破坏 memo 喵。
+  const usableGroupOptions = useMemo(() => {
+    const ratioGroups = groupsData?.data ?? []
+    return [
+      ...ratioGroups.map((group) => ({ value: group, label: group })),
+      ...BUILTIN_USABLE_GROUPS.map((item) => ({
+        value: item.value,
+        label: t(item.labelKey),
+      })),
+    ]
+  }, [groupsData, t])
 
   // Permission catalog is owned by the backend; fetched once and reused.
   const { data: permissionCatalog = EMPTY_PERMISSION_CATALOG } = useQuery({
@@ -437,6 +478,86 @@ export function UsersMutateDrawer({
                             rows={3}
                           />
                         </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </SideDrawerSection>
+              )}
+
+              {/* 分组权限（仅更新）：管理模式 + 可用分组白名单喵。 */}
+              {isUpdate && (
+                <SideDrawerSection>
+                  <h3 className='text-sm font-medium'>
+                    {t('Group Access Control')}
+                  </h3>
+                  <p className='text-muted-foreground text-xs'>
+                    {t(
+                      'Choose whether this user keeps the original group rules or is restricted to an explicit list of groups.'
+                    )}
+                  </p>
+
+                  <FormField
+                    control={form.control}
+                    name='group_access_mode'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Group Access Mode')}</FormLabel>
+                        <Select
+                          items={GROUP_ACCESS_MODE_ITEMS.map((item) => ({
+                            value: item.value,
+                            label: t(item.labelKey),
+                          }))}
+                          onValueChange={(value) =>
+                            value !== null &&
+                            field.onChange(selectValueToGroupAccessMode(value))
+                          }
+                          value={groupAccessModeToSelectValue(field.value)}
+                        >
+                          <FormControl>
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent alignItemWithTrigger={false}>
+                            <SelectGroup>
+                              {GROUP_ACCESS_MODE_ITEMS.map((item) => (
+                                <SelectItem key={item.value} value={item.value}>
+                                  {t(item.labelKey)}
+                                </SelectItem>
+                              ))}
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
+                        <FormDescription>
+                          {t(
+                            'Follow global keeps the original new-api group rules. Custom only allows the groups selected below.'
+                          )}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name='usable_groups'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Usable Groups')}</FormLabel>
+                        <FormControl>
+                          <MultiSelect
+                            options={usableGroupOptions}
+                            selected={field.value ?? []}
+                            onChange={field.onChange}
+                            placeholder={t('Select groups')}
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {t(
+                            'Only applies in Custom mode. Leaving it empty allows the virtual model and user upstream groups only.'
+                          )}
+                        </FormDescription>
                         <FormMessage />
                       </FormItem>
                     )}

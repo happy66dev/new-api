@@ -11,7 +11,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const userCacheSchemaVersion = 2
+// userCacheSchemaVersion 用户缓存结构版本：新增分组权限字段后升版，让旧版 Redis 缓存自动失效重算喵。
+const userCacheSchemaVersion = 3
 
 type UserBase struct {
 	Id          int    `json:"id"`
@@ -24,6 +25,10 @@ type UserBase struct {
 	Setting     string `json:"setting"`
 	AuthVersion int64  `json:"-"`
 	CacheSchema int    `json:"-"`
+	// GroupAccessMode 分组权限模式：空或 legacy 走原 newapi 旧口径，custom 只认 UsableGroups 白名单喵。
+	GroupAccessMode string `json:"group_access_mode"`
+	// UsableGroups custom 模式下允许访问的分组白名单，存储格式为分组名 JSON 数组字符串喵。
+	UsableGroups string `json:"usable_groups"`
 }
 
 func (user *UserBase) WriteContext(c *gin.Context) {
@@ -117,6 +122,11 @@ func GetUserCache(userId int) (*UserBase, error) {
 func cacheGetUserBase(userId int) (*UserBase, error) {
 	if !common.RedisEnabled {
 		return nil, fmt.Errorf("redis is not enabled")
+	}
+	// 喵~防御：Redis 客户端未初始化（如未配置连接串的测试环境）时直接按未命中处理，
+	// 否则会向下走到空指针调用；上层会用数据库回源，行为与缓存未命中一致喵。
+	if common.RDB == nil {
+		return nil, fmt.Errorf("redis client is not initialized")
 	}
 	var userCache UserBase
 	// Try getting from Redis first
